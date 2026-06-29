@@ -490,6 +490,7 @@ contains
     module subroutine derive_sampling_settings(self, cline)
         class(parameters), intent(inout) :: self
         class(cmdline),    intent(inout) :: cline
+        self%l_ufrac_trec_defined = cline%defined('ufrac_trec')
         if( self%update_frac <= .99 )then
             self%l_update_frac = .true.
             self%l_trail_rec   = trim(self%trail_rec).eq.'yes'
@@ -776,7 +777,7 @@ contains
         endif
         if( .not. cline%defined('trs') )then
             select case(trim(self%refine))
-                case('snhc','snhc_smpl','snhc_smpl_many','prob_snhc','prob_prior')
+                case('snhc','snhc_smpl','snhc_smpl_many')
                     self%trs = 0.
                 case DEFAULT
                     if( trim(self%refine) == 'prob_neigh' .and. trim(self%prob_neigh_mode) == 'snhc' )then

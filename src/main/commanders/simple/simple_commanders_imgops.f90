@@ -24,11 +24,6 @@ type, extends(commander_base) :: commander_ppca_denoise
     procedure :: execute      => exec_ppca_denoise
 end type commander_ppca_denoise
 
-type, extends(commander_base) :: commander_ppca_denoise_polarft_lines
-  contains
-    procedure :: execute      => exec_ppca_denoise_polarft_lines
-end type commander_ppca_denoise_polarft_lines
-
 type, extends(commander_base) :: commander_normalize
   contains
     procedure :: execute      => exec_normalize
@@ -363,10 +358,10 @@ contains
         use simple_pca,         only: pca
         use simple_ppca,        only: ppca
         use simple_pca_svd,     only: pca_svd
-        use simple_kpca_svd,    only: kpca_svd, suggest_kpca_nystrom_neigs
-        use simple_diffusion_maps,  only: embed_graph
+        use simple_kpca_svd,    only: kpca_svd
         use simple_diff_map_graphs, only: diffmap_graph, build_euclidean_knn_graph, graph_directed_edges
-        use simple_diff_map_denoise, only: graph_coeffproj_denoise
+        use simple_diff_map_denoise, only: estimate_diffmap_denoise_rank, graph_nystrom_residual_preimage, &
+                                           calc_diffmap_reconstruction_error, calc_diffmap_residual_energy_ratio
         use simple_imgarr_utils,   only: copy_imgarr, dealloc_imgarr
         class(commander_ppca_denoise), intent(inout) :: self
         class(cmdline),                intent(inout) :: cline
@@ -375,16 +370,17 @@ contains
         type(ppca),        pointer     :: ppca_ptr_typed  => null()
         type(kpca_svd),    pointer     :: kpca_ptr        => null()
         type(image),       allocatable :: imgs(:), den_ptcls(:)
+        type(image)                   :: avg_img
         real,              allocatable :: avg(:), pcavecs(:, :), tmpvec(:), zavg(:), corrvec(:)
-        real,              allocatable :: coords(:,:), eigvals(:)
         type(diffmap_graph)            :: steer_graph
         type(simple_nice_comm)         :: nice_comm
         type(parameters)               :: params
         type(builder)                  :: build
         integer(int64)                 :: t0, t1
         real(real64)                   :: trate
-        integer                        :: npix, iptcl, j, neigs, directed_edges
-        logical                        :: l_transp_pca, l_profile_pca, l_hybrid_resid, l_diffmap
+        integer                        :: npix, iptcl, j, neigs, directed_edges, den_rank, icm_iters, ldim_avg(3)
+        real                           :: recon_rmse, recon_rel_rmse, resid_ratio, icm_score
+        logical                        :: l_transp_pca, l_profile_pca, l_hybrid_resid, l_diffmap, icm_converged, icm_more_iters
         if( .not. cline%defined('mkdir')  ) call cline%set('mkdir',  'no')
         if( .not. cline%defined('outstk') ) call cline%set('outstk', 'ppca_denoised'//STK_EXT)
         ! doesn't work if projfile given - may need to mod in future
@@ -434,32 +430,43 @@ contains
         endif
         neigs = params%neigs
         if( l_diffmap )then
-            if( neigs > 0 ) neigs = min(max(neigs, 1), max(params%nptcls-2, 1))
             call system_clock(t0)
             call build_euclidean_knn_graph(pcavecs, min(max(2, params%k_nn), max(2, params%nptcls-1)), 'none', steer_graph)
-            call embed_graph(steer_graph, neigs, coords, eigvals)
+            call estimate_diffmap_denoise_rank(params, steer_graph, 0, params%nptcls, den_rank, &
+                                               icm_converged, icm_iters, icm_score)
             call system_clock(t1)
             directed_edges = graph_directed_edges(steer_graph)
-            write(logfhandle,'(A,F8.3,A,I8,A,I8,A,I8)') 'Diffusion map coefficient denoise graph/embed: ', &
-                real(t1-t0)/real(trate), ' s; dims=', size(coords,1), ' directed_edges=', directed_edges, &
+            write(logfhandle,'(A,F8.3,A,I8,A,I8,A,I8)') 'Diffusion map denoise graph/rank: ', &
+                real(t1-t0)/real(trate), ' s; rank=', den_rank, ' directed_edges=', directed_edges, &
                 ' k_nn=', params%k_nn
             call flush(logfhandle)
-            call graph_coeffproj_denoise(params, imgs, avg, steer_graph, den_ptcls)
+            ldim_avg = imgs(1)%get_ldim()
+            call avg_img%new(ldim_avg, imgs(1)%get_smpd(), wthreads=.false.)
+            call avg_img%unserialize(avg)
+            call graph_nystrom_residual_preimage(imgs, avg_img, steer_graph, den_ptcls, den_rank)
             if( .not. allocated(den_ptcls) )then
-                write(logfhandle,'(A)') 'Diffusion map coefficient denoising fallback: writing input particles'
+                write(logfhandle,'(A)') 'Diffusion map Nystrom denoising fallback: writing input particles'
                 call flush(logfhandle)
                 den_ptcls = copy_imgarr(imgs)
             endif
+            call calc_diffmap_reconstruction_error(imgs, den_ptcls, recon_rmse, recon_rel_rmse)
+            call calc_diffmap_residual_energy_ratio(imgs, den_ptcls, avg_img, resid_ratio)
+            icm_more_iters = (.not. icm_converged) .and. icm_iters > 0
+            write(logfhandle,'(A,I8,A,I8,A,ES12.4,A,ES12.4,A,ES12.4,A,I8,A,A,A,A)') &
+                'Diffusion map denoise set=trajectory nptcls=', params%nptcls, ' features=', den_rank, &
+                ' recon_rmse=', recon_rmse, ' recon_rel_rmse=', recon_rel_rmse, &
+                ' resid_energy=', resid_ratio, ' icm_iters=', icm_iters, &
+                ' icm_converged=', merge('yes','no ',icm_converged), ' icm_more_iters=', merge('yes','no ',icm_more_iters)
+            call flush(logfhandle)
             call system_clock(t0)
             do iptcl = 1, params%nptcls
                 call den_ptcls(iptcl)%write(params%outstk, iptcl)
             end do
             call system_clock(t1)
-            write(logfhandle,'(A,F8.3,A)') 'Diffusion map coefficient denoise write stack: ', real(t1-t0)/real(trate), ' s'
+            write(logfhandle,'(A,F8.3,A)') 'Diffusion map Nystrom denoise write stack: ', real(t1-t0)/real(trate), ' s'
             call flush(logfhandle)
             call steer_graph%kill()
-            if( allocated(coords)  ) deallocate(coords)
-            if( allocated(eigvals) ) deallocate(eigvals)
+            if( avg_img%exists() ) call avg_img%kill
             if( allocated(avg)     ) deallocate(avg)
             if( allocated(pcavecs) ) deallocate(pcavecs)
             if( allocated(den_ptcls) ) call dealloc_imgarr(den_ptcls)
@@ -713,50 +720,6 @@ contains
         call nice_comm%terminate()
         call simple_end('**** SIMPLE_PPCA_DENOISE NORMAL STOP ****')
     end subroutine exec_ppca_denoise
-
-    subroutine exec_ppca_denoise_polarft_lines( self, cline )
-        use simple_complex_ppca,               only: complex_ppca
-        use simple_matcher_pftc_prep,          only: prep_pftc4align2D
-        use simple_matcher_ptcl_batch,         only: alloc_ptcl_imgs, clean_batch_particles2D
-        use simple_imgarr_utils,               only: alloc_imgarr
-        use simple_polarft_lines_ppca_stream,  only: stream_pft_lines_ppca, denoise_write_pft_lines_ppca
-        class(commander_ppca_denoise_polarft_lines), intent(inout) :: self
-        class(cmdline),                              intent(inout) :: cline
-        type(parameters)               :: params
-        type(builder)                  :: build
-        type(complex_ppca)             :: model
-        type(image), allocatable       :: ptcl_imgs(:), ptcl_match_imgs(:), ptcl_match_imgs_pad(:)
-        real(dp),    allocatable       :: eigvals(:)
-        integer                        :: batchsz_max, qfit, which_iter
-        integer                        :: nptcls_total
-        integer(kind=8)                :: nlines_fit, nlines_den
-        if( .not. cline%defined('outfile') ) call cline%set('outfile', 'ppca_denoised_polarfts'//BIN_EXT)
-        if( .not. cline%defined('neigs') )   call cline%set('neigs', 16.0)
-        call build%init_params_and_build_general_tbox(cline, params, do3d=.false.)
-        nptcls_total = params%top - params%fromp + 1
-        batchsz_max = min(nptcls_total, params%nthr * BATCHTHRSZ)
-        qfit = max(1, params%neigs)
-        which_iter = 1
-        if( cline%defined('which_iter') ) which_iter = max(1, params%which_iter)
-        call alloc_ptcl_imgs(params, build, ptcl_match_imgs, ptcl_match_imgs_pad, batchsz_max)
-        call alloc_imgarr(batchsz_max, [params%box, params%box, 1], params%smpd, ptcl_imgs)
-        call prep_pftc4align2D(params, build, ptcl_match_imgs_pad, batchsz_max, which_iter, .false.)
-        call clean_batch_particles2D(build, ptcl_imgs, ptcl_match_imgs, ptcl_match_imgs_pad)
-        call stream_pft_lines_ppca(params, build, qfit, model, nlines_fit)
-        eigvals = model%get_eigvals()
-        write(logfhandle,'(A,I12)')      'PPCA polarft line fit count: ', nlines_fit
-        write(logfhandle,'(A,F12.5)')    'PPCA polarft sigma2: ', model%get_sigma2()
-        write(logfhandle,'(A,10(1X,ES12.5))') 'PPCA polarft leading eigvals:', eigvals(1:min(10,size(eigvals)))
-        deallocate(eigvals)
-        call denoise_write_pft_lines_ppca(params, build, model, params%outfile, nlines_den)
-        write(logfhandle,'(A,I12)')   'PPCA polarft denoised line count: ', nlines_den
-        write(logfhandle,'(A,A)')     'PPCA polarft output: ', params%outfile%to_char()
-        call model%kill()
-        call build%pftc%kill()
-        call build%esig%kill()
-        call build%kill_general_tbox()
-        call simple_end('**** SIMPLE_PPCA_DENOISE_POLARFT_LINES NORMAL STOP ****')
-    end subroutine exec_ppca_denoise_polarft_lines
 
     !> normalize is a program for normalization of MRC or SPIDER stacks and volumes.
     !! If you want to normalize your images inputted with stk, set norm=yes.

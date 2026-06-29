@@ -130,8 +130,8 @@ contains
         if( .not. cline%defined('pca_mode') ) call cline%set('pca_mode', 'diffusion_maps')
         if( .not. cline%defined('graph')    ) call cline%set('graph',    'euc')
         if( .not. cline%defined('steering') ) call cline%set('steering', 'none')
-        if( .not. cline%defined('k_nn')     ) call cline%set('k_nn',     10)
-        if( .not. cline%defined('neigs') ) call cline%set('neigs', 0)
+        if( .not. cline%defined('k_nn')     ) call cline%set('k_nn',      10)
+        if( .not. cline%defined('neigs')    ) call cline%set('neigs',     200)
         call set_automask2D_defaults(cline)
     end subroutine apply_defaults
 
@@ -145,17 +145,17 @@ contains
 
     subroutine shmem_initialize(self, params, build, cline)
         class(denoise_project_shmem_strategy), intent(inout) :: self
-        type(parameters),                              intent(inout) :: params
-        type(builder),                                 intent(inout) :: build
-        class(cmdline),                                intent(inout) :: cline
+        type(parameters),                      intent(inout) :: params
+        type(builder),                         intent(inout) :: build
+        class(cmdline),                        intent(inout) :: cline
         call init_common(params, build, cline)
     end subroutine shmem_initialize
 
     subroutine shmem_execute(self, params, build, cline)
         class(denoise_project_shmem_strategy), intent(inout) :: self
-        type(parameters),                              intent(inout) :: params
-        type(builder),                                 intent(inout) :: build
-        class(cmdline),                                intent(inout) :: cline
+        type(parameters),                      intent(inout) :: params
+        type(builder),                         intent(inout) :: build
+        class(cmdline),                        intent(inout) :: cline
         type(sp_project) :: spproj
         call spproj%read(params%projfile)
         call run_denoise_project(params, build, cline, spproj, 0, .true.)
@@ -164,21 +164,21 @@ contains
 
     subroutine shmem_finalize_run(self, params, build, cline)
         class(denoise_project_shmem_strategy), intent(inout) :: self
-        type(parameters),                              intent(in)    :: params
-        type(builder),                                 intent(inout) :: build
-        class(cmdline),                                intent(inout) :: cline
+        type(parameters),                      intent(in)    :: params
+        type(builder),                         intent(inout) :: build
+        class(cmdline),                        intent(inout) :: cline
     end subroutine shmem_finalize_run
 
     subroutine shmem_cleanup(self, params)
         class(denoise_project_shmem_strategy), intent(inout) :: self
-        type(parameters),                              intent(in)    :: params
+        type(parameters),                      intent(in)    :: params
     end subroutine shmem_cleanup
 
     subroutine worker_initialize(self, params, build, cline)
         class(denoise_project_worker_strategy), intent(inout) :: self
-        type(parameters),                               intent(inout) :: params
-        type(builder),                                  intent(inout) :: build
-        class(cmdline),                                 intent(inout) :: cline
+        type(parameters),                       intent(inout) :: params
+        type(builder),                          intent(inout) :: build
+        class(cmdline),                         intent(inout) :: cline
         call init_common(params, build, cline)
         if( .not. cline%defined('part') ) THROW_HARD('PART must be defined for denoise_project worker execution')
         if( .not. cline%defined('class_assignment') )then
@@ -189,9 +189,9 @@ contains
     subroutine worker_execute(self, params, build, cline)
         use simple_qsys_funs, only: qsys_job_finished
         class(denoise_project_worker_strategy), intent(inout) :: self
-        type(parameters),                               intent(inout) :: params
-        type(builder),                                  intent(inout) :: build
-        class(cmdline),                                 intent(inout) :: cline
+        type(parameters),                       intent(inout) :: params
+        type(builder),                          intent(inout) :: build
+        class(cmdline),                         intent(inout) :: cline
         type(sp_project) :: spproj
         call spproj%read(params%projfile)
         call run_denoise_project(params, build, cline, spproj, params%part, .false.)
@@ -201,28 +201,28 @@ contains
 
     subroutine worker_finalize_run(self, params, build, cline)
         class(denoise_project_worker_strategy), intent(inout) :: self
-        type(parameters),                               intent(in)    :: params
-        type(builder),                                  intent(inout) :: build
-        class(cmdline),                                 intent(inout) :: cline
+        type(parameters),                       intent(in)    :: params
+        type(builder),                          intent(inout) :: build
+        class(cmdline),                         intent(inout) :: cline
     end subroutine worker_finalize_run
 
     subroutine worker_cleanup(self, params)
         class(denoise_project_worker_strategy), intent(inout) :: self
-        type(parameters),                               intent(in)    :: params
+        type(parameters),                       intent(in)    :: params
     end subroutine worker_cleanup
 
     subroutine master_initialize(self, params, build, cline)
         use simple_exec_helpers, only: set_master_num_threads
         class(denoise_project_master_strategy), intent(inout) :: self
-        type(parameters),                               intent(inout) :: params
-        type(builder),                                  intent(inout) :: build
-        class(cmdline),                                 intent(inout) :: cline
+        type(parameters),                       intent(inout) :: params
+        type(builder),                          intent(inout) :: build
+        class(cmdline),                         intent(inout) :: cline
         type(sp_project) :: spproj
         integer, allocatable :: cls_inds(:), cls_pops(:)
-        logical :: l_phflip
+        logical :: l_phflip, l_ctf_no
         call init_common(params, build, cline)
         call spproj%read(params%projfile)
-        call validate_denoise_project(params, spproj, cls_inds, cls_pops, l_phflip)
+        call validate_denoise_project(params, spproj, cls_inds, cls_pops, l_phflip, l_ctf_no)
         if( trim(lowercase(params%graph)) == 'ori' )then
             self%nparts_run = 1
         else
@@ -250,9 +250,9 @@ contains
 
     subroutine master_execute(self, params, build, cline)
         class(denoise_project_master_strategy), intent(inout) :: self
-        type(parameters),                               intent(inout) :: params
-        type(builder),                                  intent(inout) :: build
-        class(cmdline),                                 intent(inout) :: cline
+        type(parameters),                       intent(inout) :: params
+        type(builder),                          intent(inout) :: build
+        class(cmdline),                         intent(inout) :: cline
         call self%qenv%gen_scripts_and_schedule_jobs(self%job_descr, part_params=self%part_params, &
                                                      array=L_USE_SLURM_ARR, extra_params=params)
         call finalize_diffmap_worker_outputs(params, self%nparts_run)
@@ -260,15 +260,15 @@ contains
 
     subroutine master_finalize_run(self, params, build, cline)
         class(denoise_project_master_strategy), intent(inout) :: self
-        type(parameters),                               intent(in)    :: params
-        type(builder),                                  intent(inout) :: build
-        class(cmdline),                                 intent(inout) :: cline
+        type(parameters),                       intent(in)    :: params
+        type(builder),                          intent(inout) :: build
+        class(cmdline),                         intent(inout) :: cline
     end subroutine master_finalize_run
 
     subroutine master_cleanup(self, params)
         use simple_qsys_funs, only: qsys_cleanup
         class(denoise_project_master_strategy), intent(inout) :: self
-        type(parameters),                               intent(in)    :: params
+        type(parameters),                       intent(in)    :: params
         integer :: ipart
         call self%qenv%kill
         call qsys_cleanup(params)
@@ -283,8 +283,8 @@ contains
 
     subroutine prepare_class_partitions(self, params, cls_inds, cls_pops)
         class(denoise_project_master_strategy), intent(inout) :: self
-        type(parameters),                               intent(in)    :: params
-        integer,                                        intent(in)    :: cls_inds(:), cls_pops(:)
+        type(parameters),                       intent(in)    :: params
+        integer,                                intent(in)    :: cls_inds(:), cls_pops(:)
         integer :: order(size(cls_inds))
         integer, allocatable :: part_counts(:), part_cls(:,:)
         integer(kind=8), allocatable :: part_weights(:)
@@ -329,9 +329,9 @@ contains
         type(image)  :: img_blank
         integer, allocatable :: cls_inds(:), cls_pops(:)
         logical, allocatable :: processed(:)
-        logical :: l_phflip, l_img_blank_init, l_mskdiam_override
+        logical :: l_phflip, l_ctf_no, l_img_blank_init, l_mskdiam_override
         integer :: icls, iptcl, nptcls, nprocessed, funit_map, ldim_blank(3)
-        call validate_denoise_project(params, spproj, cls_inds, cls_pops, l_phflip)
+        call validate_denoise_project(params, spproj, cls_inds, cls_pops, l_phflip, l_ctf_no)
         call filter_classes_by_assignment(cline, cls_inds, cls_pops)
         if( trim(params%pca_mode) == 'diffusion_maps' .and. trim(lowercase(params%graph)) == 'ori' )then
             call run_diffmap_so3_mixture_graphs(params, build, spproj, cls_inds)
@@ -382,7 +382,7 @@ contains
             THROW_HARD('denoise_project requires every active ptcl2D particle to have a valid class assignment')
         endif
         if( l_write_project )then
-            call write_diffmap_project(params, spproj, raw_stks(1), den_stks(1), outproj)
+            call write_diffmap_project(params, spproj, raw_stks(1), den_stks(1), l_ctf_no, outproj)
             write(logfhandle,'(A,A)') 'Denoise project written: ', params%projfile%to_char()
         endif
         write(logfhandle,'(A,I10)') 'Denoise project particles: ', nprocessed
@@ -397,11 +397,11 @@ contains
         if( map_fname%is_allocated() ) call map_fname%kill
     end subroutine run_denoise_project
 
-    subroutine validate_denoise_project(params, spproj, cls_inds, cls_pops, l_phflip)
-        type(parameters), intent(in)    :: params
-        type(sp_project), intent(inout) :: spproj
-        integer, allocatable, intent(out) :: cls_inds(:), cls_pops(:)
-        logical, intent(out) :: l_phflip
+    subroutine validate_denoise_project(params, spproj, cls_inds, cls_pops, l_phflip, l_ctf_no)
+        type(parameters),     intent(in)    :: params
+        type(sp_project),     intent(inout) :: spproj
+        integer, allocatable, intent(out)   :: cls_inds(:), cls_pops(:)
+        logical,              intent(out)   :: l_phflip, l_ctf_no
         type(string) :: ctfstr
         integer, allocatable :: pinds(:), stk_offsets(:), stk_nptcls(:)
         logical, allocatable :: seen_slots(:)
@@ -456,11 +456,15 @@ contains
                 case('flip')
                     if( ctf_mode == 0 ) ctf_mode = CTFFLAG_FLIP
                     if( ctf_mode /= CTFFLAG_FLIP ) THROW_HARD('mixed ctf=yes/ctf=flip stacks are not supported; denoise_project')
+                case('no')
+                    if( ctf_mode == 0 ) ctf_mode = CTFFLAG_NO
+                    if( ctf_mode /= CTFFLAG_NO ) THROW_HARD('mixed ctf=no with ctf=yes/ctf=flip stacks are not supported; denoise_project')
                 case DEFAULT
-                    THROW_HARD('denoise_project requires ctf=yes or ctf=flip input stacks')
+                    THROW_HARD('denoise_project requires ctf=yes, ctf=flip, or ctf=no input stacks')
             end select
         enddo
         l_phflip = ctf_mode == CTFFLAG_YES
+        l_ctf_no = ctf_mode == CTFFLAG_NO
         allocate(seen_slots(nptcls_slots), source=.false.)
         nptcls_active = 0
         do iptcl = 1, nptcls
@@ -536,8 +540,8 @@ contains
     end function get_n_active_ptcl2D
 
     subroutine filter_classes_by_assignment(cline, cls_inds, cls_pops)
-        class(cmdline),                 intent(inout) :: cline
-        integer, allocatable,           intent(inout) :: cls_inds(:), cls_pops(:)
+        class(cmdline),       intent(inout) :: cline
+        integer, allocatable, intent(inout) :: cls_inds(:), cls_pops(:)
         integer, allocatable :: assigned_classes(:)
         logical, allocatable :: keep_mask(:)
         integer :: i
@@ -571,17 +575,18 @@ contains
         integer,          intent(in)    :: map_unit
         logical,          intent(in)    :: l_index_by_pind
         integer,          intent(in)    :: class_index
-        type(parameters) :: params_mask
+        type(parameters)         :: params_mask
         type(image), allocatable :: imgs(:), imgs_ppca(:), class_mask(:), den_ptcls(:)
-        type(image) :: cavg_raw
-        type(diffmap_graph) :: graph
-        real, allocatable :: avg(:), pcavecs(:,:)
-        real, allocatable :: class_diams(:), class_shifts(:,:)
-        integer, allocatable :: pinds(:)
-        character(len=STDLEN) :: recon_mode
-        integer :: nptcls, npix, j, class_ldim(3), stkind, indstk, local_ind, den_rank, icm_iters, k_nn_eff
-        real :: class_moldiam, class_mskdiam, class_mskrad, sdev_noise, recon_rmse, recon_rel_rmse, icm_score
-        real :: resid_ratio
+        real,        allocatable :: avg(:), pcavecs(:,:)
+        real,        allocatable :: class_diams(:), class_shifts(:,:)
+        integer,     allocatable :: pinds(:)
+        type(image)              :: cavg_raw
+        type(diffmap_graph)      :: graph
+        character(len=STDLEN)    :: recon_mode
+        integer :: nptcls, npix, j, class_ldim(3), stkind, indstk, local_ind
+        integer :: den_rank, icm_iters, k_nn_eff
+        real    :: class_moldiam, class_mskdiam, class_mskrad, sdev_noise
+        real    :: recon_rmse, recon_rel_rmse, icm_score, resid_ratio
         logical :: icm_converged, icm_more_iters
         call transform_ptcls(params, build, spproj, 'ptcl2D', cls_id, imgs, pinds, phflip=l_phflip, cavg=cavg_raw)
         if( .not. allocated(imgs) ) THROW_HARD('transform_ptcls returned no images; denoise_project')
@@ -658,14 +663,14 @@ contains
         end do
         call cavg_raw%kill
         call graph%kill()
-        if( allocated(imgs) ) call dealloc_imgarr(imgs)
-        if( allocated(imgs_ppca) ) call dealloc_imgarr(imgs_ppca)
-        if( allocated(class_mask) ) call dealloc_imgarr(class_mask)
-        if( allocated(den_ptcls) ) call dealloc_imgarr(den_ptcls)
-        if( allocated(pinds) ) deallocate(pinds)
-        if( allocated(avg) ) deallocate(avg)
-        if( allocated(pcavecs) ) deallocate(pcavecs)
-        if( allocated(class_diams) ) deallocate(class_diams)
+        if( allocated(imgs)         ) call dealloc_imgarr(imgs)
+        if( allocated(imgs_ppca)    ) call dealloc_imgarr(imgs_ppca)
+        if( allocated(class_mask)   ) call dealloc_imgarr(class_mask)
+        if( allocated(den_ptcls)    ) call dealloc_imgarr(den_ptcls)
+        if( allocated(pinds)        ) deallocate(pinds)
+        if( allocated(avg)          ) deallocate(avg)
+        if( allocated(pcavecs)      ) deallocate(pcavecs)
+        if( allocated(class_diams)  ) deallocate(class_diams)
         if( allocated(class_shifts) ) deallocate(class_shifts)
     end subroutine write_diffmap_denoised_class
 
@@ -805,12 +810,12 @@ contains
     subroutine estimate_diffmap_denoise_rank(params, graph, cls_id, nptcls, den_rank, icm_converged, icm_iters, icm_score)
         use simple_diff_map_graphs, only: diffmap_graph
         use simple_diffusion_maps,  only: embed_graph
-        type(parameters),   intent(in)  :: params
-        type(diffmap_graph), intent(in) :: graph
-        integer,            intent(in)  :: cls_id, nptcls
-        integer,            intent(out) :: den_rank, icm_iters
-        logical,            intent(out) :: icm_converged
-        real,               intent(out) :: icm_score
+        type(parameters),    intent(in)  :: params
+        type(diffmap_graph), intent(in)  :: graph
+        integer,             intent(in)  :: cls_id, nptcls
+        integer,             intent(out) :: den_rank, icm_iters
+        logical,             intent(out) :: icm_converged
+        real,                intent(out) :: icm_score
         real, allocatable :: coords(:,:), eigvals(:)
         integer :: rank_scan, max_rank
         max_rank = max(1, nptcls - 2)
@@ -840,7 +845,7 @@ contains
 
     integer function diffmap_denoise_auto_neigs_scan(nptcls) result(neigs_scan)
         integer, intent(in) :: nptcls
-        neigs_scan = min(24, max(1, nptcls - 2))
+        neigs_scan = min(50, max(1, nptcls - 2))
         if( nptcls > 3 ) neigs_scan = max(2, neigs_scan)
     end function diffmap_denoise_auto_neigs_scan
 
@@ -1234,10 +1239,11 @@ contains
         rmat_ptr => null()
     end subroutine write_diffmap_stack_image
 
-    subroutine write_diffmap_project(params, spproj, raw_stk, den_stk, outproj)
+    subroutine write_diffmap_project(params, spproj, raw_stk, den_stk, l_ctf_no, outproj)
         type(parameters), intent(in)    :: params
         type(sp_project), intent(inout) :: spproj
         type(string),     intent(in)    :: raw_stk, den_stk
+        logical,          intent(in)    :: l_ctf_no
         type(sp_project), intent(inout) :: outproj
         integer :: iptcl, nptcls, nraw, nden, ldim_raw(3), ldim_den(3)
         nptcls = spproj%os_ptcl2D%get_noris()
@@ -1264,7 +1270,11 @@ contains
         call outproj%os_stk%set(1, 'kv',         params%kv)
         call outproj%os_stk%set(1, 'cs',         params%cs)
         call outproj%os_stk%set(1, 'fraca',      params%fraca)
-        call outproj%os_stk%set(1, 'ctf',        'flip')
+        if( l_ctf_no )then
+            call outproj%os_stk%set(1, 'ctf',    'no')
+        else
+            call outproj%os_stk%set(1, 'ctf',    'flip')
+        endif
         call outproj%os_stk%set(1, 'phaseplate', 'no')
         call outproj%os_stk%set(1, 'state',      1)
         do iptcl = 1, nptcls
@@ -1280,11 +1290,12 @@ contains
         call outproj%write(params%projfile)
     end subroutine write_diffmap_project
 
-    subroutine write_diffmap_partial_project(params, spproj, nparts_run, part_counts, row_part, row_local, outproj)
+    subroutine write_diffmap_partial_project(params, spproj, nparts_run, part_counts, row_part, row_local, l_ctf_no, outproj)
         type(parameters), intent(in)    :: params
         type(sp_project), intent(inout) :: spproj
         integer,          intent(in)    :: nparts_run
         integer,          intent(in)    :: part_counts(nparts_run), row_part(:), row_local(:)
+        logical,          intent(in)    :: l_ctf_no
         type(sp_project), intent(inout) :: outproj
         type(string) :: raw_part, den_part
         integer :: ipart, iptcl, nptcls, nraw, nden, ldim_raw(3), ldim_den(3), fromp, top, stkind, indstk
@@ -1319,7 +1330,11 @@ contains
             call outproj%os_stk%set(ipart, 'kv',         params%kv)
             call outproj%os_stk%set(ipart, 'cs',         params%cs)
             call outproj%os_stk%set(ipart, 'fraca',      params%fraca)
-            call outproj%os_stk%set(ipart, 'ctf',        'flip')
+            if( l_ctf_no )then
+                call outproj%os_stk%set(ipart, 'ctf',    'no')
+            else
+                call outproj%os_stk%set(ipart, 'ctf',    'flip')
+            endif
             call outproj%os_stk%set(ipart, 'phaseplate', 'no')
             call outproj%os_stk%set(ipart, 'state',      1)
             fromp = top + 1
@@ -1377,16 +1392,18 @@ contains
     subroutine finalize_diffmap_worker_outputs(params, nparts_run)
         type(parameters), intent(inout) :: params
         integer,          intent(in)    :: nparts_run
-        type(sp_project) :: spproj, outproj
-        type(string) :: raw_part, den_part
-        integer, allocatable :: row_part(:), row_local(:), row_stkind(:), row_indstk(:), stk_offsets(:), slot_pind(:), stk_nptcls(:)
+        type(sp_project)     :: spproj, outproj
+        type(string)         :: raw_part, den_part
+        integer, allocatable :: row_part(:), row_local(:), row_stkind(:), row_indstk(:)
+        integer, allocatable :: stk_offsets(:), slot_pind(:), stk_nptcls(:)
         integer, allocatable :: part_counts(:), part_nimgs(:), part_seen(:)
-        integer :: nptcls, nptcls_active, nstks, istk, pind, ipart, total_count, ldim_raw(3), ldim_den(3), nraw, nden
-        integer :: nptcls_slots, slot, local_slot
-        logical :: l_phflip
         integer, allocatable :: cls_inds(:), cls_pops(:)
+        integer :: nptcls, nptcls_active, nstks, istk, pind, ipart, total_count
+        integer :: ldim_raw(3), ldim_den(3), nraw, nden
+        integer :: nptcls_slots, slot, local_slot
+        logical :: l_phflip, l_ctf_no
         call spproj%read(params%projfile)
-        call validate_denoise_project(params, spproj, cls_inds, cls_pops, l_phflip)
+        call validate_denoise_project(params, spproj, cls_inds, cls_pops, l_phflip, l_ctf_no)
         nptcls = spproj%os_ptcl2D%get_noris()
         nptcls_active = get_n_active_ptcl2D(spproj)
         nstks  = spproj%os_stk%get_noris()
@@ -1461,7 +1478,7 @@ contains
                 THROW_HARD('partial stack local index coverage is incomplete; denoise_project')
             endif
         end do
-        call write_diffmap_partial_project(params, spproj, nparts_run, part_counts, row_part, row_local, outproj)
+        call write_diffmap_partial_project(params, spproj, nparts_run, part_counts, row_part, row_local, l_ctf_no, outproj)
         write(logfhandle,'(A,A)') 'Denoise project written: ', params%projfile%to_char()
         call flush(logfhandle)
         call outproj%kill

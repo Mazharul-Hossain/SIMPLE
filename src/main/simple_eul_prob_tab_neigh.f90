@@ -245,7 +245,10 @@ contains
                 prev_full_ref_loc = (prev_state_loc - 1) * self%p_ptr%nspace + prev_proj_loc
                 call put_last(prev_full_ref_loc, direct_srch_order(:,ithr_loc))
             endif
-            l_greedy_first = l_shc_neigh .and. self%b_ptr%spproj_field%is_first_update(self%p_ptr%which_iter, iptcl_loc)
+            ! Only force a dense first pass when the particle truly has no prior
+            ! search result. Keying this off updatecnt makes iteration 2 behave
+            ! like a full scan for first-time sampled particles.
+            l_greedy_first = l_shc_neigh .and. (.not. self%b_ptr%spproj_field%has_been_searched(iptcl_loc))
             nrots          = self%b_ptr%pftc%get_nrots()
             nrefs_bound    = nfull_refs
             smpl_ninpl     = nrots
@@ -257,7 +260,7 @@ contains
                 power_loc   = merge(EXTR_POWER, POST_EXTR_POWER, self%p_ptr%extr_iter <= self%p_ptr%extr_lim)
             endif
             prev_corr_loc = -huge(1.0)
-            if( l_shc_neigh .and. (.not. l_greedy_first) )then
+            if( (l_shc_neigh .and. (.not. l_greedy_first)) )then
                 call calc_previous_corr(ithr_loc, iptcl_loc, prev_full_ref_loc, prev_corr_loc)
             endif
             do isample = 1,nfull_refs
@@ -963,12 +966,8 @@ contains
             call init_frontier()
             do while( nleft > 0 )
                 if( nsel == 0 ) exit
-                ! Multi-state state-bucket assignment is deterministic to preserve
-                ! split-state separation and avoid stochastic cross-state drift.
-                ! Legacy stochastic option kept here for quick A/B testing:
-                ! assigned_idx = angle_sampling(frontier%sel_dists(1:nsel), frontier%sel_dists_sorted(1:nsel),&
-                !     &frontier%inds_sorted(1:nsel), state_projs_athres(state_filter), self%p_ptr%prob_athres)
-                assigned_idx = minloc(frontier%sel_dists(1:nsel), dim=1)
+                assigned_idx = angle_sampling(frontier%sel_dists(1:nsel), frontier%sel_dists_sorted(1:nsel),&
+                    &frontier%inds_sorted(1:nsel), state_projs_athres(state_filter), self%p_ptr%prob_athres)
                 call commit_selected_assignment()
             enddo
         end subroutine assign_particles_for_state

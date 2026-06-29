@@ -6,7 +6,6 @@ implicit none
 type(ui_program), target :: icm2D
 type(ui_program), target :: icm3D
 type(ui_program), target :: ppca_denoise
-type(ui_program), target :: ppca_denoise_polarft_lines
 type(ui_program), target :: ppca_denoise_classes
 type(ui_program), target :: cls_split
 type(ui_program), target :: denoise_project
@@ -19,7 +18,6 @@ contains
         call new_icm2D(prgtab)
         call new_icm3D(prgtab)
         call new_ppca_denoise(prgtab)
-        call new_ppca_denoise_polarft_lines(prgtab)
         call new_ppca_denoise_classes(prgtab)
         call new_cls_split(prgtab)
         call new_denoise_project(prgtab)
@@ -32,7 +30,6 @@ contains
         write(logfhandle,'(A)') icm2D%name%to_char()
         write(logfhandle,'(A)') icm3D%name%to_char()
         write(logfhandle,'(A)') ppca_denoise%name%to_char()
-        write(logfhandle,'(A)') ppca_denoise_polarft_lines%name%to_char()
         write(logfhandle,'(A)') ppca_denoise_classes%name%to_char()
         write(logfhandle,'(A)') cls_split%name%to_char()
         write(logfhandle,'(A)') denoise_project%name%to_char()
@@ -121,7 +118,7 @@ contains
         ! filter controls
         call ppca_denoise%add_input(UI_FILT, 'neigs', 'num', 'Number of eigencomponents (0 => auto for Nyström kPCA; default 160; try 128, 160)', 'Number of eigencomponents (0 => auto for Nyström kPCA; default 160; try 128, 160)', '# eigenvecs', .true., 160.0)
         call ppca_denoise%add_input(UI_FILT, 'pca_mode', 'multi', 'PCA methods: PPCA, PPCA plus residual kPCA, standard SVD PCA, kernel PCA, or diffusion maps', 'PCA methods', '(ppca|ppca_kpca_resid|pca_svd|kpca|diffusion_maps){ppca}', .false., 'ppca')
-        call ppca_denoise%add_input(UI_FILT, 'k_nn', 'num', 'Diffusion graph neighbors (default 10; try 10-30)', 'Local nearest neighbors used for pca_mode=diffusion_maps', '# neighbors', .false., 10.0)
+        call ppca_denoise%add_input(UI_FILT, 'k_nn', 'num', 'Diffusion graph neighbors (default 5; try 5-30)', 'Local nearest neighbors used for pca_mode=diffusion_maps', '# neighbors', .false., 5.0)
         call ppca_denoise%add_input(UI_FILT, 'kpca_ker', 'multi', 'Kernel PCA kernel', 'Kernel PCA kernel(rbf|cosine){rbf}', '(rbf|cosine){rbf}', .false., 'rbf')
         call ppca_denoise%add_input(UI_FILT, 'kpca_backend', 'multi', 'Kernel PCA backend', 'Kernel PCA backend(exact|nystrom){nystrom}', '(exact|nystrom){nystrom}', .false., 'nystrom')
         call ppca_denoise%add_input(UI_FILT, 'kpca_rbf_gamma', 'num', 'RBF gamma (0 => auto)', 'RBF gamma (0 => auto)', 'gamma', .false., 0.0)
@@ -173,21 +170,6 @@ contains
         call add_ui_program('ppca_denoise_classes', ppca_denoise_classes, prgtab)
     end subroutine new_ppca_denoise_classes
 
-    subroutine new_ppca_denoise_polarft_lines( prgtab )
-        class(ui_hash), intent(inout) :: prgtab
-        call ppca_denoise_polarft_lines%new(&
-        &'ppca_denoise_polarft_lines',&
-        &'Denoise polar Fourier lines',&
-        &'is a program for two-pass PPCA denoising of particle polar Fourier transforms using streaming line statistics',&
-        &'simple_exec',&
-        &.true.)
-        call ppca_denoise_polarft_lines%add_input(UI_IMG,  'outfile', 'file', 'Output polar Fourier stack', 'Binary file with denoised particle polar Fourier transforms', 'e.g. ppca_denoised_polarfts.bin', .false., 'ppca_denoised_polarfts.bin')
-        call ppca_denoise_polarft_lines%add_input(UI_PARM, 'which_iter', 'num', 'Reference iteration index', 'Reference iteration index for pftc preparation; default 1', 'iteration', .false., 1.0)
-        call ppca_denoise_polarft_lines%add_input(UI_FILT, 'neigs', 'num', 'Number of retained PPCA line components', 'Number of retained PPCA line components', '# eigenvecs', .false., 16.0)
-        call ppca_denoise_polarft_lines%add_input(UI_COMP, nthr)
-        call add_ui_program('ppca_denoise_polarft_lines', ppca_denoise_polarft_lines, prgtab)
-    end subroutine new_ppca_denoise_polarft_lines
-
     subroutine new_ppca_volvar( prgtab )
         class(ui_hash), intent(inout) :: prgtab
         ! PROGRAM SPECIFICATION
@@ -229,7 +211,7 @@ contains
         call cls_split%add_input(UI_PARM, 'nsubcls_min', 'num', 'Minimum subclasses per parent class in auto mode (default 3)', 'Used only when ncls=0: lower bound for the automatically selected number of subclasses per parent class', '# min subclasses', .false., 3.0)
         call cls_split%add_input(UI_PARM, 'nsubcls_max', 'num', 'Maximum subclasses per parent class in auto mode (default 10)', 'Used only when ncls=0: upper bound for the automatically selected number of subclasses per parent class', '# max subclasses', .false., 10.0)
         call cls_split%add_input(UI_PARM, 'nptcls_per_subcls', 'num', 'Target particles/subclass in auto mode (default 300)', 'Used only when ncls=0: auto mode chooses about one subclass per 300 particles, bounded by nsubcls_min and nsubcls_max', '# particles/subclass', .false., 300.0)
-        call cls_split%add_input(UI_PARM, 'k_nn', 'num', 'Diffusion graph neighbors (default 10; try 10-30)', 'Local nearest neighbors used only for diffusion-map modes; larger values make the graph smoother, smaller values emphasize local structure', '# neighbors', .false., 10.0)
+        call cls_split%add_input(UI_PARM, 'k_nn', 'num', 'Diffusion graph neighbors (default 5; try 5-30)', 'Local nearest neighbors used only for diffusion-map modes; larger values make the graph smoother, smaller values emphasize local structure', '# neighbors', .false., 5.0)
         call cls_split%add_input(UI_PARM, 'steerable_nmodes', 'num', 'Steerable angular modes (default 4)', 'Angular Fourier modes used only for steerable diffusion modes', '# modes', .false., 4.0)
         call cls_split%add_input(UI_ALT,  'oritype', 'multi', 'Particle type to split', 'Particle type to split(ptcl2D|ptcl3D){ptcl2D}', '(ptcl2D|ptcl3D){ptcl2D}', .false., 'ptcl2D')
         call cls_split%add_input(UI_FILT, 'graph', 'multi', 'Class split graph', 'Class split graph(euc|ori){euc}', '(euc|ori){euc}', .false., 'euc')
@@ -249,11 +231,11 @@ contains
         &'all',&
         &.true.)
         call denoise_project%add_input(UI_FILT, 'neigs', 'num', &
-            'Number of eigencomponents (0 => auto ICM; default 0)', &
+            'Number of eigencomponents (0 => auto ICM; default 200)', &
             'Number of retained eigencomponents for diffusion-map denoising; this is a scan upper bound when auto', &
-            '# eigenvecs', .false., 0.0)
+            '# eigenvecs', .false., 200.0)
         call denoise_project%add_input(UI_FILT, 'k_nn', 'num', &
-            'Diffusion graph neighbors (default 10; try 10-30)', &
+            'Diffusion graph neighbors (default 10; try 5-30)', &
             'Local nearest neighbors used for diffusion-map graph construction', &
             '# neighbors', .false., 10.0)
         call denoise_project%add_input(UI_FILT, 'graph', 'multi', &

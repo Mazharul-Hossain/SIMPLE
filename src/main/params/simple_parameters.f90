@@ -160,6 +160,7 @@ type :: parameters
     character(len=3)          :: verbose_exit='yes'   !< Whether to write a indicator file when task completes(yes|no){no}
     character(len=3)          :: volrec='yes'         !< volume reconstruction in 3D(yes|no){yes}
     character(len=3)          :: write_imgarr='no'    !< write out cavgs
+    character(len=3)          :: write_prior='no'     !< write prob_prior neighborhood artifact(yes|no){no}
     character(len=3)          :: zero='no'            !< zeroing(yes|no){no}
     ! files & directories strings in ascending alphabetical order
     ! default initialization is done in the init_strings method below
@@ -368,7 +369,7 @@ type :: parameters
     integer :: neigs=0             !< # of eigenvectors {0=>auto for Nyström kPCA}
     integer :: kpca_nystrom_npts=512 !< # of Nyström landmarks
     integer :: kpca_nystrom_local_nbrs=96 !< max extra local support neighbors for Nyström reconstruction
-    integer :: k_nn=10              !< local nearest-neighbor count for graph-based diffusion splitting
+    integer :: k_nn=5               !< local nearest-neighbor count for graph-based diffusion splitting
     integer :: steerable_nmodes=4   !< angular Fourier modes for cls_split steerable diffusion maps
     integer :: newbox=0            !< new box for scaling (by Fourier padding/clipping)
     integer :: nframes=0           !< # frames{30}
@@ -553,7 +554,7 @@ type :: parameters
     real    :: total_dose
     real    :: trs=0.              !< maximum halfwidth shift(in pixels)
     real    :: update_frac = 1.
-    real    :: ufrac_trec  = 1.    !< update frac trailing rec
+    real    :: ufrac_trec  = 1.    !< explicit single-state trailing rec update-fraction override
     real    :: width=10.           !< falloff of mask(in pixels){10}
     real    :: winsz=KBWINSZ
     real    :: xsh=0.              !< x shift(in pixels){0}
@@ -591,6 +592,7 @@ type :: parameters
     logical :: l_prob_align_mode = .false.
     logical :: l_sigma_glob      = .false.
     logical :: l_trail_rec       = .false.
+    logical :: l_ufrac_trec_defined = .false. !< explicit ufrac_trec override was provided
     logical :: l_update_missing  = .false.
     logical :: l_remap_cls       = .false.
     logical :: sp_required       = .false.
