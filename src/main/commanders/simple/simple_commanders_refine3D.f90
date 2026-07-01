@@ -97,7 +97,7 @@ contains
         if( .not. cline%defined('prob_inpl')   ) call cline%set('prob_inpl',        'yes') ! no difference at this stage, so prefer 'yes'
         if( .not. cline%defined('nsample')     ) call cline%set('nsample', NSAMPLE_REFINE3D_AUTO)
         if( .not. cline%defined('autoscale')   ) call cline%set('autoscale',      'yes')
-        if( .not. cline%defined('ml_reg')      ) call cline%set('ml_reg',           'yes') ! better map with ml_reg='yes'
+        if( .not. cline%defined('ml_reg')      ) call cline%set('ml_reg',       'yes') ! better map with ml_reg='yes'
         if( .not. cline%defined('filt_mode')   ) call cline%set('filt_mode', 'nonuniform') ! obvioulsy
         if( .not. cline%defined('nu_refine')   ) call cline%set('nu_refine',        'yes') ! allow conservative NU resolution-bank expansion
         if( .not. cline%defined('automsk')     ) call cline%set('automsk',          'yes') ! envelope masking for background flattening
@@ -185,6 +185,8 @@ contains
         call cline_rec3D%set('prg', 'reconstruct3D') ! required for distributed call
         call cline_rec3D%delete('trail_rec')
         call cline_rec3D%delete('objfun')
+        call cline_rec3D%delete('objfun_den')
+        call cline_rec3D%delete('objfun_den_w')
         call cline_rec3D%delete('sigma_est')
         call cline_rec3D%delete('update_frac')
         call cline_rec3D%delete('box_crop')           ! original image dimensions
@@ -603,7 +605,7 @@ contains
         if( .not. cline%defined('prob_neigh_mode') ) call cline%set('prob_neigh_mode',     'sum')
         if( .not. cline%defined('nsample')     ) call cline%set('nsample', default_refine3D_multi_nsample())
         if( .not. cline%defined('autoscale')   ) call cline%set('autoscale',              'yes')
-        if( .not. cline%defined('ml_reg')      ) call cline%set('ml_reg',                 'yes')
+        if( .not. cline%defined('ml_reg')      ) call cline%set('ml_reg',       'yes')
         if( .not. cline%defined('lpstop')      ) call cline%set('lpstop',  LPSTOP_REFINE3D_MULTI)
         if( .not. cline%defined('automsk')     ) call cline%set('automsk',                 'no')
         if( .not. cline%defined('overlap')     ) call cline%set('overlap', STATE_OVERLAP_NEIGH_REFINE3D_MULTI)
@@ -652,6 +654,8 @@ contains
         call cline_rec3D%set('postprocess', 'yes')
         call cline_rec3D%delete('trail_rec')
         call cline_rec3D%delete('refine')
+        call cline_rec3D%delete('objfun_den')
+        call cline_rec3D%delete('objfun_den_w')
         call cline_rec3D%delete('sigma_est')
         call cline_rec3D%delete('update_frac')
         call cline_rec3D%delete('ufrac_trec')
@@ -947,6 +951,8 @@ contains
             call cline_rec3D%set('prg', 'reconstruct3D')
             call cline_rec3D%delete('trail_rec')
             call cline_rec3D%delete('refine')
+            call cline_rec3D%delete('objfun_den')
+            call cline_rec3D%delete('objfun_den_w')
             call cline_rec3D%delete('sigma_est')
             call cline_rec3D%delete('update_frac')
             call cline_rec3D%delete('ufrac_trec')

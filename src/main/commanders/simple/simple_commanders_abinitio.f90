@@ -54,6 +54,7 @@ contains
         type(stack_io)            :: stkio_r, stkio_r2, stkio_w
         type(string)              :: final_vol, work_projfile
         integer                   :: icls, ncavgs, cnt, even_ind, odd_ind, istage, nstages_ini3D, s
+        integer                   :: nstates_on_cline, nstates_target, split_stage
         integer                   :: cavg_ldim(3), cavg_nimgs
         real                      :: cavg_smpd
         if( cline%defined('part') )then
@@ -77,10 +78,39 @@ contains
         if( .not. cline%defined('lpstart')          ) call cline%set('lpstart', abinitio_lpstart_ini3D())
         if( .not. cline%defined('lpstop')           ) call cline%set('lpstop',   abinitio_lpstop_ini3D())
         if( .not. cline%defined('gauref')           ) call cline%set('gauref',                     'yes')
+        ! splitting stage
+        split_stage = abinitio_het_docked_stage()
+        if( cline%defined('split_stage') ) split_stage = cline%get_iarg('split_stage')
+        if( split_stage < 2 .or. split_stage > abinitio_nstages_ini3D_max() )then
+            THROW_HARD('split_stage must be between 2 and '//int2str(abinitio_nstages_ini3D_max())//' for abinitio3D_cavgs')
+        endif
+        call cline%set('split_stage', split_stage)
+        ! adjust default multivol_mode unless given on command line
+        if( cline%defined('nstates') )then
+            nstates_on_cline = cline%get_iarg('nstates')
+            if( nstates_on_cline > 1 .and. .not. cline%defined('multivol_mode') )then
+                call cline%set('multivol_mode', 'independent')
+            endif
+        endif
         ! make master parameters
         call params%new(cline)
+        nstates_target = params%nstates
+        nstates_glob   = nstates_target
+        select case(trim(params%multivol_mode))
+            case('single')
+                if( nstates_target /= 1 ) THROW_HARD('nstates /= 1 incompatible with multivol_mode:' //trim(params%multivol_mode))
+            case('independent', 'docked')
+                if( nstates_target == 1 ) THROW_HARD('nstates == 1 incompatible with multivol_mode: '//trim(params%multivol_mode))
+            case DEFAULT
+                THROW_HARD('Unsupported multivol_mode: '//trim(params%multivol_mode))
+        end select
+        if( trim(params%multivol_mode).eq.'docked' )then
+            params%nstates = 1
+            call cline%delete('nstates')
+        endif
         call cline%set('mkdir',       'no')   ! to avoid nested directory structure
         call cline%set('oritype', 'ptcl3D')   ! from now on we are in the ptcl3D segment, final report is in the cls3D segment
+        params%oritype = 'ptcl3D'
         ! set work projfile
         work_projfile = 'abinitio3D_cavgs_tmpproj.simple'
         ! set class global filtering flags for staged refine3D policy
@@ -89,6 +119,9 @@ contains
         nstages_ini3D = abinitio_nstages_ini3D_max()
         if( cline%defined('nstages') )then
             nstages_ini3D = min(abinitio_nstages_ini3D_max(),params%nstages)
+        endif
+        if( trim(params%multivol_mode).eq.'docked' .and. nstages_ini3D < split_stage )then
+            THROW_HARD('multivol_mode=docked requires nstages >= split_stage for abinitio3D_cavgs')
         endif
         nstages_refine3D = nstages_ini3D
         ! prepare class command lines
@@ -144,6 +177,9 @@ contains
         if( count(states==0) .eq. ncavgs )then
             THROW_HARD('no class averages detected in project file: '//params%projfile%to_char()//'; abinitio3D_cavgs')
         endif
+        if( trim(params%multivol_mode).eq.'docked' )then
+            where( states > 0 ) states = 1
+        endif
         params%nptcls = 2 * ncavgs
         call configure_cavgs_distributed_clines
         ! prepare a temporary project file
@@ -186,8 +222,22 @@ contains
         do istage = 1, nstages_ini3D
             write(logfhandle,'(A)')'>>>'
             write(logfhandle,'(A,I3,A9,F5.1)')'>>> STAGE ', istage,' WITH LP =', lpinfo(istage)%lp
+            ! Splitting stage of docked mode
+            if( trim(params%multivol_mode).eq.'docked' )then
+                if( istage == split_stage-1 )then
+                    write(logfhandle,'(A,I0,A,I0)') &
+                        &'>>> ABINITIO3D_CAVGS DOCKED PRE-SPLIT STAGE/NSTATES: ', istage, '/', params%nstates
+                else if( istage == split_stage )then
+                    params%nstates = nstates_target
+                    write(logfhandle,'(A,I0,A,I0)') &
+                        &'>>> ABINITIO3D_CAVGS DOCKED SPLIT STAGE/NSTATES: ', istage, '/', params%nstates
+                endif
+            endif
             ! Preparation of command line for probabilistic search
             call set_cline_refine3D(params, istage, l_cavgs=.true.)
+            if( trim(params%multivol_mode).eq.'docked' .and. istage == split_stage )then
+                call randomize_states(params, work_proj, work_projfile, xrec3D, split_stage)
+            endif
             if( lpinfo(istage)%l_autoscale )then
                 write(logfhandle,'(A,I3,A1,I3)')'>>> ORIGINAL/CROPPED IMAGE SIZE (pixels): ',params%box,'/',lpinfo(istage)%box_crop
             endif
@@ -316,6 +366,8 @@ contains
                 ! Distributed rec3D schedules workers from PRG, so do not inherit refine3D here.
                 call local_cline_rec%set('prg',   'reconstruct3D')
                 call local_cline_rec%set('mkdir', 'no') ! to avoid nested dirs
+                call local_cline_rec%delete('objfun_den')
+                call local_cline_rec%delete('objfun_den_w')
                 call local_cline_rec%set('objfun', 'cc')
                 call xrec3D%execute(local_cline_rec)
                 do s = 1,params%nstates
@@ -1218,11 +1270,12 @@ contains
                 if( nstates_glob /= 1 ) THROW_HARD('nstates /= 1 incompatible with multivol_mode:' //trim(params%multivol_mode))
             case('independent', 'docked')
                 if( nstates_glob == 1 ) THROW_HARD('nstates == 1 incompatible with multivol_mode: '//trim(params%multivol_mode))
-            case('input_oris_start', 'input_oris_fixed')
-                THROW_HARD('multivol_mode='//trim(params%multivol_mode)//' is no longer supported for abinitio3D')
             case DEFAULT
                 THROW_HARD('Unsupported multivol_mode: '//trim(params%multivol_mode))
         end select
+        if( trim(params%multivol_mode).eq.'docked' .and. last_stage < split_stage )then
+            THROW_HARD('multivol_mode=docked requires nstages >= split_stage unless running an explicit pre-split diagnostic')
+        endif
         if( trim(params%multivol_mode).eq.'docked' )then
             params%nstates = 1
             call cline%delete('nstates')
@@ -1405,7 +1458,7 @@ contains
             end select
             ! randomize states
             if( trim(params%multivol_mode).eq.'independent' .and. .not.l_cavg_ini_ext )then
-                call gen_labelling(spproj%os_ptcl3D, params%nstates, 'squared_uniform')
+                call gen_labelling(spproj%os_ptcl3D, params%nstates, 'uniform')
             endif
             call spproj%write_segment_inside(params%oritype, params%projfile)
             if( l_vol_ini_ext )then
@@ -1422,7 +1475,7 @@ contains
             endif
             ! randomize states
             if( trim(params%multivol_mode).eq.'independent' .and. .not.l_cavg_ini_ext )then
-                call gen_labelling(spproj%os_ptcl3D, params%nstates, 'squared_uniform')
+                call gen_labelling(spproj%os_ptcl3D, params%nstates, 'uniform')
             endif
             ! create an initial balanced greedy sampling
             noris = spproj%os_ptcl3D%get_noris()
@@ -1468,20 +1521,23 @@ contains
             nice_comm%stat_root%stage = "running workflow"
             call nice_comm%update_ini3D(stage=istage, number_states=nstates_glob, lp=lpinfo(istage)%lp) 
             call nice_comm%cycle()
-            ! At the splitting stage of docked mode: reset the nstates in params
-            if( params%multivol_mode.eq.'docked' .and. istage == split_stage )then
-                params%nstates = nstates_glob
-                if( l_force_full_sampling )then
-                    update_frac = 1.0
-                else
-                    update_frac = real(params%nsample * params%nstates) / real(nptcls_eff)
-                    update_frac = min(abinitio_update_frac_max(), update_frac)
+            ! Splitting stage of docked mode
+            if( params%multivol_mode.eq.'docked' )then
+                if( istage == split_stage )then
+                    ! map all particles to a projection direction
+                    call ensure_docked_multistate_particle_assignments
+                    ! update post-split sampling and reset nstates in params
+                    if( l_force_full_sampling )then
+                        update_frac = 1.0
+                    else
+                        update_frac = real(nstates_glob * params%nsample) / real(nptcls_eff)
+                        update_frac = min(abinitio_update_frac_max(), update_frac)
+                    endif
+                    params%nstates = nstates_glob
+                    write(logfhandle,'(A,I0,A,I0,A,F8.4)') &
+                        &'>>> ABINITIO3D DOCKED SPLIT STAGE/NSTATES/POSTSPLIT_UPDATE_FRAC: ', &
+                        &istage, '/', params%nstates, '/', update_frac
                 endif
-                write(logfhandle,'(A,I0,A,I0,A,F8.4)') &
-                    &'>>> ABINITIO3D DOCKED SPLIT STAGE/NSTATES/POSTSPLIT_UPDATE_FRAC: ', &
-                    &split_stage, '/', params%nstates, '/', update_frac
-                write(logfhandle,'(A)') &
-                    &'>>> ABINITIO3D DOCKED SPLIT STAGE RUNS ALL ACTIVE PARTICLES WITH REFINE=PROB_NEIGH PROB_NEIGH_MODE=SUM'
             endif
             ! Preparation of command line for refinement
             call set_cline_refine3D(params, istage, l_cavgs=.false.)
@@ -1627,6 +1683,49 @@ contains
                 endif
             endif
         end subroutine ensure_multistate_particle_assignments
+
+        subroutine ensure_docked_multistate_particle_assignments
+            integer, parameter :: DOCKED_NITERS_MISSING = 1
+            type(cmdline)      :: cline_missing
+            integer            :: nactive, nupdated, nmissing, iter_missing
+            call read_multistate_assignment_coverage(nactive, nupdated, nmissing)
+            if( nactive < 1 )then
+                THROW_HARD('multistate abinitio3D has no active particles after staged refinement')
+            endif
+            if( nmissing > 0 )then
+                iter_missing = next_refine3D_iteration()
+                write(logfhandle,'(A,A,I0,A,I0,A,I0)') &
+                &'>>> ABINITIO3D DOCKED MULTISTATE MISSING-UPDATE ASSIGNMENT', &
+                &' MISSING/ACTIVE/ITER: ', nmissing, '/', nactive, '/', iter_missing
+                call flush(logfhandle)
+                cline_missing = cline_refine3D
+                call cline_missing%set('prg',               'refine3D')
+                call cline_missing%set('mkdir',                   'no')
+                call cline_missing%set('refine',                'prob')
+                call cline_missing%set('balance',                 'no')
+                call cline_missing%set('frac_best',                1.0)
+                call cline_missing%set('fillin',                  'no')
+                call cline_missing%set('update_frac',              1.0)
+                call cline_missing%set('trail_rec',               'no')
+                call cline_missing%set('volrec',                  'no')
+                call cline_missing%set('maxits', DOCKED_NITERS_MISSING)
+                call cline_missing%set('startit',         iter_missing)
+                call cline_missing%set('which_iter',      iter_missing)
+                call cline_missing%set('extr_iter',       iter_missing)
+                call cline_missing%delete('endit')
+                call cline_missing%delete('greedy_sampling')
+                call xrefine3D%execute(cline_missing)
+                call del_files(DIST_FBODY,      params%nparts, ext='.dat')
+                call del_files(ASSIGNMENT_FBODY,params%nparts, ext='.dat')
+                call del_file(DIST_FBODY//'.dat')
+                call del_file(ASSIGNMENT_FBODY//'.dat')
+                call read_multistate_assignment_coverage(nactive, nupdated, nmissing)
+                if( nmissing > 0 )then
+                    THROW_HARD('multistate abinitio3D final missing-update pass failed to update every active particle')
+                endif
+                call cline_missing%kill
+            endif
+        end subroutine ensure_docked_multistate_particle_assignments
 
         subroutine read_multistate_assignment_coverage( nactive, nupdated, nmissing )
             integer, intent(out) :: nactive, nupdated, nmissing

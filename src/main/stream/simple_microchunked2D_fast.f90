@@ -75,29 +75,30 @@
 !   simple_cluster2D_rejector
 !==============================================================================
 module simple_microchunked2D_fast
-  use unix,                         only: c_time, c_long
-  use simple_defs,                  only: logfhandle, STDLEN, CWD_GLOB
-  use simple_error,                 only: simple_exception
-  use simple_image,                 only: image
-  use simple_timer,                 only: timer_int_kind, tic, toc
-  use simple_fileio,                only: swap_suffix, simple_copy_file, write_filetable, simple_touch, basename
-  use simple_string,                only: string
-  use simple_syslib,                only: simple_mkdir, simple_abspath, simple_chdir, &
-                                          simple_getcwd, file_exists, del_file, dir_exists
-  use simple_cmdline,               only: cmdline
-  use simple_qsys_env,              only: qsys_env
-  use simple_rec_list,              only: rec_list
-  use simple_gui_utils,             only: mrc2jpeg_tiled
-  use simple_defs_fname,            only: METADATA_EXT, ABINITIO2D_FINISHED, FRCS_FILE, JPG_EXT, MRC_EXT
-  use simple_parameters,            only: parameters
-  use simple_sp_project,            only: sp_project
-  use simple_imgarr_utils,          only: read_cavgs_into_imgarr, dealloc_imgarr
-  use simple_string_utils,          only: int2str
-  use simple_projfile_utils,        only: merge_chunk_projfiles
-  use simple_cluster2D_rejector,    only: cluster2D_rejector
-  use simple_cavg_quality_model,    only: cavg_quality_model, CAVG_QUALITY_MODEL_MICROCHUNK_P1, CAVG_QUALITY_MODEL_MICROCHUNK_P2
-  use simple_cavg_quality_types,    only: cavg_quality_result
-  use simple_cavg_quality_analysis, only: evaluate_cavg_quality
+  use unix,                               only: c_time, c_long
+  use simple_defs,                        only: logfhandle, STDLEN, CWD_GLOB
+  use simple_error,                       only: simple_exception
+  use simple_image,                       only: image
+  use simple_timer,                       only: timer_int_kind, tic, toc
+  use simple_fileio,                      only: swap_suffix, simple_copy_file, write_filetable, simple_touch, basename
+  use simple_string,                      only: string
+  use simple_syslib,                      only: simple_mkdir, simple_abspath, simple_chdir, &
+                                                simple_getcwd, file_exists, del_file, dir_exists
+  use simple_cmdline,                     only: cmdline
+  use simple_qsys_env,                    only: qsys_env
+  use simple_rec_list,                    only: rec_list
+  use simple_gui_utils,                   only: mrc2jpeg_tiled
+  use simple_defs_fname,                  only: METADATA_EXT, ABINITIO2D_FINISHED, FRCS_FILE, JPG_EXT, MRC_EXT
+  use simple_parameters,                  only: parameters
+  use simple_sp_project,                  only: sp_project
+  use simple_imgarr_utils,                only: read_cavgs_into_imgarr, dealloc_imgarr
+  use simple_string_utils,                only: int2str
+  use simple_projfile_utils,              only: merge_chunk_projfiles
+  use simple_cluster2D_rejector,          only: cluster2D_rejector
+  use simple_cavg_quality_model,          only: cavg_quality_model, CAVG_QUALITY_MODEL_MICROCHUNK_P1, CAVG_QUALITY_MODEL_MICROCHUNK_P2
+  use simple_cavg_quality_types,          only: cavg_quality_result
+  use simple_cavg_quality_analysis,       only: evaluate_cavg_quality
+  use simple_cavg_compatibility_analysis, only: cavg_compatibility_analysis
 
   implicit none
   public  :: microchunked2D_fast
@@ -141,21 +142,29 @@ module simple_microchunked2D_fast
     private
     type(chunk2D), allocatable  :: microchunks_pass_1(:)
     type(chunk2D), allocatable  :: microchunks_pass_2(:)
+    integer,       allocatable  :: latest_jpeg_inds(:)
+    integer,       allocatable  :: latest_jpeg_pops(:)
+    integer,       allocatable  :: latest_jpeg_selection(:)
+    real,          allocatable  :: latest_jpeg_res(:)
     type(qsys_env)              :: qenv
     type(string)                :: outdir_microchunks_pass_1
     type(string)                :: outdir_microchunks_pass_2
     type(string)                :: completedir
-    logical                     :: pass_1_only       = .false.
-    logical                     :: pre_chunked       = .false.
-    logical                     :: final_ingestion   = .false.
-    integer                     :: nparallel         = 1
-    integer                     :: nthr              = 1
-    integer                     :: nparts            = 1
-    integer                     :: n_accepted_ptcls  = 0
-    integer                     :: n_accepted_mics   = 0
-    integer                     :: n_rejected_ptcls  = 0
-    integer                     :: last_import       = 0
-    real                        :: mskdiam           = 0.0
+    type(string)                :: latest_jpeg
+    type(string)                :: latest_stkname
+    logical                     :: pass_1_only        = .false.
+    logical                     :: pre_chunked        = .false.
+    logical                     :: final_ingestion    = .false.
+    integer                     :: nparallel          = 1
+    integer                     :: nthr               = 1
+    integer                     :: nparts             = 1
+    integer                     :: n_accepted_ptcls   = 0
+    integer                     :: n_accepted_mics    = 0
+    integer                     :: n_rejected_ptcls   = 0
+    integer                     :: last_import        = 0
+    integer                     :: latest_jpeg_xtiles = 0
+    integer                     :: latest_jpeg_ytiles = 0
+    real                        :: mskdiam            = 0.0
   contains
     procedure :: new
     procedure :: kill
@@ -171,6 +180,7 @@ module simple_microchunked2D_fast
     procedure :: get_n_accepted_micrographs
     procedure :: get_n_rejected_ptcls
     procedure :: get_n_total_particles
+    procedure :: get_latest
     procedure :: get_finished
     procedure :: set_final_ingestion
     procedure :: append_microchunk_pass_1
@@ -465,6 +475,42 @@ contains
     class(microchunked2D_fast), intent(in)  :: self
     get_n_total_particles = self%n_accepted_ptcls + self%n_rejected_ptcls
   end function get_n_total_particles
+
+  logical function get_latest( self, jpeg_inds, jpeg_pops, jpeg_res, jpeg, stk, xtiles, ytiles, selection )
+    class(microchunked2D_fast), intent(in)    :: self
+    integer,      allocatable,  intent(inout) :: jpeg_inds(:), jpeg_pops(:), selection(:)  ! class indices and populations in the JPEG tile order
+    real,         allocatable,  intent(inout) :: jpeg_res(:)                               ! resolution (Angstrom) per class, same order
+    type(string),               intent(out)   :: jpeg, stk                                 ! paths to the JPEG contact sheet and MRC reference stack
+    integer,                    intent(out)   :: xtiles, ytiles                            ! tile grid dimensions of the JPEG contact sheet
+    ! release any prior allocations so the caller gets a clean result on .false. return
+    if( allocated(jpeg_inds)  ) deallocate(jpeg_inds)
+    if( allocated(jpeg_pops)  ) deallocate(jpeg_pops)
+    if( allocated(jpeg_res)   ) deallocate(jpeg_res)
+    if( allocated(selection)  ) deallocate(selection) 
+    jpeg   = ''
+    stk    = ''
+    xtiles = 0
+    ytiles = 0
+    if( self%latest_jpeg%strlen() == 0 ) then
+      get_latest = .false.
+      return
+    end if
+    ! guard against inconsistent state where latest_jpeg is set but the
+    ! latest arrays have not yet been populated
+    if( .not. (allocated(self%latest_jpeg_inds) .and. allocated(self%latest_jpeg_pops) .and. allocated(self%latest_jpeg_res) .and. allocated(self%latest_jpeg_selection)) ) then
+      get_latest = .false.
+      return
+    end if
+    allocate(jpeg_inds, source=self%latest_jpeg_inds)
+    allocate(jpeg_pops, source=self%latest_jpeg_pops)
+    allocate(jpeg_res,  source=self%latest_jpeg_res )
+    allocate(selection, source=self%latest_jpeg_selection)
+    stk    = self%latest_stkname
+    jpeg   = self%latest_jpeg
+    xtiles = self%latest_jpeg_xtiles
+    ytiles = self%latest_jpeg_ytiles
+    get_latest = .true.
+  end function get_latest
 
   ! Returns true when all required tiers are complete.
   ! In pass_1_only mode, only pass-1 chunks are required.
@@ -1034,9 +1080,11 @@ contains
   ! to complete and immediately runs class-average rejection.
   subroutine collect_and_reject( self )
     class(microchunked2D_fast), intent(inout) :: self
+    logical,                      allocatable :: cls_msk(:)
     type(sp_project)        :: spproj
     integer(timer_int_kind) :: t0
-    integer                 :: i, non_zero
+    integer                 :: i, non_zero, ncls
+    real                    :: smpd_dummy
     t0 = timer_start()
 
     do i = 1, self%get_n_microchunks_pass_1()
@@ -1053,10 +1101,24 @@ contains
         if( self%pass_1_only .and. chunk%rejection_complete .and. .not. chunk%complete ) then
           call spproj%read_segment('mic',    chunk%projfile)
           call spproj%read_segment('ptcl2D', chunk%projfile)
+          call spproj%read_segment('cls2D',  chunk%projfile)
+          call spproj%read_segment('out',    chunk%projfile)
           non_zero = spproj%os_ptcl2D%count_state_gt_zero()
           self%n_accepted_ptcls = self%n_accepted_ptcls + non_zero
           self%n_accepted_mics  = self%n_accepted_mics + spproj%os_mic%count_state_gt_zero()
           self%n_rejected_ptcls = self%n_rejected_ptcls + spproj%os_ptcl2D%get_noris() - non_zero
+          call spproj%get_cavgs_stk(self%latest_stkname, ncls, smpd_dummy)
+          self%latest_jpeg = swap_suffix(self%latest_stkname, JPG_EXT, MRC_EXT)
+          call spproj%cavgs2jpg(self%latest_jpeg_inds, self%latest_jpeg, self%latest_jpeg_xtiles, self%latest_jpeg_ytiles, ignore_states=.true.)
+          self%latest_jpeg_pops       = spproj%os_cls2D%get_all_asint('pop')
+          self%latest_jpeg_res        = spproj%os_cls2D%get_all('res')
+          self%latest_jpeg_selection  = spproj%os_cls2D%get_all_asint('state')
+          allocate(cls_msk, source=self%latest_jpeg_inds /= 0)
+          self%latest_jpeg_inds       = pack(self%latest_jpeg_inds, cls_msk)
+          self%latest_jpeg_pops       = pack(self%latest_jpeg_pops, cls_msk)
+          self%latest_jpeg_res        = pack(self%latest_jpeg_res,  cls_msk)
+          self%latest_jpeg_selection  = pack(self%latest_jpeg_selection, cls_msk)
+          deallocate(cls_msk)
           call spproj%kill()
           call simple_copy_file(chunk%projfile, self%completedir // '/' // basename(chunk%projfile))
           call simple_touch(chunk%folder%to_char() // '/COMPLETE')
@@ -1064,6 +1126,23 @@ contains
           write(logfhandle,'(A,I6)') '>>> FINALISED MICROCHUNK PASS 1 # ', chunk%id
         end if
         if( (.not. self%pass_1_only) .and. chunk%rejection_complete .and. .not. chunk%complete ) then
+          if( self%get_n_microchunks_pass_2() == 0 ) then
+              call spproj%read_segment('cls2D',  chunk%projfile)
+              call spproj%read_segment('out',    chunk%projfile)
+              call spproj%get_cavgs_stk(self%latest_stkname, ncls, smpd_dummy)
+              self%latest_jpeg = swap_suffix(self%latest_stkname, JPG_EXT, MRC_EXT)
+              call spproj%cavgs2jpg(self%latest_jpeg_inds, self%latest_jpeg, self%latest_jpeg_xtiles, self%latest_jpeg_ytiles, ignore_states=.true.)
+              self%latest_jpeg_pops       = spproj%os_cls2D%get_all_asint('pop')
+              self%latest_jpeg_res        = spproj%os_cls2D%get_all('res')
+              self%latest_jpeg_selection  = spproj%os_cls2D%get_all_asint('state')
+              allocate(cls_msk, source=self%latest_jpeg_inds /= 0)
+              self%latest_jpeg_inds       = pack(self%latest_jpeg_inds, cls_msk)
+              self%latest_jpeg_pops       = pack(self%latest_jpeg_pops, cls_msk)
+              self%latest_jpeg_res        = pack(self%latest_jpeg_res,  cls_msk)
+              self%latest_jpeg_selection  = pack(self%latest_jpeg_selection, cls_msk)
+              deallocate(cls_msk)
+              call spproj%kill()
+          end if
           if( chunk%nptcls_selected == 0 ) then
             call simple_touch(chunk%folder%to_char() // '/COMPLETE')
             chunk%complete = .true.
@@ -1087,10 +1166,24 @@ contains
         if( chunk%rejection_complete .and. .not. chunk%complete ) then
           call spproj%read_segment('mic',    chunk%projfile)
           call spproj%read_segment('ptcl2D', chunk%projfile)
+          call spproj%read_segment('cls2D',  chunk%projfile)
+          call spproj%read_segment('out',    chunk%projfile)
           non_zero = spproj%os_ptcl2D%count_state_gt_zero()
           self%n_accepted_ptcls = self%n_accepted_ptcls + non_zero
           self%n_accepted_mics  = self%n_accepted_mics + spproj%os_mic%count_state_gt_zero()
           self%n_rejected_ptcls = self%n_rejected_ptcls + spproj%os_ptcl2D%get_noris() - non_zero
+          call spproj%get_cavgs_stk(self%latest_stkname, ncls, smpd_dummy)
+          self%latest_jpeg = swap_suffix(self%latest_stkname, JPG_EXT, MRC_EXT)
+          call spproj%cavgs2jpg(self%latest_jpeg_inds, self%latest_jpeg, self%latest_jpeg_xtiles, self%latest_jpeg_ytiles, ignore_states=.true.)
+          self%latest_jpeg_pops       = spproj%os_cls2D%get_all_asint('pop')
+          self%latest_jpeg_res        = spproj%os_cls2D%get_all('res')
+          self%latest_jpeg_selection  = spproj%os_cls2D%get_all_asint('state')
+          allocate(cls_msk, source=self%latest_jpeg_inds /= 0)
+          self%latest_jpeg_inds      = pack(self%latest_jpeg_inds, cls_msk)
+          self%latest_jpeg_pops      = pack(self%latest_jpeg_pops, cls_msk)
+          self%latest_jpeg_res       = pack(self%latest_jpeg_res,  cls_msk)
+          self%latest_jpeg_selection = pack(self%latest_jpeg_selection, cls_msk)
+          deallocate(cls_msk)
           call spproj%kill()
           call simple_copy_file(chunk%projfile, self%completedir // '/' // basename(chunk%projfile))
           call simple_touch(chunk%folder%to_char() // '/COMPLETE')
@@ -1107,6 +1200,47 @@ contains
   ! class-average quality model scoring, state mapping via map_cavgs_selection,
   ! and selected/rejected stack export.
   subroutine reject_cavgs( self, chunk, label, model_name )
+    class(microchunked2D_fast), intent(inout) :: self
+    type(chunk2D),              intent(inout) :: chunk
+    type(string),               intent(in)    :: label
+    character(len=*),           intent(in)    :: model_name
+    type(image),                allocatable   :: cavg_imgs(:)
+    integer,                    allocatable   :: states(:)
+    type(sp_project)                          :: spproj
+    type(cavg_compatibility_analysis)         :: compatibility_analysis
+    type(string)                              :: stkname
+    integer(timer_int_kind)                   :: t0
+    integer                                   :: ncls
+    real                                      :: smpd_dummy
+
+    if( .not. chunk%abinitio2D_complete ) return
+    if( chunk%failed )                    return
+    if( chunk%rejection_complete )        return
+
+    t0 = timer_start()
+
+    call spproj%read(chunk%projfile)
+    call compatibility_analysis%new(spproj)
+    call compatibility_analysis%analyse()
+    call compatibility_analysis%get_rejection_states(states)
+    call compatibility_analysis%kill()
+    call spproj%map_cavgs_selection(states)
+    call spproj%write()
+
+    call simple_touch(chunk%folder%to_char() // '/REJECTION_FINISHED')
+    chunk%nptcls_selected    = spproj%os_ptcl2D%count_state_gt_zero()
+    chunk%rejection_complete = .true.
+    write(logfhandle,'(A,A,A,I6,A,I8,A,I8,A)') '>>> COMPLETED REJECTION FOR ', &
+      label%to_char(), ' # ', chunk%id, ' : ', &
+      chunk%nptcls_selected, '/', chunk%nptcls, ' PARTICLES SELECTED'
+
+    call dealloc_imgarr(cavg_imgs)
+    call spproj%kill()
+    if( allocated(states) ) deallocate(states)
+    call timer_stop(t0, string('reject_cavgs'))
+  end subroutine reject_cavgs
+
+  subroutine reject_cavgs_old( self, chunk, label, model_name )
     class(microchunked2D_fast), intent(inout) :: self
     type(chunk2D),              intent(inout) :: chunk
     type(string),               intent(in)    :: label
@@ -1205,9 +1339,7 @@ contains
       write(logfhandle,'(A,A)') '>>> JPEG ', out_jpg%to_char()
     end subroutine write_quality_stack
 
-  end subroutine reject_cavgs
-
-  
+  end subroutine reject_cavgs_old
 
   ! ============================================================================
   ! MODULE-LEVEL HELPERS

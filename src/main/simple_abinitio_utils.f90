@@ -565,11 +565,19 @@ contains
         class(string),         intent(in)    :: projfile
         class(commander_base), intent(inout) :: xrec3D
         integer,               intent(in)    :: istage
+        integer, parameter :: MIN_SPLIT_STATE_POP = 5
         type(commander_calc_group_sigmas) :: xcalc_group_sigmas
         type(cmdline)                     :: cline_calc_group_sigmas
+        integer :: pop, state
         call spproj%read_segment('ptcl3D', projfile)
         call spproj%os_ptcl3D%clean_entry('updatecnt', 'sampled')
-        call gen_labelling(spproj%os_ptcl3D, params%nstates, 'squared_uniform')
+        call gen_labelling(spproj%os_ptcl3D, params%nstates, 'uniform')
+        do state = 1, params%nstates
+            pop = spproj%os_ptcl3D%get_pop(state, 'state')
+            if( pop <= MIN_SPLIT_STATE_POP )then
+                THROW_HARD('docked split generated insufficient state population; reduce nstates or provide more active particles/classes')
+            endif
+        enddo
         call spproj%write_segment_inside(params%oritype, projfile)
         call cline_refine3D%set(     'nstates', params%nstates)
         call cline_reconstruct3D%set('nstates', params%nstates)
@@ -753,6 +761,7 @@ contains
                 ! resolution document next to rec_final_stateNN.mrc.
                 call child_cline%set('outfile', 'RESOLUTION_FINAL.txt')
                 call child_cline%set('pgrp',    params%pgrp)
+                call child_cline%set('ptcl_src', params%ptcl_src)
                 if( params%nthr    > 1  ) call child_cline%set('nthr',    params%nthr)
                 if( params%mskdiam > 0. ) call child_cline%set('mskdiam', params%mskdiam)
                 if( params%nparts  > 1  ) call child_cline%set('nparts',  params%nparts)

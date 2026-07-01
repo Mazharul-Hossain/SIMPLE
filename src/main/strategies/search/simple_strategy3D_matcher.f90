@@ -155,7 +155,7 @@ contains
                 strategy3Dspecs(iptcl_batch)%iptcl_map = iptcl_map
                 if( ctrl%do_prob_align ) strategy3Dspecs(iptcl_batch)%eulprob_obj_part => eulprob_obj_part
                 call choose_and_run_strategy(iptcl, iptcl_batch, ithr, has_been_searched)
-                if ( p_ptr%cc_objfun == OBJFUN_EUCLID ) then
+                if( p_ptr%cc_objfun == OBJFUN_EUCLID )then
                     call b_ptr%spproj_field%get_ori(iptcl, orientation)
                     call orientation%set_shift(incr_shifts(:,iptcl_batch))
                     call b_ptr%esig%calc_sigma2(b_ptr%pftc, iptcl, orientation, 'proj')
@@ -293,9 +293,8 @@ contains
         end subroutine prepare_refs_sigmas_and_pftc
 
         subroutine maybe_init_reconstruction()
-            if( .not. ctrl%do_write_partial_recs ) return
-            call init_rec(params, build, batchsz_max, fpls)
-            call alloc_imgarr(batchsz_max, [p_ptr%box,p_ptr%box,1], p_ptr%smpd, ptcl_rec_imgs)
+            if( ctrl%do_write_partial_recs ) call init_rec(params, build, batchsz_max, fpls)
+            if( ctrl%do_write_partial_recs ) call alloc_imgarr(batchsz_max, [p_ptr%box,p_ptr%box,1], p_ptr%smpd, ptcl_rec_imgs)
         end subroutine maybe_init_reconstruction
 
         subroutine build_batch_particles_local()

@@ -95,6 +95,8 @@ type(ui_param) :: nthr
 type(ui_param) :: numlen
 type(ui_param) :: nxpatch
 type(ui_param) :: nypatch
+type(ui_param) :: objfun_den
+type(ui_param) :: objfun_den_w
 type(ui_param) :: objfun
 type(ui_param) :: oritab
 type(ui_param) :: oritab2
@@ -392,8 +394,8 @@ subroutine set_ui_params
                                    'Maximum number of iterations', &
                                    'Max # iterations', .false., 100.)
 
-    call ptcl_src%set_param('ptcl_src','multi',  '3D particle source', &
-                                   '3D particle image representation used for alignment, state assignment, and reconstruction(raw|den){raw}', &
+    call ptcl_src%set_param(       'ptcl_src',        'multi',  'Particle source', &
+                                   'Particle source for matching and 3D reconstruction(raw|den){raw}', &
                                    '(raw|den){raw}', .false., 'raw')
 
     call maxnchunks%set_param(     'maxnchunks',      'num',    'Number of subsets after which 2D analysis ends', &
@@ -539,6 +541,14 @@ subroutine set_ui_params
     call objfun%set_param(         'objfun',          'multi',  'Objective function', &
                                    'Objective function(euclid|cc|prob){euclid}', &
                                    '(euclid|cc|prob){euclid}', .false., 'euclid')
+
+    call objfun_den%set_param(     'objfun_den',      'binary', 'Denoised objective', &
+                                   'Augment raw Euclidean objective with denoised-particle correlation(yes|no){no}', &
+                                   '(yes|no){no}', .false., 'no')
+
+    call objfun_den_w%set_param(   'objfun_den_w',    'num',    'Denoised objective weight', &
+                                   'Weight for denoised-particle correlation in hybrid objective(0-1){0.5}', &
+                                   '(0-1){0.5}', .false., 0.5)
 
     call oritab%set_param(         'oritab',          'file',   'Orientation and CTF parameter file', &
                                    'Orientation and CTF parameter file in plain text (.txt) or SIMPLE project (*.simple) format', &

@@ -4,7 +4,7 @@ use simple_core_module_api
 use simple_builder,          only: builder
 use simple_parameters,       only: parameters
 use simple_reconstructor_eo, only: reconstructor_eo
-use simple_matcher_ptcl_io,  only: prepimgbatch, discrete_read_imgbatch
+use simple_matcher_ptcl_io,  only: prepimgbatch, discrete_read_imgbatch, discrete_read_imgbatch_source
 use simple_matcher_3Drec,    only: prep_imgs4rec, update_rec, init_rec, write_partial_recs, finalize_rec_objs
 use simple_cmdline,          only: cmdline
 use simple_math,             only: ceil_div, floor_div
@@ -31,6 +31,7 @@ contains
         real,              allocatable, target :: symmats(:,:,:), rotmats(:,:,:)
         integer   :: vollims(3,2)
         integer   :: cdim(3), clb(3), jsym, nsym, h_edge, nyq
+        logical   :: l_den_src
         integer(timer_int_kind) :: t, t0
 #ifndef USE_OPENMP_OFFLOAD
         THROW_HARD('calc_3Drec_gpu is part of the GPU path. Use calc_3Drec instead')
@@ -41,6 +42,7 @@ contains
         call init_rec(params, build, MAXIMGBATCHSZ, fpls)
         ! Prep batch image objects
         call prepimgbatch(params, build, MAXIMGBATCHSZ)
+        l_den_src = params%l_ptcl_src_den
         ! 3D limits
         vollims = build%eorecvols(1)%even%loop_lims(2)
         h_edge  = vollims(1,1)
@@ -213,7 +215,12 @@ contains
                 sz      = lims(2) - lims(1) + 1
                 ! read images
                 if( DEBUG ) t_local = tic()
-                call discrete_read_imgbatch(params, build, nptcls, pinds, lims)
+                if( l_den_src )then
+                    call discrete_read_imgbatch_source(params, build, 'den', sz, pinds(lims(1):lims(2)), &
+                        [1,sz], build%imgbatch(:sz))
+                else
+                    call discrete_read_imgbatch(params, build, nptcls, pinds, lims)
+                endif
                 if( DEBUG ) t_read = t_read + toc(t_local)
                 ! preprocess images into padded objects
                 if( DEBUG ) t_local = tic()

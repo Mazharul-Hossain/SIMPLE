@@ -154,6 +154,8 @@ contains
         call cline_assembly%set('which_iter', params%which_iter)
         call cline_assembly%set('nthr',       nthr)
         call cline_assembly%set('combine_eo', params%combine_eo)
+        call cline_assembly%delete('objfun_den')
+        call cline_assembly%delete('objfun_den_w')
         if( params%l_update_frac ) call cline_assembly%set('update_frac', params%update_frac)
         do state = 1, params%nstates
             volname = refine3D_state_vol_fname(state)
@@ -330,14 +332,7 @@ contains
             THROW_HARD('multi-state refine3D found inconsistent existing state assignments')
         endif
         call activate_ptcl3D_states_from_selection(build, params)
-        if( l_complete_vols )then
-            call gen_labelling(build%spproj_field, params%nstates, 'uniform')
-        else
-            if( .not.build%spproj_field%isthere('corr') )then
-                THROW_HARD('multi-state refine3D without vol1..volN requires previous objective function values')
-            endif
-            call gen_labelling(build%spproj_field, params%nstates, 'squared_uniform')
-        endif
+        call gen_labelling(build%spproj_field, params%nstates, 'uniform')
     end subroutine seed_multistate_startup_labels
 
     subroutine assert_multistate_populations( build, params )
@@ -853,6 +848,8 @@ contains
                 cline_tmp = self%cline_rec3D
                 call cline_tmp%delete('trail_rec')
                 call cline_tmp%delete('objfun')
+                call cline_tmp%delete('objfun_den')
+                call cline_tmp%delete('objfun_den_w')
                 call cline_tmp%delete('sigma_est')
                 call cline_tmp%set('objfun', 'cc')
                 call xrec3D%execute( cline_tmp )

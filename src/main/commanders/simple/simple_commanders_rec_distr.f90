@@ -324,7 +324,7 @@ contains
             rt_restore_merged_volume     = 0.
             rt_trail_restored_halves     = 0.
             rt_automask3D                = 0.
-            rt_nonuniform_filter       = 0.
+            rt_nonuniform_filter         = 0.
             rt_init_context              = 0.
             rt_trail_frac                = 0.
             rt_gridcorr                  = 0.

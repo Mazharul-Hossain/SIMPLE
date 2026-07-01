@@ -168,14 +168,19 @@ contains
         call binfile%read(self%sigma2_part)
     end subroutine read_part
 
-    subroutine read_groups( self, os )
+    subroutine read_groups( self, os, fname )
         class(euclid_sigma2), intent(inout) :: self
         class(oris),          intent(inout) :: os
+        class(string), optional, intent(in) :: fname
         integer                             :: iptcl, igroup, ngroups, eo
         if( .not.associated(self%p_ptr) )then
             THROW_HARD('euclid_sigma2: params pointer is not set')
         endif
-        call self%read_sigma2_groups(self%p_ptr%which_iter, self%sigma2_groups, ngroups)
+        if( present(fname) )then
+            call self%read_sigma2_groups(self%p_ptr%which_iter, self%sigma2_groups, ngroups, filename=fname)
+        else
+            call self%read_sigma2_groups(self%p_ptr%which_iter, self%sigma2_groups, ngroups)
+        endif
         if( self%p_ptr%l_sigma_glob )then
             if( ngroups /= 1 ) THROW_HARD('ngroups must be 1 when global sigma is estimated (p_ptr%l_sigma_glob == .true.)')
             ! copy global sigma to particles

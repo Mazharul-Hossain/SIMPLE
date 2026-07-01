@@ -197,6 +197,8 @@ contains
         if( .not.cline%defined('mkdir') ) call cline%set('mkdir', 'yes')
         ! parse parameters
         call params%new(cline)
+        if( cline%defined('nrots') ) params%nrots = cline%get_iarg('nrots')
+        ! read project and check stream mode
         if( params%stream.eq.'yes' ) THROW_HARD('not a streaming application')
         ! read selected cavgs
         call find_ldim_nptcls(params%pickrefs, ldim, ncavgs)
@@ -244,7 +246,11 @@ contains
         do icavg = 1, ncavgs
             call projs(icavg)%bp(0., lp)
         end do
-        nrots  = nint( real(NREFS) / real(ncavgs) )
+        if( params%nrots > 0 ) then
+            nrots = params%nrots
+        else
+            nrots  = nint( real(NREFS) / real(ncavgs) )
+        end if
         norefs = ncavgs
         call ref2D_clip%new([ldim_clip(1), ldim_clip(2), 1], params%smpd)
         if( nrots > 1 )then
@@ -259,6 +265,11 @@ contains
                     call ref2D%clip(ref2D_clip)
                     call ref2D_clip%write(string(PICKREFS_FBODY)//params%ext, cnt)
                     rot = rot + ang
+                    if( params%mirr == 'yes' ) then
+                        cnt = cnt + 1
+                        call ref2D_clip%mirror('x')
+                        call ref2D_clip%write(string(PICKREFS_FBODY)//params%ext, cnt)
+                    end if
                 end do
             end do
         else

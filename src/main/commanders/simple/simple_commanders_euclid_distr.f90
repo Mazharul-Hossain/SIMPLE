@@ -180,8 +180,8 @@ contains
             where( .not. ieee_is_finite(group_pspecs(eo,igroup,:)) ) group_pspecs(eo,igroup,:) = 1.d0
             if( .not. any(group_pspecs(eo,igroup,:) > DTINY) )then
                 if( params%l_sigma_glob )then
-                    write(logfhandle,*) '>>> WARNING: calc_pspec_assemble floored empty global sigma2 spectrum to 1.0; eo/weight: ', &
-                        eo, group_weights(eo,igroup)
+                    write(logfhandle,*) '>>> WARNING: calc_pspec_assemble floored empty global sigma2 spectrum to 1.0; ', &
+                        'eo/weight: ', eo, group_weights(eo,igroup)
                     group_pspecs(eo,igroup,:) = 1.d0
                     return
                 else

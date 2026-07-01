@@ -65,6 +65,7 @@ contains
         integer,           intent(in)    :: pinds(nptcls)
         type(fplane_type), allocatable   :: fpls(:)
         integer :: batchlims(2), ibatch, batchsz
+        logical :: l_den_src
         logical :: DEBUG = .false.
         integer(timer_int_kind) :: t, t0
         real(timer_int_kind)    :: t_init, t_read, t_prep, t_grid, t_tot
@@ -74,6 +75,7 @@ contains
         call init_rec(params, build, MAXIMGBATCHSZ, fpls)
         ! Prep batch image objects
         call prepimgbatch(params, build, MAXIMGBATCHSZ)
+        l_den_src = params%l_ptcl_src_den
         if( DEBUG ) t_init = toc(t)
         ! gridding batch loop
         if( DEBUG ) then
@@ -86,11 +88,11 @@ contains
             batchsz   = batchlims(2) - batchlims(1) + 1
             ! read images
             if( DEBUG ) t = tic()
-            if( trim(params%ptcl_src) == 'raw' )then
-                call discrete_read_imgbatch(params, build, nptcls, pinds, batchlims)
+            if( l_den_src )then
+                call discrete_read_imgbatch_source(params, build, 'den', batchsz, pinds(batchlims(1):batchlims(2)), &
+                    [1,batchsz], build%imgbatch(:batchsz))
             else
-                call discrete_read_imgbatch_source(params, build, trim(params%ptcl_src), &
-                    nptcls, pinds, batchlims, build%imgbatch(:batchsz))
+                call discrete_read_imgbatch(params, build, nptcls, pinds, batchlims)
             endif
             if( DEBUG ) t_read = t_read + toc(t)
             ! preprocess images into padded objects

@@ -15,10 +15,6 @@ Related workflow policies:
 - [nonuniform_filtering_policy.md](nonuniform_filtering_policy.md)
 - [sigma_calculation_policy.md](sigma_calculation_policy.md)
 
-Related design notes:
-
-- [refine3D_denoised_rec_source_policy.md](refine3D_denoised_rec_source_policy.md)
-
 ## 1. Scope
 
 `refine3D` is an iterative projection-matching workflow over an existing
@@ -143,10 +139,8 @@ Euler sampling.
 For multi-state distributed startup:
 
 - existing state assignments must match the requested `nstates`
-- if complete starting volumes are supplied, state labels are randomized
-  uniformly
-- otherwise prior objective values are required and labels are randomized with
-  squared-uniform seeding
+- fresh state labels are randomized uniformly, whether complete starting
+  volumes are supplied or the project references are used
 - probabilistic multi-state startup requires each state to exceed the minimum
   population guard
 

@@ -276,6 +276,7 @@ type :: parameters
     character(len=STDLEN)     :: import_type='auto'   !< type of import(auto|mic|ptcl2D|ptcl3D){auto}
     character(len=STDLEN)     :: mcconvention='simple'!< which frame of reference convention to use for motion correction(simple|unblur|relion){simple}
     character(len=STDLEN)     :: multi_moldiams=''    !< list of molecular diameters to be used for multiple gaussian pick
+    character(len=4)          :: objfun_den='no'      !< augment raw Euclidean objective with denoised-particle correlation(yes|no){no}
     character(len=7)          :: objfun='euclid'      !< objective function(euclid|cc){euclid}
     character(len=STDLEN)     :: opt='bfgs'           !< optimiser (bfgs|simplex){bfgs}
     character(len=STDLEN)     :: oritype='ptcl3D'     !< SIMPLE project orientation type(stk|ptcl2D|cls2D|cls3D|ptcl3D)
@@ -293,7 +294,7 @@ type :: parameters
     character(len=STDLEN)     :: plot_key=''          !< plot using plot_key on y axis, sort on x
     character(len=STDLEN)     :: protocol=''          !< generic option
     character(len=STDLEN)     :: prob_neigh_mode='state' !< prob_neigh neighborhood mode(state|geom|sum|shc|snhc){state}
-    character(len=STDLEN)     :: ptcl_src='raw' !< 3D particle image source for alignment/state assignment and reconstruction(raw|den){raw}
+    character(len=STDLEN)     :: ptcl_src='raw' !< particle source for matching and 3D rec(raw|den){raw}
     character(len=STDLEN)     :: qsys_name='local'    !< name of queue system (local|coarray|slurm|pbs|lsf|sge)
     character(len=STDLEN)     :: qsys_partition2D=''  !< partition name for streaming 2D analysis
     character(len=STDLEN)     :: quality_mode='apply' !< class-average quality mode(apply|analyze|learn|evaluate|promote){apply}
@@ -394,7 +395,7 @@ type :: parameters
     integer :: npix=0              !< # pixles/voxels in binary representation
     integer :: nptcls=1            !< # images in stk/# orientations in oritab
     integer :: nptcls_per_cls=500  !< # images in stk/# orientations in oritab
-    integer :: nptcls_per_subcls=300 !< target particle count per subclass for class splitting
+    integer :: nptcls_per_subcls=300 !< legacy class-splitting target; current cls_split auto mode uses nsubcls_min/max trial range
     integer :: nptcls_per_part=0   !< # particles per part in balanced selection
     integer :: nquanta=0           !< # quanta in quantization
     integer :: nran=0              !< # random images to select
@@ -529,6 +530,7 @@ type :: parameters
     real    :: ndev=2.5            !< # deviations in one-cluster clustering
     real    :: ndev2D=CLS_REJECT_STD    !< # deviations for 2D class selection/rejection
     real    :: nsig=2.5            !< # sigmas
+    real    :: objfun_den_w=0.5    !< denoised correlation weight in hybrid objective{0.5}
     real    :: osmpd=0.            !< target output pixel size
     real    :: overlap=0.9         !< required parameters overlap for convergence
     real    :: phranlp=35.         !< low-pass phase randomize(yes|no){no}
@@ -591,11 +593,13 @@ type :: parameters
     logical :: l_nonuniform      = .false.
     logical :: l_nonuniform_lpset = .false.
     logical :: l_nu_refine       = .false.
+    logical :: l_objfun_den      = .false.
     logical :: l_phaseplate      = .false.
     logical :: l_prob_inpl       = .false.
     logical :: l_prob_align_mode = .false.
     logical :: l_sgd             = .false.
     logical :: l_sgd_diag        = .true.
+    logical :: l_ptcl_src_den    = .false.
     logical :: l_sigma_glob      = .false.
     logical :: l_trail_rec       = .false.
     logical :: l_ufrac_trec_defined = .false. !< explicit ufrac_trec override was provided

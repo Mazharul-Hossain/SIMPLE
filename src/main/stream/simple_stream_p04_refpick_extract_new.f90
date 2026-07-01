@@ -241,6 +241,8 @@ contains
                         cline_make_pickrefs = cline
                         call cline_make_pickrefs%set('prg',   'make_pickrefs')
                         call cline_make_pickrefs%set('stream','no')
+                        call cline_make_pickrefs%set('nrots', 25)
+                        call cline_make_pickrefs%set('mirr', 'yes')
                         call cline_make_pickrefs%set('smpd',  params%smpd)
                         call xmake_pickrefs%execute(cline_make_pickrefs)
                         call cline_pick_extract%set('pickrefs', '../'//PICKREFS_FBODY//params%ext%to_char())
@@ -352,9 +354,9 @@ contains
 
         call write_project
         ! write star files (just in case you want to import these particles/micrographs elsewhere)
-        call spproj%write_mics_star(string("micrographs.star"))
-        call validate_ptcl2D_star_inputs()
-        call spproj%write_ptcl2D_star(string("particles.star"))
+     !   call spproj%write_mics_star(string("micrographs.star"))
+     !   call validate_ptcl2D_star_inputs()
+     !   call spproj%write_ptcl2D_star(string("particles.star"))
         ! cleanup
         call spproj%kill
         call qsys_cleanup(params)

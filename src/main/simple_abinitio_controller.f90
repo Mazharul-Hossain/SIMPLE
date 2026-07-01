@@ -29,9 +29,11 @@ integer,          parameter :: GOLD_STD_STAGE          = TURNED_OFF  ! gold-stan
 integer,          parameter :: AUTOMSK_STAGE           = NSTAGES     ! switch on automasking
 integer,          parameter :: TRAILREC_STAGE_MULTI    = NSTAGES
 integer,          parameter :: HET_DOCKED_STAGE        = 6           ! split after stage 5; stage 6 stabilizes split states
+character(len=*), parameter :: PROB_NEIGH_MODE_STAGE1  = 'snhc'
 character(len=*), parameter :: PROB_NEIGH_MODE_EARLY   = 'shc'
 character(len=*), parameter :: PROB_NEIGH_MODE_LATE    = 'state'
 character(len=*), parameter :: PROB_NEIGH_MODE_MULTI   = 'sum'
+character(len=*), parameter :: PROB_NEIGH_MODE_DOCKED  = 'geom'
 
 ! Filtering and low-pass defaults
 real,             parameter :: LPSTOP_BOUNDS(2)        = [4.5,6.0]
@@ -235,6 +237,9 @@ contains
                 cfg%prob_neigh_mode = trim(params%prob_neigh_mode)
                 if( params%nstates == 1 .and. cfg%prob_neigh_mode.eq.'sum' ) cfg%prob_neigh_mode = PROB_NEIGH_MODE_LATE
             endif
+        else if( istage == 1 )then
+            cfg%refine           = 'prob_neigh'
+            cfg%prob_neigh_mode  = PROB_NEIGH_MODE_STAGE1
         else if( istage <  PROB_REFINE_STAGE )then
             cfg%refine           = 'prob_neigh'
             cfg%prob_neigh_mode  = PROB_NEIGH_MODE_EARLY
@@ -243,14 +248,18 @@ contains
         else
             cfg%refine           = 'prob_neigh'
             if( params%nstates > 1 )then
-                cfg%prob_neigh_mode  = PROB_NEIGH_MODE_MULTI
+                if( trim(params%multivol_mode).eq.'docked' )then
+                    cfg%prob_neigh_mode  = PROB_NEIGH_MODE_DOCKED
+                else
+                    cfg%prob_neigh_mode  = PROB_NEIGH_MODE_MULTI
+                endif
             else
                 cfg%prob_neigh_mode  = PROB_NEIGH_MODE_LATE
             endif
         endif
         if( docked_split_stage(params, istage) )then
-            cfg%refine           = 'prob_neigh'
-            cfg%prob_neigh_mode  = PROB_NEIGH_MODE_MULTI
+            cfg%refine           = 'prob_state'
+            cfg%prob_neigh_mode  = ''
         endif
     end subroutine set_refine3D_mode_policy
 
@@ -285,10 +294,6 @@ contains
                 if( istage >= TRAILREC_STAGE_SINGLE .and. istage /= params%split_stage )then
                     cfg%trail_rec = 'yes'
                 endif
-            case('input_oris_fixed')
-                cfg%trail_rec = 'no'
-            case('input_oris_start')
-                cfg%trail_rec = 'no'
             case default
                 cfg%trail_rec = 'no'
         end select
@@ -404,11 +409,9 @@ contains
         logical,                  intent(in) :: l_cmdline_lp_override
         character(len=STDLEN) :: ptcl_src_eff
         real :: lp_eff
-        logical :: l_den_src
         logical :: l_full_update_stage
         l_full_update_stage = docked_split_stage(params, istage) .or. force_full_sampling_mode(params)
         ptcl_src_eff        = stage_ptcl_src(cfg, params)
-        l_den_src           = trim(ptcl_src_eff) == 'den'
         lp_eff              = stage_matching_lp(cfg, params, istage, l_cmdline_lp_override)
         call cline_refine3D%set('prg',                     'refine3D')
         if( l_cavgs )then
@@ -449,6 +452,8 @@ contains
         call cline_refine3D%set('trail_rec',              cfg%trail_rec)
         call cline_refine3D%set('filt_mode',              cfg%filt_mode)
         call cline_refine3D%set('ptcl_src',               ptcl_src_eff)
+        call cline_refine3D%set('objfun_den',             params%objfun_den)
+        call cline_refine3D%set('objfun_den_w',           params%objfun_den_w)
         call cline_refine3D%set('nu_refine',              cfg%nu_refine)
         call cline_refine3D%delete('lpstart')
         call cline_refine3D%delete('lpstop')
@@ -468,11 +473,7 @@ contains
         endif
         call cline_refine3D%set('maxits',                 cfg%imaxits)
         call cline_refine3D%set('trs',                    cfg%trs)
-        ! if( l_den_src )then
-        !     call cline_refine3D%set('ml_reg',             'no')
-        ! else
-            call cline_refine3D%set('ml_reg',             cfg%ml_reg)
-        ! endif
+        call cline_refine3D%set('ml_reg',                 cfg%ml_reg)
         call cline_refine3D%set('conical_fsc',            cfg%conical_fsc)
         call cline_refine3D%set('greedy_sampling',        cfg%greedy_sampling)
         call cline_refine3D%set('frac_best',              cfg%frac_best)
@@ -484,10 +485,6 @@ contains
         else
             call cline_refine3D%delete('snr_noise_reg')
         endif
-        ! if( l_den_src )then
-        !     call cline_refine3D%set('gauref',             'yes')
-        !     call cline_refine3D%set('gaufreq',            lp_eff)
-        ! else 
         if( cfg%gaufreq > 0. )then
             call cline_refine3D%set('gauref',             'yes')
             call cline_refine3D%set('gaufreq',            cfg%gaufreq)
@@ -497,10 +494,10 @@ contains
         endif
     end subroutine emit_refine3D_stage_cfg
 
-    logical function docked_split_stage( params, istage ) result( l_split_stage )
+    logical function docked_split_stage( params, istage )
         class(parameters), intent(in) :: params
         integer,           intent(in) :: istage
-        l_split_stage = trim(params%multivol_mode).eq.'docked' .and. istage == params%split_stage
+        docked_split_stage = trim(params%multivol_mode).eq.'docked' .and. istage == params%split_stage
     end function docked_split_stage
 
     logical function force_full_sampling_mode( params ) result( l_force_full )
@@ -526,12 +523,6 @@ contains
         type(refine3D_stage_cfg), intent(in) :: cfg
         class(parameters),        intent(in) :: params
         ptcl_src = trim(params%ptcl_src)
-        ! if( ptcl_src == 'den' )then
-        !     select case(cfg%filt_mode%to_char())
-        !         case('nonuniform','nonuniform_lpset')
-        !             ptcl_src = 'raw'
-        !     end select
-        ! endif
     end function stage_ptcl_src
 
 end submodule simple_abinitio_controller
