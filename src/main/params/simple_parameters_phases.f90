@@ -505,6 +505,8 @@ contains
         self%l_frac_best   = self%frac_best  <= 0.99
         self%l_frac_worst  = self%frac_worst <= 0.99
         self%l_greedy_smpl = trim(self%greedy_sampling).eq.'yes'
+        self%l_sgd         = trim(self%sgd).eq.'yes'
+        self%l_sgd_diag    = trim(self%sgd_diag).eq.'yes'
     end subroutine derive_sampling_settings
 
     module subroutine derive_parallel_settings(self, cline)
@@ -679,6 +681,31 @@ contains
             case DEFAULT
                 THROW_HARD('Unsupported automsk mode: '//trim(self%automsk))
         end select
+        select case(trim(self%sgd))
+            case('yes','no')
+            case DEFAULT
+                THROW_HARD('sgd must be yes or no')
+        end select
+        select case(trim(self%sgd_diag))
+            case('yes','no')
+            case DEFAULT
+                THROW_HARD('sgd_diag must be yes or no')
+        end select
+        if( self%l_sgd )then
+            select case(trim(self%prg%to_char()))
+                case('abinitio2D','cluster2D')
+                case DEFAULT
+                    THROW_HARD('sgd=yes is currently supported only for abinitio2D/cluster2D')
+            end select
+            if( self%sgd_eta <= 0.0 .or. self%sgd_eta > 1.0 )then
+                THROW_HARD('sgd_eta must be > 0 and <= 1 for the class-average SGD MVP')
+            endif
+            select case(trim(self%sgd_eta_decay))
+                case('const')
+                case DEFAULT
+                    THROW_HARD('sgd_eta_decay currently supports only const')
+            end select
+        endif
         select case(trim(self%objfun))
             case('cc')
                 self%cc_objfun = OBJFUN_CC

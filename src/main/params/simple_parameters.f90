@@ -143,6 +143,8 @@ type :: parameters
     character(len=3)          :: roavg='no'           !< rotationally average images in stack
     character(len=3)          :: transp_pca='no'
     character(len=3)          :: script='no'          !< do not execute but generate a script for submission to the queue
+    character(len=3)          :: sgd='no'             !< stochastic class-average update(yes|no){no}
+    character(len=3)          :: sgd_diag='yes'       !< diagnostic output for stochastic class-average update(yes|no){yes}
     character(len=3)          :: shbarrier='yes'      !< use shift search barrier constraint(yes|no){yes}
     character(len=3)          :: sort_asc='yes'       !< sort oris ascending
     character(len=3)          :: stream='no'          !< stream (real time) execution mode(yes|no){no}
@@ -301,6 +303,7 @@ type :: parameters
     character(len=STDLEN)     :: refine='shc'         !< refinement mode(snhc|shc|neigh|shc_neigh|prob|prob_state|prob_neigh|prob_snhc){shc}
     character(len=STDLEN)     :: refine_type='3D'     !< refinement mode(3D|2D|hybrid){3D}
     character(len=STDLEN)     :: select_flag='cluster' !< which flag to use for cluster selection (cluster|class){cluster}
+    character(len=STDLEN)     :: sgd_eta_decay='const' !< stochastic class-average learning-rate schedule(const){const}
     character(len=STDLEN)     :: sigma_est='group'    !< sigma estimation kind (group|global){group}
     character(len=STDLEN)     :: sort=''              !< key to sort oris on
     character(len=STDLEN)     :: speckind='sqrt'      !< power spectrum kind(real|power|sqrt|log|phase){sqrt}
@@ -535,6 +538,7 @@ type :: parameters
     real    :: res_threshold=-1.   !< resolution threshold in A (-1 means no threshold)
     real    :: scale=1.            !< image scale factor{1}
     real    :: scale_movies=1.     !< movie scale factor
+    real    :: sgd_eta=0.2         !< stochastic class-average learning rate
     real    :: sherr=0.            !< shift error(in pixels){2}
     real    :: sigma=1.0           !< for gaussian function generation {1.}
     real    :: smpd=1.3            !< sampling distance; same as EMANs apix(in A)
@@ -590,6 +594,8 @@ type :: parameters
     logical :: l_phaseplate      = .false.
     logical :: l_prob_inpl       = .false.
     logical :: l_prob_align_mode = .false.
+    logical :: l_sgd             = .false.
+    logical :: l_sgd_diag        = .true.
     logical :: l_sigma_glob      = .false.
     logical :: l_trail_rec       = .false.
     logical :: l_ufrac_trec_defined = .false. !< explicit ufrac_trec override was provided
