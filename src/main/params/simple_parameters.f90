@@ -305,6 +305,8 @@ type :: parameters
     character(len=STDLEN)     :: refine_type='3D'     !< refinement mode(3D|2D|hybrid){3D}
     character(len=STDLEN)     :: select_flag='cluster' !< which flag to use for cluster selection (cluster|class){cluster}
     character(len=STDLEN)     :: sgd_eta_decay='const' !< stochastic class-average learning-rate schedule(const){const}
+    character(len=STDLEN)     :: sgd_latent='st_topk' !< joint-SGD latent relaxation(st_topk|soft_topk|sample_topk){st_topk}
+    character(len=STDLEN)     :: sgd_mode='joint'     !< SGD optimizer mode(joint|cavg_only){joint}
     character(len=STDLEN)     :: sigma_est='group'    !< sigma estimation kind (group|global){group}
     character(len=STDLEN)     :: sort=''              !< key to sort oris on
     character(len=STDLEN)     :: speckind='sqrt'      !< power spectrum kind(real|power|sqrt|log|phase){sqrt}
@@ -432,6 +434,8 @@ type :: parameters
     integer :: reliongroups=0
     integer :: shift_stage=0
     integer :: split_stage=6       !< splitting stage when multivol_mode==docked
+    integer :: sgd_inner_its=2     !< joint-SGD latent optimizer inner iterations
+    integer :: sgd_topk=8          !< joint-SGD compact candidate count per particle
     integer :: startit=1           !< start iterating from here
     integer :: stage=0
     integer :: state=1             !< state to extract
@@ -540,7 +544,13 @@ type :: parameters
     real    :: res_threshold=-1.   !< resolution threshold in A (-1 means no threshold)
     real    :: scale=1.            !< image scale factor{1}
     real    :: scale_movies=1.     !< movie scale factor
+    real    :: sgd_balance_weight=0.0 !< joint-SGD optional class-balance weight
+    real    :: sgd_eta_cavg=0.1    !< joint-SGD class-average learning rate
+    real    :: sgd_eta_latent=0.5  !< joint-SGD latent-logit learning rate
+    real    :: sgd_eta_shift=0.25  !< joint-SGD shift learning rate
     real    :: sgd_eta=0.2         !< stochastic class-average learning rate
+    real    :: sgd_tau=1.0         !< joint-SGD softmax temperature
+    real    :: sgd_tau_min=0.1     !< joint-SGD minimum softmax temperature
     real    :: sherr=0.            !< shift error(in pixels){2}
     real    :: sigma=1.0           !< for gaussian function generation {1.}
     real    :: smpd=1.3            !< sampling distance; same as EMANs apix(in A)

@@ -148,7 +148,7 @@ contains
         ! Zero sums or set to previous with weight
         call cavgs%zero_set(.true.)
         l_cavg_sgd_pending = .false.
-        if( p_ptr%l_sgd )then
+        if( p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'cavg_only') )then
             call cavg_sgd_opt%new(p_ptr, p_ptr%which_iter)
             l_sgd_prev_available = (p_ptr%which_iter > 1) .and. cavg_partial_sums_exist()
             if( l_sgd_prev_available )then
@@ -275,13 +275,14 @@ contains
     end subroutine cavger_dealloc_online
 
     module subroutine cavger_apply_sgd_update()
+        if( .not. (p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'cavg_only')) ) return
         if( .not. l_cavg_sgd_pending ) return
         call cavg_sgd_opt%blend_sufficient_stats_inplace(cavgs_sgd_prev%even%cmat,  cavgs%even%cmat)
         call cavg_sgd_opt%blend_sufficient_stats_inplace(cavgs_sgd_prev%even%ctfsq, cavgs%even%ctfsq)
         call cavg_sgd_opt%blend_sufficient_stats_inplace(cavgs_sgd_prev%odd%cmat,   cavgs%odd%cmat)
         call cavg_sgd_opt%blend_sufficient_stats_inplace(cavgs_sgd_prev%odd%ctfsq,  cavgs%odd%ctfsq)
         l_cavg_sgd_pending = .false.
-        call cavg_sgd_opt%write_diag('sufficient statistics blended')
+        call cavg_sgd_opt%write_diag('cavg_only sufficient statistics blended')
     end subroutine cavger_apply_sgd_update
 
     subroutine cavger_update_sums( nptcls, ptcl_imgs )

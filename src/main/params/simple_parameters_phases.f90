@@ -691,19 +691,60 @@ contains
             case DEFAULT
                 THROW_HARD('sgd_diag must be yes or no')
         end select
+        select case(trim(self%sgd_mode))
+            case('joint','cavg_only')
+            case DEFAULT
+                THROW_HARD('sgd_mode must be joint or cavg_only')
+        end select
+        select case(trim(self%sgd_latent))
+            case('st_topk','soft_topk','sample_topk')
+            case DEFAULT
+                THROW_HARD('sgd_latent must be st_topk, soft_topk, or sample_topk')
+        end select
         if( self%l_sgd )then
             select case(trim(self%prg%to_char()))
                 case('abinitio2D','cluster2D')
                 case DEFAULT
                     THROW_HARD('sgd=yes is currently supported only for abinitio2D/cluster2D')
             end select
-            if( self%sgd_eta <= 0.0 .or. self%sgd_eta > 1.0 )then
-                THROW_HARD('sgd_eta must be > 0 and <= 1 for the class-average SGD MVP')
-            endif
             select case(trim(self%sgd_eta_decay))
                 case('const')
                 case DEFAULT
                     THROW_HARD('sgd_eta_decay currently supports only const')
+            end select
+            if( self%sgd_topk < 1 )then
+                THROW_HARD('sgd_topk must be >= 1')
+            endif
+            if( self%sgd_inner_its < 1 )then
+                THROW_HARD('sgd_inner_its must be >= 1')
+            endif
+            if( self%sgd_eta_cavg <= 0.0 )then
+                THROW_HARD('sgd_eta_cavg must be > 0')
+            endif
+            if( self%sgd_eta_latent <= 0.0 )then
+                THROW_HARD('sgd_eta_latent must be > 0')
+            endif
+            if( self%sgd_eta_shift <= 0.0 )then
+                THROW_HARD('sgd_eta_shift must be > 0')
+            endif
+            if( self%sgd_tau <= 0.0 )then
+                THROW_HARD('sgd_tau must be > 0')
+            endif
+            if( self%sgd_tau_min <= 0.0 )then
+                THROW_HARD('sgd_tau_min must be > 0')
+            endif
+            select case(trim(self%sgd_mode))
+                case('joint')
+                    if( trim(self%sgd_latent) /= 'st_topk' )then
+                        THROW_HARD('joint SGD scaffold currently implements only sgd_latent=st_topk')
+                    endif
+                    if( self%l_distr_worker .or. self%nparts > 1 )then
+                        THROW_HARD('sgd_mode=joint is not yet supported for distributed cluster2D')
+                    endif
+                case('cavg_only')
+                    if( self%sgd_eta <= 0.0 .or. self%sgd_eta > 1.0 )then
+                        THROW_HARD('sgd_eta must be > 0 and <= 1 for sgd_mode=cavg_only')
+                    endif
             end select
         endif
         select case(trim(self%objfun))

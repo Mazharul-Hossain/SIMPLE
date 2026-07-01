@@ -24,6 +24,7 @@ use simple_strategy2D_snhc_smpl_many,only: strategy2D_snhc_smpl_many
 use simple_strategy2D_prob,          only: strategy2D_prob
 use simple_strategy2D_srch,          only: strategy2D_spec
 use simple_strategy2D_tseries,       only: strategy2D_tseries
+use simple_strategy2D_joint_sgd,     only: cluster2D_joint_sgd_exec
 use simple_eul_prob_tab2D,           only: eul_prob_tab2D
 implicit none
 
@@ -92,6 +93,10 @@ contains
         integer :: batchsz_max, batchsz, nbatches, batch_start, batch_end
         p_ptr => params
         b_ptr => build
+        if( p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'joint') )then
+            call cluster2D_joint_sgd_exec(params, build, cline, which_iter, converged)
+            return
+        endif
         call init_ctrl()
         if( ctrl%do_bench )then
             t_startup = tic()
@@ -183,7 +188,8 @@ contains
             ctrl%l_stream          = (trim(p_ptr%stream2d) == 'yes')
             ctrl%l_sample_updates  = p_ptr%l_update_frac
             ctrl%l_frac_restore    = ctrl%l_sample_updates
-            ctrl%l_partial_sums    = ctrl%l_frac_restore .or. p_ptr%l_sgd
+            ctrl%l_partial_sums    = ctrl%l_frac_restore .or. &
+                (p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'cavg_only'))
             ctrl%l_prob_align      = p_ptr%l_prob_align_mode
             ctrl%l_restore_cavgs   = (trim(p_ptr%restore_cavgs) == 'yes')
             ctrl%l_require_full_assignment = cluster2D_requires_full_assignment(p_ptr)
@@ -212,7 +218,7 @@ contains
                     p_ptr%l_update_frac   = .false.
                     ctrl%l_sample_updates = .false.
                     ctrl%l_frac_restore   = .false.
-                    ctrl%l_partial_sums   = p_ptr%l_sgd
+                    ctrl%l_partial_sums   = p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'cavg_only')
                 endif
                 if( trim(ctrl%refine_flag) == 'snhc' ) ctrl%refine_flag = 'snhc_smpl'
             endif
@@ -266,7 +272,8 @@ contains
                 THROW_HARD('need refs to be part of command line for cluster2D execution')
             endif
             call cavger_read_all
-            ctrl%l_partial_sums = ctrl%l_frac_restore .or. p_ptr%l_sgd
+            ctrl%l_partial_sums = ctrl%l_frac_restore .or. &
+                (p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'cavg_only'))
             call cavger_init_online(batchsz_max, ctrl%l_frac_restore)
         end subroutine prepare_class_averages_and_restoration
 

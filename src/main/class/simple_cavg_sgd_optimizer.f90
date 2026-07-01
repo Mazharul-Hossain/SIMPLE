@@ -33,7 +33,7 @@ contains
         class(cavg_sgd_optimizer), intent(inout) :: self
         class(parameters),         intent(in)    :: params
         integer,                   intent(in)    :: which_iter
-        self%active     = params%l_sgd
+        self%active     = params%l_sgd .and. (trim(params%sgd_mode) == 'cavg_only')
         self%diag       = params%l_sgd_diag
         self%which_iter = which_iter
         self%eta0       = params%sgd_eta
