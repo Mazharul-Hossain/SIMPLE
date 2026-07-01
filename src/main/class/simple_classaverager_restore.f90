@@ -144,9 +144,28 @@ contains
         integer, intent(in) :: maxbatchsz
         logical, intent(in) :: do_frac_update
         real, allocatable :: class_update_fracs(:)
+        logical :: l_sgd_prev_available
         ! Zero sums or set to previous with weight
         call cavgs%zero_set(.true.)
-        if( do_frac_update )then
+        l_cavg_sgd_pending = .false.
+        if( p_ptr%l_sgd )then
+            call cavg_sgd_opt%new(p_ptr, p_ptr%which_iter)
+            l_sgd_prev_available = (p_ptr%which_iter > 1) .and. cavg_partial_sums_exist()
+            if( l_sgd_prev_available )then
+                call cavgs_sgd_prev%kill_set
+                call cavgs_sgd_prev%new_set(ldim_crop(1:2), ncls)
+                call cavger_readwrite_partial_sums('read')
+                cavgs_sgd_prev%even%cmat  = cavgs%even%cmat
+                cavgs_sgd_prev%even%ctfsq = cavgs%even%ctfsq
+                cavgs_sgd_prev%odd%cmat   = cavgs%odd%cmat
+                cavgs_sgd_prev%odd%ctfsq  = cavgs%odd%ctfsq
+                call cavgs%zero_set(.true.)
+                l_cavg_sgd_pending = .true.
+                call cavg_sgd_opt%write_diag('previous partial sums loaded')
+            else
+                call cavg_sgd_opt%write_diag('previous partial sums unavailable; using batch statistics')
+            endif
+        else if( do_frac_update )then
             call cavger_readwrite_partial_sums('read')
             call b_ptr%spproj_field%get_class_update_fracs(ncls, class_update_fracs)
             call apply_weights2cavgs(class_update_fracs)
@@ -254,6 +273,16 @@ contains
             deallocate(precs,phys_addrh_crop,phys_addrk_crop)
         endif
     end subroutine cavger_dealloc_online
+
+    module subroutine cavger_apply_sgd_update()
+        if( .not. l_cavg_sgd_pending ) return
+        call cavg_sgd_opt%blend_sufficient_stats_inplace(cavgs_sgd_prev%even%cmat,  cavgs%even%cmat)
+        call cavg_sgd_opt%blend_sufficient_stats_inplace(cavgs_sgd_prev%even%ctfsq, cavgs%even%ctfsq)
+        call cavg_sgd_opt%blend_sufficient_stats_inplace(cavgs_sgd_prev%odd%cmat,   cavgs%odd%cmat)
+        call cavg_sgd_opt%blend_sufficient_stats_inplace(cavgs_sgd_prev%odd%ctfsq,  cavgs%odd%ctfsq)
+        l_cavg_sgd_pending = .false.
+        call cavg_sgd_opt%write_diag('sufficient statistics blended')
+    end subroutine cavger_apply_sgd_update
 
     subroutine cavger_update_sums( nptcls, ptcl_imgs )
         integer,      intent(in)    :: nptcls
@@ -658,6 +687,19 @@ contains
         call cto%kill
     end subroutine cavger_readwrite_partial_sums
 
+    logical function cavg_partial_sums_exist() result( l_exist )
+        type(string) :: cae, cao, cte, cto
+        cae = 'cavgs_even_part'//int2str_pad(p_ptr%part,p_ptr%numlen)//MRC_EXT
+        cao = 'cavgs_odd_part'//int2str_pad(p_ptr%part,p_ptr%numlen)//MRC_EXT
+        cte = 'ctfsqsums_even_part'//int2str_pad(p_ptr%part,p_ptr%numlen)//MRC_EXT
+        cto = 'ctfsqsums_odd_part'//int2str_pad(p_ptr%part,p_ptr%numlen)//MRC_EXT
+        l_exist = file_exists(cae) .and. file_exists(cao) .and. file_exists(cte) .and. file_exists(cto)
+        call cae%kill
+        call cao%kill
+        call cte%kill
+        call cto%kill
+    end function cavg_partial_sums_exist
+
     !>  \brief  pad partial & ctf squared arrays
     module subroutine cavger_pad_partial_sums( old_box, new_box, n, nparts, numlen )
         integer, intent(in) :: old_box, new_box, n, nparts, numlen
@@ -797,6 +839,9 @@ contains
     !>  \brief  is a destructor
     module subroutine cavger_kill()
         call dealloc_cavgs
+        call cavgs_sgd_prev%kill_set
+        call cavg_sgd_opt%kill
+        l_cavg_sgd_pending = .false.
         if( allocated(eo_pops) ) deallocate(eo_pops)
     end subroutine cavger_kill
 

@@ -19,7 +19,10 @@ type :: cavg_sgd_optimizer
     procedure :: eta
     procedure :: blend_real3
     procedure :: blend_complex3
+    procedure :: blend_real3_inplace
+    procedure :: blend_complex3_inplace
     generic   :: blend_sufficient_stats => blend_real3, blend_complex3
+    generic   :: blend_sufficient_stats_inplace => blend_real3_inplace, blend_complex3_inplace
     procedure :: write_diag
     procedure :: kill
 end type cavg_sgd_optimizer
@@ -67,6 +70,25 @@ contains
         out_stats = cmplx(1.0 - eta_t, 0.0, kind=c_float_complex) * prev_stats &
             &+ cmplx(eta_t, 0.0, kind=c_float_complex) * batch_stats
     end subroutine blend_complex3
+
+    subroutine blend_real3_inplace( self, prev_stats, stats )
+        class(cavg_sgd_optimizer), intent(in)    :: self
+        real,                      intent(in)    :: prev_stats(:,:,:)
+        real,                      intent(inout) :: stats(:,:,:)
+        real :: eta_t
+        eta_t = self%eta()
+        stats = (1.0 - eta_t) * prev_stats + eta_t * stats
+    end subroutine blend_real3_inplace
+
+    subroutine blend_complex3_inplace( self, prev_stats, stats )
+        class(cavg_sgd_optimizer),      intent(in)    :: self
+        complex(kind=c_float_complex),  intent(in)    :: prev_stats(:,:,:)
+        complex(kind=c_float_complex),  intent(inout) :: stats(:,:,:)
+        real :: eta_t
+        eta_t = self%eta()
+        stats = cmplx(1.0 - eta_t, 0.0, kind=c_float_complex) * prev_stats &
+            &+ cmplx(eta_t, 0.0, kind=c_float_complex) * stats
+    end subroutine blend_complex3_inplace
 
     subroutine write_diag( self, label )
         class(cavg_sgd_optimizer), intent(in) :: self

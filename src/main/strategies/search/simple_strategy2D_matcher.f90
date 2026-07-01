@@ -183,7 +183,7 @@ contains
             ctrl%l_stream          = (trim(p_ptr%stream2d) == 'yes')
             ctrl%l_sample_updates  = p_ptr%l_update_frac
             ctrl%l_frac_restore    = ctrl%l_sample_updates
-            ctrl%l_partial_sums    = ctrl%l_frac_restore
+            ctrl%l_partial_sums    = ctrl%l_frac_restore .or. p_ptr%l_sgd
             ctrl%l_prob_align      = p_ptr%l_prob_align_mode
             ctrl%l_restore_cavgs   = (trim(p_ptr%restore_cavgs) == 'yes')
             ctrl%l_require_full_assignment = cluster2D_requires_full_assignment(p_ptr)
@@ -212,7 +212,7 @@ contains
                     p_ptr%l_update_frac   = .false.
                     ctrl%l_sample_updates = .false.
                     ctrl%l_frac_restore   = .false.
-                    ctrl%l_partial_sums   = .false.
+                    ctrl%l_partial_sums   = p_ptr%l_sgd
                 endif
                 if( trim(ctrl%refine_flag) == 'snhc' ) ctrl%refine_flag = 'snhc_smpl'
             endif
@@ -266,7 +266,7 @@ contains
                 THROW_HARD('need refs to be part of command line for cluster2D execution')
             endif
             call cavger_read_all
-            ctrl%l_partial_sums = ctrl%l_frac_restore
+            ctrl%l_partial_sums = ctrl%l_frac_restore .or. p_ptr%l_sgd
             call cavger_init_online(batchsz_max, ctrl%l_frac_restore)
         end subroutine prepare_class_averages_and_restoration
 
@@ -392,6 +392,7 @@ contains
             logical :: l_full_assignment
             if( l_distr_worker_glob )then
                 if( ctrl%l_restore_cavgs )then
+                    call cavger_apply_sgd_update
                     call cavger_readwrite_partial_sums('write')
                 endif
                 call cavger_kill
@@ -416,6 +417,7 @@ contains
                     else
                         THROW_HARD('which_iter expected to be part of command line in shared-memory execution')
                     endif
+                    call cavger_apply_sgd_update
                     call cavger_readwrite_partial_sums('write')
                     call cavger_restore_cavgs( p_ptr%frcs )
                     call cavger_gen2Dclassdoc

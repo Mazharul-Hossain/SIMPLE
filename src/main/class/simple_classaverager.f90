@@ -6,6 +6,7 @@ use simple_ctf,               only: ctf
 use simple_euclid_sigma2,     only: euclid_sigma2
 use simple_image,             only: image
 use simple_parameters,        only: parameters
+use simple_cavg_sgd_optimizer, only: cavg_sgd_optimizer
 use simple_memoize_ft_maps
 use simple_fftw3
 use simple_ftiter
@@ -18,6 +19,7 @@ public :: cavger_new, cavger_transf_oridat, cavger_gen2Dclassdoc
 public :: cavger_read_euclid_sigma2, cavger_kill
 ! Interpolation & restoration
 public :: cavger_init_online, cavger_update_sums, cavger_dealloc_online
+public :: cavger_apply_sgd_update
 public :: cavger_assemble_sums, cavger_restore_cavgs
 ! I/O & handling of distributed sums
 public :: cavger_write_eo, cavger_write_all, cavger_write_merged, cavger_read_all
@@ -110,6 +112,8 @@ type(image), target, allocatable :: cavgs_odd(:)              !< Odd class avera
 type(image), target, allocatable :: cavgs_merged(:)           !< Merged class averages for reading
 type(image),         allocatable :: tmp_pad_imgs(:)           !< Temporary images for on-the-fly classes update
 type(cavgs_set)                  :: cavgs                     !< Class averages
+type(cavgs_set)                  :: cavgs_sgd_prev            !< Previous class-average sufficient statistics for SGD
+type(cavg_sgd_optimizer)         :: cavg_sgd_opt              !< Class-average SGD learning-rate helper
 type(kbinterpol)                 :: kbwin                     !< Kaiser-Bessel interpolation object
 type(builder),        pointer    :: b_ptr  => null()          !< active builder instance
 class(parameters),    pointer    :: p_ptr => null()           !< active parameters instance
@@ -122,6 +126,7 @@ integer                          :: ldim_pd(3)     = [0,0,0]  !< logical dimensi
 integer                          :: ldim_croppd(3) = [0,0,0]  !< logical dimension of cropped image, padded
 real                             :: smpd       = 0.           !< sampling distance
 real                             :: smpd_crop  = 0.           !< cropped sampling distance
+logical                          :: l_cavg_sgd_pending = .false.
 
 interface
 
@@ -298,6 +303,9 @@ interface
         integer,      intent(in)    :: nptcls
         class(image), intent(inout) :: ptcl_imgs(nptcls)
     end subroutine cavger_update_sums
+
+    module subroutine cavger_apply_sgd_update()
+    end subroutine cavger_apply_sgd_update
 
     module subroutine cavger_assemble_sums( do_frac_update )
         use simple_matcher_ptcl_io, only: prepimgbatch
