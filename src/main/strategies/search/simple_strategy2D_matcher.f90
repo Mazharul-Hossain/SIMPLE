@@ -25,6 +25,7 @@ use simple_strategy2D_prob,          only: strategy2D_prob
 use simple_strategy2D_srch,          only: strategy2D_spec
 use simple_strategy2D_tseries,       only: strategy2D_tseries
 use simple_strategy2D_joint_sgd,     only: cluster2D_joint_sgd_exec
+use simple_strategy2D_joint_sgd_candidates, only: joint2D_candidate_table, JOINT2D_CANDIDATES_FNAME
 use simple_eul_prob_tab2D,           only: eul_prob_tab2D
 implicit none
 
@@ -55,6 +56,7 @@ type :: cluster2D_ctrl
     logical :: l_greedy
     logical :: l_np_cls_defined
     logical :: l_prob_align
+    logical :: l_joint_topk
     logical :: l_restore_cavgs
     logical :: l_require_full_assignment
     logical :: do_bench
@@ -84,6 +86,10 @@ contains
         real,                      allocatable   :: states(:), incr_shifts(:,:)
         integer,                   allocatable   :: pinds(:), batches(:,:)
         type(eul_prob_tab2D),      target        :: eulprob_obj_part
+        type(joint2D_candidate_table)            :: joint_topk_candidates
+        type(ptcl_ref),             allocatable  :: joint_topk_refs(:,:)
+        real,                       allocatable  :: joint_topk_weights(:,:)
+        integer,                    allocatable  :: joint_topk_ncands(:)
         type(cluster2D_ctrl)                     :: ctrl
         type(ori)             :: orientation
         type(convergence)     :: conv
@@ -133,6 +139,7 @@ contains
         if( ctrl%l_prob_align )then
             call eulprob_obj_part%new(p_ptr, b_ptr, pinds)
             call eulprob_obj_part%read_assignment(string(ASSIGNMENT_FBODY)//'.dat')
+            if( ctrl%l_joint_topk ) call read_joint_topk_candidates()
         endif
         allocate(strategy2Dsrch(batchsz_max))
         rt_align = 0.0
@@ -195,6 +202,7 @@ contains
             ctrl%l_partial_sums    = ctrl%l_frac_restore .or. &
                 (p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'cavg_only'))
             ctrl%l_prob_align      = p_ptr%l_prob_align_mode
+            ctrl%l_joint_topk      = p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'joint') .and. ctrl%l_prob_align
             ctrl%l_restore_cavgs   = (trim(p_ptr%restore_cavgs) == 'yes')
             ctrl%l_require_full_assignment = cluster2D_requires_full_assignment(p_ptr)
             ctrl%l_np_cls_defined  = cline%defined('nptcls_per_cls')
@@ -298,6 +306,28 @@ contains
             if( ctrl%do_bench ) rt_build_batch_particles2D = rt_build_batch_particles2D + toc(t_build_batch_particles2D)
         end subroutine build_batch_particles_local
 
+        subroutine read_joint_topk_candidates()
+            integer :: iptcl_map
+            write(logfhandle,'(A,A)') '>>> JOINT 2D SGD: reading top-K candidate table ', JOINT2D_CANDIDATES_FNAME
+            call joint_topk_candidates%read_table(JOINT2D_CANDIDATES_FNAME)
+            if( size(joint_topk_candidates%ncand) /= nptcls2update )then
+                THROW_HARD('joint 2D top-K candidate table particle count does not match cluster2D batch set')
+            endif
+            do iptcl_map = 1, nptcls2update
+                if( joint_topk_candidates%ncand(iptcl_map) < 1 ) cycle
+                if( joint_topk_candidates%cand(1,iptcl_map)%pind /= pinds(iptcl_map) )then
+                    THROW_HARD('joint 2D top-K candidate table does not match sampled particle order')
+                endif
+            end do
+            call joint_topk_candidates%write_diag('cluster2D')
+        end subroutine read_joint_topk_candidates
+
+        subroutine export_joint_topk_for_batch()
+            if( .not. ctrl%l_joint_topk ) return
+            call joint_topk_candidates%export_batch(batch_start, batch_end, joint_topk_refs,&
+                &joint_topk_weights, joint_topk_ncands)
+        end subroutine export_joint_topk_for_batch
+
         subroutine allocate_strategy_for_particle(iptcl, iptcl_batch)
             integer, intent(in) :: iptcl, iptcl_batch
             logical :: first_or_unsearched, has_been_searched, l_fresh_start
@@ -360,6 +390,7 @@ contains
 
         subroutine restore_class_averages_for_batch()
             integer(timer_int_kind) :: t_update
+            call export_joint_topk_for_batch()
             call cavger_transf_oridat(batchsz, pinds(batch_start:batch_end), updated_only=.true.)
             if( ctrl%do_bench ) t_update = tic()
             call cavger_update_sums(batchsz, ptcl_imgs(1:batchsz))
@@ -381,6 +412,10 @@ contains
             call clean_batch_particles2D(b_ptr, ptcl_imgs, ptcl_match_imgs, ptcl_match_imgs_pad)
             deallocate(strategy2Dsrch, pinds, batches)
             if( ctrl%l_prob_align ) call eulprob_obj_part%kill
+            call joint_topk_candidates%kill
+            if( allocated(joint_topk_refs)    ) deallocate(joint_topk_refs)
+            if( allocated(joint_topk_weights) ) deallocate(joint_topk_weights)
+            if( allocated(joint_topk_ncands)  ) deallocate(joint_topk_ncands)
             call cavger_dealloc_online
         end subroutine cleanup_search_state
 
@@ -494,6 +529,7 @@ contains
         write(logfhandle,'(a,l1)') 'l_greedy             : ', self%l_greedy
         write(logfhandle,'(a,l1)') 'l_np_cls_defined     : ', self%l_np_cls_defined
         write(logfhandle,'(a,l1)') 'l_prob_align         : ', self%l_prob_align
+        write(logfhandle,'(a,l1)') 'l_joint_topk         : ', self%l_joint_topk
         write(logfhandle,'(a,l1)') 'l_restore_cavgs      : ', self%l_restore_cavgs
         write(logfhandle,'(a,l1)') 'l_require_full_assignment : ', self%l_require_full_assignment
         write(logfhandle,'(a,l1)') 'do_bench             : ', self%do_bench
