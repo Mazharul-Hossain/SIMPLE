@@ -104,6 +104,7 @@ type(ui_param) :: oritype
 type(ui_param) :: outdir
 type(ui_param) :: outfile
 type(ui_param) :: outside
+type(ui_param) :: overfit_hard_reject
 type(ui_param) :: outstk
 type(ui_param) :: outvol
 type(ui_param) :: nu_refine
@@ -134,6 +135,7 @@ type(ui_param) :: ptcl_src
 type(ui_param) :: remap_cls
 type(ui_param) :: remove_chunks
 type(ui_param) :: script
+type(ui_param) :: skip_rejection
 type(ui_param) :: sherr
 type(ui_param) :: sigma
 type(ui_param) :: sigma_est
@@ -570,6 +572,10 @@ subroutine set_ui_params
                                    'Extract boxes outside the micrograph boundaries(yes|no){no}', &
                                    '(yes|no){no}', .false., 'no')
 
+    call overfit_hard_reject%set_param('overfit_hard_reject', 'binary', 'Overfit hard reject', &
+                                   'Apply standard class-average hard gates plus the fixed overfit local-variance/support rule, without a model(yes|no){no}', &
+                                   'Overfit hard rejection(yes|no){no}', .false., 'no')
+
     call outstk%set_param(         'outstk',          'file',   'Output stack name', &
                                    'Output images stack name', &
                                    'e.g. outstk.mrc', .false., '')
@@ -656,9 +662,9 @@ subroutine set_ui_params
                                    'Class-average quality mode(apply|analyze|learn|evaluate|promote){apply}', .false., 'apply')
 
     call quality_model%set_param(  'quality_model',   'multi',  'Class-average quality model', &
-                                   'Built-in quality model preset(chunk_default_v2|chunk_lp4|pool_default_v2){chunk_default_v2}', &
-                                   'Quality model preset(chunk_default_v2|chunk_lp4|pool_default_v2){chunk_default_v2}', &
-                                   .false., 'chunk_default_v2')
+                                   'Built-in quality model preset(chunk100mics){chunk100mics}', &
+                                   'Quality model preset(chunk100mics){chunk100mics}', &
+                                   .false., 'chunk100mics')
 
     call qsys_name%set_param(      'qsys_name',       'multi',  'Queue system kind', &
                                    'Queue system kind(local|coarray|slurm|pbs|lsf|sge)', &
@@ -686,6 +692,10 @@ subroutine set_ui_params
 
     call script%set_param(         'script',          'binary', 'Generate script for shared-mem exec on cluster', &
                                    'Generate script for shared-mem exec on cluster(yes|no){no}', &
+                                   '(yes|no){no}', .false., 'no')
+
+    call skip_rejection%set_param( 'skip_rejection',  'binary', 'Skip class-average rejection', &
+                                   'Skip class-average rejection and leave project selections unchanged(yes|no){no}', &
                                    '(yes|no){no}', .false., 'no')
 
     call sherr%set_param(          'sherr',           'num',    'Shift error half-width', &

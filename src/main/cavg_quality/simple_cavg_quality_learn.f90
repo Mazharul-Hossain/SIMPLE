@@ -8,8 +8,8 @@ use simple_cavg_quality_feats, only: cavg_quality_feature_name, cavg_quality_fea
 use simple_cavg_quality_model, only: cavg_quality_model, cavg_quality_classify_cache, &
     build_classify_cache, kill_classify_cache, cached_decision_confusion
 use simple_cavg_quality_stats, only: calc_confusion, calc_binary_metrics, auc_for_values
-use simple_cavg_quality_types, only: CAVG_QUALITY_NFEATS, EPS, cavg_quality_model_spec, &
-    cavg_quality_result, cavg_quality_training_dataset, cavg_quality_learn_diagnostics
+use simple_cavg_quality_types, only: CAVG_QUALITY_NFEATS, EPS, cavg_quality_model_spec, cavg_quality_result, &
+    cavg_quality_training_dataset, cavg_quality_learn_diagnostics
 use simple_srch_sort_loc,      only: hpsort
 implicit none
 private
@@ -21,7 +21,8 @@ public :: evaluate_cavg_quality_result
 
 logical, parameter :: LEARN_OTSU_FLAGS(2)           = [.false., .true.]
 integer, parameter :: CAVG_QUALITY_LEARN_TOP_K      = 10
-integer, parameter :: CAVG_QUALITY_LEARN_N_POLICIES = 8
+integer, parameter :: CAVG_QUALITY_LEARN_MAX_TIES   = 20000
+integer, parameter :: CAVG_QUALITY_LEARN_N_STANDARD_POLICIES = 4
 integer, parameter :: LEARN_ROLE_SKIP               = 0
 integer, parameter :: LEARN_ROLE_BALANCED           = 1
 integer, parameter :: LEARN_ROLE_RECALL_ONLY        = 2
@@ -30,13 +31,7 @@ real,    parameter :: LEARN_RECALL_ONLY_FLOOR        = 0.95
 real,    parameter :: LEARN_RECALL_ONLY_PENALTY      = 3.0
 real,    parameter :: LEARN_MINSEPS(7)              = [0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.50]
 ! Positive margins deliberately over-select relative to the learned boundary.
-! Chunk and pool contexts use separate grids so pool learning can test stronger
-! recall protection without making stream-chunk models permissive by default.
-real,    parameter :: LEARN_CHUNK_MARGINS(19)        = [-0.60, -0.50, -0.40, -0.30, -0.25, -0.15, &
-                                                       -0.05, 0.0, 0.05, 0.10, 0.15, 0.20, &
-                                                        0.25, 0.30, 0.40, 0.50, 0.60, 0.70, &
-                                                        0.80]
-real,    parameter :: LEARN_POOL_MARGINS(37)         = [-0.60, -0.50, -0.40, -0.30, -0.25, -0.15, &
+real,    parameter :: LEARN_BOUNDARY_MARGINS(37)     = [-0.60, -0.50, -0.40, -0.30, -0.25, -0.15, &
                                                        -0.05, 0.0, 0.05, 0.10, 0.15, 0.20, &
                                                         0.25, 0.30, 0.40, 0.50, 0.60, 0.70, &
                                                         0.80, 0.90, 1.00, 1.10, 1.20, 1.30, &
@@ -45,7 +40,7 @@ real,    parameter :: LEARN_POOL_MARGINS(37)         = [-0.60, -0.50, -0.40, -0.
                                                         4.00]
 real,    parameter :: LEARN_OTSU_MIN_OFFSETS(9)     = [0.05, 0.10, 0.15, 0.25, 0.35, 0.40, 0.45, 0.50, 0.60]
 real,    parameter :: LEARN_OTSU_MAX_OFFSETS(9)     = [0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.60, 0.75, 0.90]
-real,    parameter :: LEARN_POOL_FRACS(11)          = [0.50, 0.60, 0.65, 0.70, 0.80, 0.85, &
+real,    parameter :: LEARN_MIN_ACCEPT_FRACS(11)    = [0.50, 0.60, 0.65, 0.70, 0.80, 0.85, &
                                                        0.90, 0.925, 0.95, 0.975, 1.00]
 
 contains
@@ -64,10 +59,8 @@ contains
         real :: best_score
         integer :: ipol, im, isep, ilow, iwin, iomin, iomax, max_grid
         integer :: n_grid, n_top, n_best_ties
-        logical :: is_pool_context
         call load_quality_training_datasets(analysis_files, dsets)
-        base_spec = learned_model%get_spec()
-        is_pool_context = model_is_pool_context(learned_model)
+        base_spec = abinitio_learn_base_spec()
         call calc_suggested_training_weights(dsets, suggested_weights)
         best_spec  = base_spec
         best_score = -huge(1.0)
@@ -75,14 +68,14 @@ contains
         n_top       = 0
         n_grid      = 0
         n_best_ties = 0
-        max_grid = CAVG_QUALITY_LEARN_N_POLICIES * size(LEARN_MINSEPS) * &
-            n_learn_margins(is_pool_context) * n_otsu_grid_combinations()
-        if( is_pool_context ) max_grid = max_grid * size(LEARN_POOL_FRACS)
+        max_grid = n_feature_policies() * size(LEARN_MINSEPS) * &
+            size(LEARN_BOUNDARY_MARGINS) * n_otsu_grid_combinations() * size(LEARN_OTSU_FLAGS) * &
+            (1 + size(LEARN_MIN_ACCEPT_FRACS))
         if( max_grid > 10000 ) write(logfhandle,'(A,I0)') &
             '>>> CAVG QUALITY LEARN CANDIDATE GRID SIZE: ', max_grid
-        allocate(best_tie_specs(max_grid))
+        allocate(best_tie_specs(min(max_grid, CAVG_QUALITY_LEARN_MAX_TIES)))
         allocate(caches(size(dsets)))
-        do ipol = 1, CAVG_QUALITY_LEARN_N_POLICIES
+        do ipol = 1, n_feature_policies()
             candidate_spec = base_spec
             candidate_spec%feature_policy = feature_policy_name(ipol)
             candidate_spec%weights = suggested_weights
@@ -93,8 +86,8 @@ contains
             call build_policy_caches(dsets, candidate_spec%weights, caches)
             do isep = 1, size(LEARN_MINSEPS)
                 candidate_spec%min_score_separation = LEARN_MINSEPS(isep)
-                do im = 1, n_learn_margins(is_pool_context)
-                    candidate_spec%boundary_margin = learn_boundary_margin(im, is_pool_context)
+                do im = 1, size(LEARN_BOUNDARY_MARGINS)
+                    candidate_spec%boundary_margin = LEARN_BOUNDARY_MARGINS(im)
                     do ilow = 1, size(LEARN_OTSU_FLAGS)
                         candidate_spec%use_lowsep_otsu = LEARN_OTSU_FLAGS(ilow)
                         do iwin = 1, size(LEARN_OTSU_FLAGS)
@@ -106,16 +99,15 @@ contains
                                         candidate_spec%otsu_max_offset = LEARN_OTSU_MAX_OFFSETS(iomax)
                                         if( candidate_spec%otsu_max_offset <= &
                                             candidate_spec%otsu_min_offset + EPS ) cycle
-                                        call evaluate_candidate_spec(dsets, caches, candidate_spec, &
-                                            is_pool_context, n_grid, best_spec, best_score, &
-                                            best_tie_specs, n_best_ties, top_specs, top_scores, n_top)
+                                        call evaluate_policy_grid(dsets, caches, candidate_spec, &
+                                            n_grid, best_spec, best_score, best_tie_specs, n_best_ties, &
+                                            top_specs, top_scores, n_top)
                                     end do
                                 end do
                             else
                                 candidate_spec%otsu_min_offset = base_spec%otsu_min_offset
                                 candidate_spec%otsu_max_offset = base_spec%otsu_max_offset
-                                call evaluate_candidate_spec(dsets, caches, candidate_spec, &
-                                    is_pool_context, &
+                                call evaluate_policy_grid(dsets, caches, candidate_spec, &
                                     n_grid, best_spec, best_score, best_tie_specs, n_best_ties, &
                                     top_specs, top_scores, n_top)
                             endif
@@ -124,8 +116,8 @@ contains
                 end do
             end do
         end do
-        call select_preferred_best_tie(base_spec, best_tie_specs, n_best_ties, best_spec, is_pool_context)
-        best_spec%name = trim(best_spec%context)//'_learned_v1'
+        call select_preferred_best_tie(base_spec, best_tie_specs, n_best_ties, best_spec)
+        best_spec%name = 'learned_v1'
         call learned_model%init_spec(best_spec)
         call learned_model%write(model_fname)
         call write_cavg_quality_learn_report(report_fname, dsets, base_spec, suggested_weights, learned_model, best_score, &
@@ -176,6 +168,24 @@ contains
         deallocate(dsets)
     end subroutine evaluate_cavg_quality_result
 
+    function abinitio_learn_base_spec() result( spec )
+        type(cavg_quality_model_spec) :: spec
+        type(cavg_quality_model)      :: defaults
+        spec = defaults%get_spec()
+        spec%name                    = 'abinitio_learn_base'
+        spec%feature_policy          = 'microchunk_plus_score_signal'
+        spec%weights                 = 0.0
+        spec%boundary_margin         = 0.0
+        spec%min_score_separation    = minval(LEARN_MINSEPS)
+        spec%otsu_min_offset         = 0.0
+        spec%otsu_max_offset         = 0.0
+        spec%min_accept_frac         = 0.0
+        spec%use_lowsep_otsu         = .false.
+        spec%use_otsu_window         = .false.
+        spec%use_cluster_rescue      = .false.
+        spec%enforce_min_accept_frac = .false.
+    end function abinitio_learn_base_spec
+
     subroutine load_quality_training_datasets( analysis_files, dsets )
         class(string), intent(in) :: analysis_files(:)
         type(cavg_quality_training_dataset), allocatable, intent(inout) :: dsets(:)
@@ -190,34 +200,6 @@ contains
             call read_quality_training_dataset(analysis_files(i)%to_char(), dsets(i))
         end do
     end subroutine load_quality_training_datasets
-
-    logical function model_is_pool_context( model )
-        type(cavg_quality_model), intent(in) :: model
-        model_is_pool_context = trim(model%context) == 'pool'
-    end function model_is_pool_context
-
-    integer function n_learn_margins( is_pool_context )
-        logical, intent(in) :: is_pool_context
-        if( is_pool_context )then
-            n_learn_margins = size(LEARN_POOL_MARGINS)
-        else
-            n_learn_margins = size(LEARN_CHUNK_MARGINS)
-        endif
-    end function n_learn_margins
-
-    real function learn_boundary_margin( imargin, is_pool_context )
-        integer, intent(in) :: imargin
-        logical, intent(in) :: is_pool_context
-        if( is_pool_context )then
-            if( imargin < 1 .or. imargin > size(LEARN_POOL_MARGINS) ) &
-                THROW_HARD('learn_boundary_margin: invalid pool margin index')
-            learn_boundary_margin = LEARN_POOL_MARGINS(imargin)
-        else
-            if( imargin < 1 .or. imargin > size(LEARN_CHUNK_MARGINS) ) &
-                THROW_HARD('learn_boundary_margin: invalid chunk margin index')
-            learn_boundary_margin = LEARN_CHUNK_MARGINS(imargin)
-        endif
-    end function learn_boundary_margin
 
     integer function n_otsu_grid_combinations()
         integer :: ilow, iwin, iomin, iomax
@@ -238,12 +220,32 @@ contains
         end do
     end function n_otsu_grid_combinations
 
-    subroutine evaluate_candidate_spec( dsets, caches, candidate_spec, is_pool_context, n_grid, best_spec, best_score, &
+    subroutine evaluate_policy_grid( dsets, caches, candidate_spec, n_grid, best_spec, best_score, best_tie_specs, &
+                                     n_best_ties, top_specs, top_scores, n_top )
+        type(cavg_quality_training_dataset), intent(in)    :: dsets(:)
+        type(cavg_quality_classify_cache),   intent(in)    :: caches(:)
+        type(cavg_quality_model_spec),       intent(in)    :: candidate_spec
+        integer,                             intent(inout) :: n_grid, n_best_ties, n_top
+        type(cavg_quality_model_spec),       intent(inout) :: best_spec, best_tie_specs(:), top_specs(:)
+        real,                                intent(inout) :: best_score, top_scores(:)
+        type(cavg_quality_model_spec) :: scan_spec
+        integer :: irescue, iaccept
+        do irescue = 1, size(LEARN_OTSU_FLAGS)
+            scan_spec = candidate_spec
+            scan_spec%use_cluster_rescue = LEARN_OTSU_FLAGS(irescue)
+            do iaccept = 1, size(LEARN_OTSU_FLAGS)
+                scan_spec%enforce_min_accept_frac = LEARN_OTSU_FLAGS(iaccept)
+                call evaluate_candidate_spec(dsets, caches, scan_spec, n_grid, best_spec, best_score, &
+                    best_tie_specs, n_best_ties, top_specs, top_scores, n_top)
+            end do
+        end do
+    end subroutine evaluate_policy_grid
+
+    subroutine evaluate_candidate_spec( dsets, caches, candidate_spec, n_grid, best_spec, best_score, &
                                         best_tie_specs, n_best_ties, top_specs, top_scores, n_top )
         type(cavg_quality_training_dataset), intent(in)    :: dsets(:)
         type(cavg_quality_classify_cache),   intent(in)    :: caches(:)
         type(cavg_quality_model_spec),       intent(in)    :: candidate_spec
-        logical,                             intent(in)    :: is_pool_context
         integer,                             intent(inout) :: n_grid, n_best_ties, n_top
         type(cavg_quality_model_spec),       intent(inout) :: best_spec, best_tie_specs(:), top_specs(:)
         real,                                intent(inout) :: best_score, top_scores(:)
@@ -251,10 +253,10 @@ contains
         type(cavg_quality_model_spec) :: scan_spec
         integer :: ifrac
         real    :: score
-        if( is_pool_context )then
-            do ifrac = 1, size(LEARN_POOL_FRACS)
+        if( candidate_spec%enforce_min_accept_frac )then
+            do ifrac = 1, size(LEARN_MIN_ACCEPT_FRACS)
                 scan_spec = candidate_spec
-                scan_spec%min_accept_frac = LEARN_POOL_FRACS(ifrac)
+                scan_spec%min_accept_frac = LEARN_MIN_ACCEPT_FRACS(ifrac)
                 call candidate%init_spec(scan_spec)
                 score = macro_balacc_for_model(dsets, candidate, caches)
                 n_grid = n_grid + 1
@@ -262,7 +264,9 @@ contains
                     best_tie_specs, n_best_ties, top_specs, top_scores, n_top)
             end do
         else
-            call candidate%init_spec(candidate_spec)
+            scan_spec = candidate_spec
+            scan_spec%min_accept_frac = 0.0
+            call candidate%init_spec(scan_spec)
             score = macro_balacc_for_model(dsets, candidate, caches)
             n_grid = n_grid + 1
             call consider_model_candidate(candidate%get_spec(), score, best_spec, best_score, &
@@ -289,6 +293,10 @@ contains
         end do
     end subroutine kill_policy_caches
 
+    integer function n_feature_policies()
+        n_feature_policies = CAVG_QUALITY_LEARN_N_STANDARD_POLICIES
+    end function n_feature_policies
+
     function feature_policy_name( ipolicy ) result( name )
         integer, intent(in) :: ipolicy
         character(len=64) :: name
@@ -301,14 +309,6 @@ contains
                 name = 'microchunk_plus_signal'
             case(4)
                 name = 'microchunk_plus_score_signal'
-            case(5)
-                name = 'microchunk_plus_texture'
-            case(6)
-                name = 'microchunk_plus_score_texture'
-            case(7)
-                name = 'microchunk_plus_signal_texture'
-            case(8)
-                name = 'microchunk_plus_score_signal_texture'
             case default
                 THROW_HARD('feature_policy_name: invalid feature policy')
         end select
@@ -319,6 +319,7 @@ contains
         logical, intent(out) :: mask(CAVG_QUALITY_NFEATS)
         mask = .false.
         call append_feature_family(mask, 'microchunk')
+        call append_feature_family(mask, 'overfit')
         select case(ipolicy)
             case(1)
                 continue
@@ -329,18 +330,6 @@ contains
             case(4)
                 call append_feature_family(mask, 'score')
                 call append_feature_family(mask, 'signal')
-            case(5)
-                call append_feature_family(mask, 'texture')
-            case(6)
-                call append_feature_family(mask, 'score')
-                call append_feature_family(mask, 'texture')
-            case(7)
-                call append_feature_family(mask, 'signal')
-                call append_feature_family(mask, 'texture')
-            case(8)
-                call append_feature_family(mask, 'score')
-                call append_feature_family(mask, 'signal')
-                call append_feature_family(mask, 'texture')
             case default
                 THROW_HARD('feature_policy_mask: invalid feature policy')
         end select
@@ -512,7 +501,7 @@ contains
             THROW_HARD('read_quality_training_dataset: missing manual_state column in '//trim(fname))
         do ifeat = 1, CAVG_QUALITY_NFEATS
             if( feat_col(ifeat) == 0 )then
-                if( trim(cavg_quality_feature_family(ifeat)) == 'texture' ) cycle
+                if( trim(cavg_quality_feature_family(ifeat)) == 'overfit' ) cycle
                 errmsg = 'read_quality_training_dataset: missing z_'//trim(cavg_quality_feature_name(ifeat))//&
                     ' column in '//trim(fname)
                 THROW_HARD(trim(errmsg))
@@ -676,18 +665,17 @@ contains
         call record_top_model_candidate(spec, score, top_specs, top_scores, n_top)
     end subroutine consider_model_candidate
 
-    subroutine select_preferred_best_tie( base_spec, best_tie_specs, n_best_ties, best_spec, is_pool_context )
+    subroutine select_preferred_best_tie( base_spec, best_tie_specs, n_best_ties, best_spec )
         type(cavg_quality_model_spec), intent(in)    :: base_spec, best_tie_specs(:)
         integer,                       intent(in)    :: n_best_ties
         type(cavg_quality_model_spec), intent(inout) :: best_spec
-        logical,                       intent(in)    :: is_pool_context
         integer :: i, nstored
         real    :: dist, best_dist
         nstored = min(n_best_ties, size(best_tie_specs))
         if( nstored <= 1 ) return
         best_dist = huge(1.0)
         do i = 1, nstored
-            dist = threshold_tie_distance(best_tie_specs(i), base_spec, is_pool_context)
+            dist = threshold_tie_distance(best_tie_specs(i), base_spec)
             if( dist < best_dist - EPS )then
                 best_dist = dist
                 best_spec = best_tie_specs(i)
@@ -695,28 +683,24 @@ contains
         end do
     end subroutine select_preferred_best_tie
 
-    real function threshold_tie_distance( spec, base_spec, is_pool_context )
+    real function threshold_tie_distance( spec, base_spec )
         type(cavg_quality_model_spec), intent(in) :: spec, base_spec
-        logical,                       intent(in) :: is_pool_context
-        real :: margin_min, margin_max
-        if( is_pool_context )then
-            margin_min = minval(LEARN_POOL_MARGINS)
-            margin_max = maxval(LEARN_POOL_MARGINS)
-        else
-            margin_min = minval(LEARN_CHUNK_MARGINS)
-            margin_max = maxval(LEARN_CHUNK_MARGINS)
-        endif
         threshold_tie_distance = scaled_absdiff(spec%min_score_separation, base_spec%min_score_separation, &
             minval(LEARN_MINSEPS), maxval(LEARN_MINSEPS))
         threshold_tie_distance = threshold_tie_distance + scaled_absdiff(spec%boundary_margin, &
-            base_spec%boundary_margin, margin_min, margin_max)
-        if( is_pool_context ) threshold_tie_distance = threshold_tie_distance + scaled_absdiff( &
-            spec%min_accept_frac, base_spec%min_accept_frac, minval(LEARN_POOL_FRACS), maxval(LEARN_POOL_FRACS))
+            base_spec%boundary_margin, minval(LEARN_BOUNDARY_MARGINS), maxval(LEARN_BOUNDARY_MARGINS))
+        if( spec%enforce_min_accept_frac ) threshold_tie_distance = threshold_tie_distance + scaled_absdiff( &
+            spec%min_accept_frac, base_spec%min_accept_frac, minval(LEARN_MIN_ACCEPT_FRACS), &
+            maxval(LEARN_MIN_ACCEPT_FRACS))
         ! Boolean knobs count as a quarter of one normalized scalar axis:
-        ! enough to prefer inherited behavior among exact-score ties without
+        ! enough to prefer the neutral foundation among exact-score ties without
         ! overwhelming a nearby threshold or margin value.
         if( spec%use_lowsep_otsu .neqv. base_spec%use_lowsep_otsu ) threshold_tie_distance = threshold_tie_distance + 0.25
         if( spec%use_otsu_window .neqv. base_spec%use_otsu_window ) threshold_tie_distance = threshold_tie_distance + 0.25
+        if( spec%use_cluster_rescue .neqv. base_spec%use_cluster_rescue ) &
+            threshold_tie_distance = threshold_tie_distance + 0.25
+        if( spec%enforce_min_accept_frac .neqv. base_spec%enforce_min_accept_frac ) &
+            threshold_tie_distance = threshold_tie_distance + 0.25
         if( spec%use_otsu_window )then
             threshold_tie_distance = threshold_tie_distance + scaled_absdiff(spec%otsu_min_offset, &
                 base_spec%otsu_min_offset, minval(LEARN_OTSU_MIN_OFFSETS), maxval(LEARN_OTSU_MIN_OFFSETS))
@@ -820,8 +804,7 @@ contains
         call collect_learn_diagnostics(dsets, learned_model, diag)
         open(newunit=funit, file=trim(fname), status='replace', action='write')
         write(funit,'(A)') '# model_cavgs_rejection learn report'
-        write(funit,'(A,A)') 'context=', trim(learned_model%context)
-        write(funit,'(A,A)') 'base_model=', trim(base_spec%name)
+        write(funit,'(A,A)') 'foundation_model=', trim(base_spec%name)
         write(funit,'(A,A)') 'learned_model=', trim(learned_model%name)
         write(funit,'(A,F10.5)') 'macro_learn_score=', best_score
         write(funit,'(A,I0)') 'n_datasets=', size(dsets)
@@ -829,23 +812,25 @@ contains
         write(funit,'(A,I0)') 'best_tie_count=', n_best_ties
         write(funit,'(A,I0)') 'top_candidates_reported=', n_top
         write(funit,'(A)') 'note=scalar_feature_space_only'
-        write(funit,'(A)') 'note=feature_policy_scans_cumulative_family_sets_starting_with_microchunk'
+        write(funit,'(A)') 'note=feature_policy_scans_include_microchunk_and_overfit_features'
         write(funit,'(A)') 'note=hard_rejected_rows_are_reported_but_excluded_from_model_fit_and_scoring'
         write(funit,'(A)') 'note=feature_weights_use_only_datasets_with_both_manual_states_after_hard_rejects'
         write(funit,'(A)') 'note=trainable_good_only_datasets_are_scored_by_guarded_recall'
         write(funit,'(A)') 'note=trainable_bad_only_datasets_are_scored_by_specificity_unless_good_classes_were_hard_rejected'
         write(funit,'(A)') 'note=feature_weights_derived_from_training_data_no_base_weight_blending'
+        write(funit,'(A)') 'note=learn_mode_uses_neutral_abinitio_foundation_not_quality_model_or_infile_seed'
         call write_feature_policy_grid(funit)
         write(funit,'(A,ES14.6)') 'grid_recall_only_floor=', LEARN_RECALL_ONLY_FLOOR
         write(funit,'(A,ES14.6)') 'grid_recall_only_shortfall_penalty=', LEARN_RECALL_ONLY_PENALTY
         call write_real_list(funit, 'grid_min_score_separations=', LEARN_MINSEPS)
-        call write_learn_margin_grid(funit, model_is_pool_context(learned_model))
+        call write_real_list(funit, 'grid_boundary_margins=', LEARN_BOUNDARY_MARGINS)
         call write_logical_list(funit, 'grid_use_lowsep_otsu=', LEARN_OTSU_FLAGS)
         call write_logical_list(funit, 'grid_use_otsu_window=', LEARN_OTSU_FLAGS)
         call write_real_list(funit, 'grid_otsu_min_offsets=', LEARN_OTSU_MIN_OFFSETS)
         call write_real_list(funit, 'grid_otsu_max_offsets=', LEARN_OTSU_MAX_OFFSETS)
-        if( model_is_pool_context(learned_model) ) &
-            call write_real_list(funit, 'grid_pool_min_accept_fracs=', LEARN_POOL_FRACS)
+        call write_logical_list(funit, 'grid_use_cluster_rescue=', LEARN_OTSU_FLAGS)
+        call write_logical_list(funit, 'grid_enforce_min_accept_frac=', LEARN_OTSU_FLAGS)
+        call write_real_list(funit, 'grid_min_accept_fracs=', LEARN_MIN_ACCEPT_FRACS)
         write(funit,'(A)', advance='no') 'suggested_weights='
         do i = 1, CAVG_QUALITY_NFEATS
             if( i > 1 ) write(funit,'(A)', advance='no') ','
@@ -881,7 +866,6 @@ contains
         call collect_learn_diagnostics(dsets, model, diag)
         open(newunit=funit, file=trim(fname), status='replace', action='write')
         write(funit,'(A)') '# model_cavgs_rejection evaluate report'
-        write(funit,'(A,A)') 'context=', trim(model%context)
         write(funit,'(A,A)') 'model=', trim(model%name)
         write(funit,'(A,F10.5)') 'macro_evaluate_score=', eval_score
         write(funit,'(A,I0)') 'n_datasets=', size(dsets)
@@ -1132,7 +1116,7 @@ contains
         integer :: ipol, ninds
         write(funit,'(A)') 'feature_policy_lodo_header=feature_policy,n_features,mean_auc,min_auc,min_auc_dataset,'//&
             'mean_oracle_score,min_oracle_score,min_score_dataset,total_tp,total_fp,total_tn,total_fn'
-        do ipol = 1, CAVG_QUALITY_LEARN_N_POLICIES
+        do ipol = 1, n_feature_policies()
             call feature_policy_indices(ipol, inds, ninds)
             call write_feature_policy_lodo_row(funit, trim(feature_policy_name(ipol)), dsets, inds(1:ninds))
         end do
@@ -1440,15 +1424,9 @@ contains
         call write_search_diagnostic(funit, 'note', 'feature_policy', trim(learned_model%feature_policy), &
             'selected_family_set_encoded_by_zeroed_model_weights')
         call write_minsep_diagnostic(funit, learned_model%min_score_separation, best_tie_specs, n_best_ties)
-        if( model_is_pool_context(learned_model) )then
-            call write_grid_position_diagnostic(funit, 'boundary_margin', learned_model%boundary_margin, &
-                LEARN_POOL_MARGINS, 'best_at_lowest_value_consider_more_negative_if_junk_leaks_after_validation', &
-                'best_at_highest_value_consider_more_positive_if_good_classes_are_rejected')
-        else
-            call write_grid_position_diagnostic(funit, 'boundary_margin', learned_model%boundary_margin, &
-                LEARN_CHUNK_MARGINS, 'best_at_lowest_value_consider_more_negative_if_junk_leaks_after_validation', &
-                'best_at_highest_value_consider_more_positive_if_good_classes_are_rejected')
-        endif
+        call write_grid_position_diagnostic(funit, 'boundary_margin', learned_model%boundary_margin, &
+            LEARN_BOUNDARY_MARGINS, 'best_at_lowest_value_consider_more_negative_if_junk_leaks_after_validation', &
+            'best_at_highest_value_consider_more_positive_if_good_classes_are_rejected')
         call write_bool_grid_diagnostic(funit, 'use_lowsep_otsu', learned_model%use_lowsep_otsu, &
             'searched', 'learned_from_training_grid')
         call write_bool_grid_diagnostic(funit, 'use_otsu_window', learned_model%use_otsu_window, &
@@ -1466,12 +1444,12 @@ contains
             call write_search_diagnostic(funit, 'note', 'otsu_max_offset', 'inactive', &
                 'use_otsu_window is false in the learned model')
         endif
-        if( model_is_pool_context(learned_model) )then
+        if( learned_model%enforce_min_accept_frac )then
             call write_grid_position_diagnostic(funit, 'min_accept_frac', learned_model%min_accept_frac, &
-                LEARN_POOL_FRACS, 'best_at_lowest_value_consider_lower_if_pool_model_keeps_too_much_junk', &
-                'best_at_highest_value_consider_higher_if_pool_model_rejects_good_classes')
+                LEARN_MIN_ACCEPT_FRACS, 'best_at_lowest_value_consider_lower_if_model_keeps_too_much_junk', &
+                'best_at_highest_value_consider_higher_if_model_rejects_good_classes')
         else
-            call write_search_diagnostic(funit, 'note', 'min_accept_frac', 'not_searched_in_chunk_context', &
+            call write_search_diagnostic(funit, 'note', 'min_accept_frac', 'inactive', &
                 'enforce_min_accept_frac is false for the current learned model')
         endif
         call write_policy_parameter_diagnostics(funit, learned_model, diag)
@@ -1604,18 +1582,18 @@ contains
             diag%n_otsu_like, ';fp=', diag%otsu_like_fp, ';fn=', diag%otsu_like_fn
         call write_search_diagnostic(funit, policy_level(diag%n_otsu_like, diag%otsu_like_fp, diag%otsu_like_fn), &
             'otsu_max_offset_effect', 'searched', trim(detail))
-        write(detail,'(A,L1,A,I0,A,I0,A,I0)') 'inherited=', model%use_cluster_rescue, ';rescue_like_datasets=', &
+        write(detail,'(A,L1,A,I0,A,I0,A,I0)') 'selected=', model%use_cluster_rescue, ';rescue_like_datasets=', &
             diag%n_rescue_like, ';fp=', diag%rescue_like_fp, ';fn=', diag%rescue_like_fn
-        call write_search_diagnostic(funit, rescue_policy_level(model, diag), 'use_cluster_rescue', 'not_searched', &
+        call write_search_diagnostic(funit, rescue_policy_level(model, diag), 'use_cluster_rescue', 'searched', &
             trim(detail))
-        write(detail,'(A,F8.4,A,I0,A,I0,A,I0)') 'inherited=', model%cluster_rescue_margin, ';rescue_like_datasets=', &
+        write(detail,'(A,F8.4,A,I0,A,I0,A,I0)') 'fixed=', model%cluster_rescue_margin, ';rescue_like_datasets=', &
             diag%n_rescue_like, ';fp=', diag%rescue_like_fp, ';fn=', diag%rescue_like_fn
-        call write_search_diagnostic(funit, rescue_policy_level(model, diag), 'cluster_rescue_margin', 'not_searched', &
+        call write_search_diagnostic(funit, rescue_policy_level(model, diag), 'cluster_rescue_margin', 'fixed', &
             trim(detail))
-        write(detail,'(A,L1,A,I0,A,I0,A,I0)') 'inherited=', model%enforce_min_accept_frac, ';min_accept_datasets=', &
+        write(detail,'(A,L1,A,I0,A,I0,A,I0)') 'selected=', model%enforce_min_accept_frac, ';min_accept_datasets=', &
             diag%n_min_accept_like, ';fp=', diag%min_accept_like_fp, ';fn=', diag%min_accept_like_fn
         call write_search_diagnostic(funit, min_accept_policy_level(model, diag), 'enforce_min_accept_frac', &
-            'not_searched', trim(detail))
+            'searched', trim(detail))
         write(detail,'(A,I0,A,I0,A,I0,A,I0,A,I0)') 'single_cluster_datasets=', diag%n_single_cluster, &
             ';fp=', diag%single_cluster_fp, ';fn=', diag%single_cluster_fn, ';total_fp=', diag%total_fp, &
             ';total_fn=', diag%total_fn
@@ -1639,8 +1617,6 @@ contains
         character(len=8) :: level
         if( model%use_cluster_rescue )then
             level = policy_level(diag%n_rescue_like, diag%rescue_like_fp, diag%rescue_like_fn)
-        else if( diag%total_fn > 0 )then
-            level = 'warning'
         else
             level = 'note'
         endif
@@ -1652,8 +1628,6 @@ contains
         character(len=8) :: level
         if( model%enforce_min_accept_frac )then
             level = policy_level(diag%n_min_accept_like, diag%min_accept_like_fp, diag%min_accept_like_fn)
-        else if( diag%total_fn > 0 .and. model_is_pool_context(model) )then
-            level = 'warning'
         else
             level = 'note'
         endif
@@ -1684,21 +1658,11 @@ contains
         write(funit,*)
     end subroutine write_real_list
 
-    subroutine write_learn_margin_grid( funit, is_pool_context )
-        integer, intent(in) :: funit
-        logical, intent(in) :: is_pool_context
-        if( is_pool_context )then
-            call write_real_list(funit, 'grid_boundary_margins=', LEARN_POOL_MARGINS)
-        else
-            call write_real_list(funit, 'grid_boundary_margins=', LEARN_CHUNK_MARGINS)
-        endif
-    end subroutine write_learn_margin_grid
-
     subroutine write_feature_policy_grid( funit )
         integer, intent(in) :: funit
         integer :: ipol
         write(funit,'(A)', advance='no') 'grid_feature_policies='
-        do ipol = 1, CAVG_QUALITY_LEARN_N_POLICIES
+        do ipol = 1, n_feature_policies()
             if( ipol > 1 ) write(funit,'(A)', advance='no') ','
             write(funit,'(A)', advance='no') trim(feature_policy_name(ipol))
         end do

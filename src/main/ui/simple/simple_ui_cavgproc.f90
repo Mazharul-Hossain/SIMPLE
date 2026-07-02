@@ -56,6 +56,7 @@ contains
         ! <empty>
         ! search controls
         call cluster_cavgs%add_input(UI_SRCH, clust_crit)
+        call cluster_cavgs%add_input(UI_SRCH, skip_rejection)
         ! filter controls
         call cluster_cavgs%add_input(UI_FILT, hp)
         call cluster_cavgs%add_input(UI_FILT, lp)
@@ -82,6 +83,8 @@ contains
         ! parameter input/output
         call model_cavgs_rejection%add_input(UI_PARM, quality_mode)
         call model_cavgs_rejection%add_input(UI_PARM, quality_model)
+        call model_cavgs_rejection%add_input(UI_PARM, overfit_hard_reject, &
+            gui_active_flags='quality_mode=apply|analyze|evaluate')
         call model_cavgs_rejection%add_input(UI_PARM, prune)
         ! alternative inputs
         call model_cavgs_rejection%add_input(UI_ALT, 'filetab', 'file', 'Analysis file table', &
@@ -100,7 +103,7 @@ contains
         ! filter controls
         ! <empty>
         ! mask controls
-        call model_cavgs_rejection%add_input(UI_MASK, mskdiam, gui_active_flags='quality_mode=apply|analyze')
+        call model_cavgs_rejection%add_input(UI_MASK, mskdiam, gui_active_flags='quality_mode=apply|analyze|evaluate')
         ! computer controls
         call model_cavgs_rejection%add_input(UI_COMP, nthr, gui_active_flags='quality_mode=apply|analyze|learn|evaluate')
         ! add to ui_hash

@@ -115,6 +115,7 @@ type :: parameters
     character(len=3)          :: nu_refine='no'       !< enable one-step high-resolution expansion refinement in the nonuniform filter(yes|no){no}
     character(len=3)          :: omit_neg='no'        !< omit negative pixels(yes|no){no}
     character(len=3)          :: outside='no'         !< extract boxes outside the micrograph boundaries(yes|no){no}
+    character(len=3)          :: overfit_hard_reject='no' !< reject class averages with hard overfit rule(yes|no){no}
     character(len=3)          :: pad='no'
     character(len=3)          :: partition='no'
     character(len=3)          :: pca_img_ori='no'     !< original (no rotation/shifting within classes) ptcl stack to pca(yes|no){no}
@@ -146,6 +147,7 @@ type :: parameters
     character(len=3)          :: sgd='no'             !< stochastic class-average update(yes|no){no}
     character(len=3)          :: sgd_diag='yes'       !< diagnostic output for stochastic class-average update(yes|no){yes}
     character(len=3)          :: shbarrier='yes'      !< use shift search barrier constraint(yes|no){yes}
+    character(len=3)          :: skip_rejection='no'  !< skip class-average rejection/update path(yes|no){no}
     character(len=3)          :: sort_asc='yes'       !< sort oris ascending
     character(len=3)          :: stream='no'          !< stream (real time) execution mode(yes|no){no}
     character(len=3)          :: stream2d='no'        !< indicates streaming 2D clustering(yes|no){no}
@@ -179,6 +181,7 @@ type :: parameters
     type(string)              :: dir_exec             !< name of execution directory
     type(string)              :: dir_meta             !< grab xml files from here
     type(string)              :: dir_movies           !< grab mrc mrcs files from here
+    type(string)              :: dir_preprocess       !< grab preprocessed files from here
     type(string)              :: dir_prev             !< grab previous projects for streaming
     type(string)              :: dir_refine           !< refinement directory
     type(string)              :: dir_reject           !< move rejected files to here{rejected}
@@ -298,8 +301,8 @@ type :: parameters
     character(len=STDLEN)     :: qsys_name='local'    !< name of queue system (local|coarray|slurm|pbs|lsf|sge)
     character(len=STDLEN)     :: qsys_partition2D=''  !< partition name for streaming 2D analysis
     character(len=STDLEN)     :: quality_mode='apply' !< class-average quality mode(apply|analyze|learn|evaluate|promote){apply}
-    ! class-average quality model preset(chunk_default_v2|chunk_lp4|pool_default_v2){chunk_default_v2}
-    character(len=STDLEN)     :: quality_model='chunk_default_v2'
+    ! class-average quality model preset(chunk100mics){chunk100mics}
+    character(len=STDLEN)     :: quality_model='chunk100mics'
     character(len=STDLEN)     :: real_filter=''
     character(len=STDLEN)     :: refine='shc'         !< refinement mode(snhc|shc|neigh|shc_neigh|prob|prob_state|prob_neigh|prob_snhc){shc}
     character(len=STDLEN)     :: refine_type='3D'     !< refinement mode(3D|2D|hybrid){3D}
@@ -534,7 +537,7 @@ type :: parameters
     real    :: ndev=2.5            !< # deviations in one-cluster clustering
     real    :: ndev2D=CLS_REJECT_STD    !< # deviations for 2D class selection/rejection
     real    :: nsig=2.5            !< # sigmas
-    real    :: objfun_den_w=0.5    !< denoised correlation weight in hybrid objective{0.5}
+    real    :: objfun_den_w=0.3    !< denoised correlation weight in hybrid objective{0.3}
     real    :: osmpd=0.            !< target output pixel size
     real    :: overlap=0.9         !< required parameters overlap for convergence
     real    :: phranlp=35.         !< low-pass phase randomize(yes|no){no}

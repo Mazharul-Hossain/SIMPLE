@@ -2,7 +2,7 @@
 
 ## Scope
 
-`model_cavgs_rejection` is the SIMPLE class-average quality selection program. It evaluates `cls2D` class averages, applies hard validity rejects, extracts a fixed scalar feature bank, normalizes those features within the dataset, and applies a named quality model to partition class averages into accepted and rejected sets. The model can also abstain from additional soft rejection and report that the final decision was hard preselection only.
+`model_cavgs_rejection` is the SIMPLE class-average rejection-model program. It evaluates `cls2D` class averages, applies hard validity rejects, extracts a fixed scalar feature bank, normalizes those features within the dataset, and applies a named model to partition class averages into accepted and rejected sets. The model can also abstain from additional soft rejection and report that the final decision was hard preselection only.
 
 This is a learned feature-vector model. It should be read alongside the streaming microchunk rejector, which is a cumulative rule engine. The two systems share several image-processing primitives, but they use them differently: microchunking applies fixed sequential criteria and rejects a class as soon as any criterion fires; `model_cavgs_rejection` uses hard rejects only for validity failures, then learns a weighted scalar quality score and dataset-specific thresholding behavior for the remaining class averages.
 
@@ -34,7 +34,7 @@ The stream path in `simple_microchunked2D` currently calls `cluster2D_rejector`.
 
 ## Evidence Comparison
 
-The model feature bank keeps the microchunk-style image-processing evidence as a feature family and appends optional evidence families. The current `chunk_default_v2` preset uses the `microchunk_plus_score` policy: the microchunk-family features plus `corr_frc_proxy`.
+The model feature bank keeps the microchunk-style image-processing evidence, optional stored-score and signal evidence, and the local-variance/support evidence needed by optional overfit hard rejection. The overfit local-variance features are part of the learned model feature vector and are included in every learn-mode feature policy. Texture descriptors were removed after they failed to justify the extra feature and extraction complexity. The current `chunk100mics` preset uses the `microchunk_plus_score_signal` policy: microchunk plus overfit-family features, stored-score evidence, and compact signal evidence.
 
 | Evidence | Microchunk rule engine | `model_cavgs_rejection` feature-vector model | Current chunk role |
 | --- | --- | --- | --- |
@@ -48,6 +48,7 @@ The model feature bank keeps the microchunk-style image-processing evidence as a
 | Stored score evidence | Not used by the rule engine. | `corr_frc_proxy` reads stored class correlation or FRC-like score when present. | Active feature. |
 | Center/edge signal | Not used by the rule engine. | `log_center_edge_snr` feature in the `signal` family. | Available, zero weight in current chunk default. |
 | Presence | Not used by the rule engine. | `presence` feature in the `signal` family. | Available, zero weight in current chunk default. |
+| Overfit local variance | Not used by the rule engine. | `neg_log_locvar_fg`, `neg_log_locvar_bg`, and `log_locvar_fg_bg_ratio` provide low/localized variance evidence. | Active features in learned policies. |
 | Invalid pixels | Not a named microchunk rule. | Image values containing invalid pixels are hard rejected. | Hard gate. |
 
 ## Hard-Reject Comparison
@@ -75,7 +76,7 @@ Microchunk tier thresholds:
 | Reference chunk | `0.0025` | `-2.0` | `-2.0` |
 | Match chunk | `0.0025` | `-2.0` | `-2.0` |
 
-`model_cavgs_rejection` uses a fixed population hard-reject fraction of `0.0035` for the current feature extractor, independent of model context.
+`model_cavgs_rejection` uses a fixed population hard-reject fraction of `0.0035` for the current feature extractor, independent of the selected model preset.
 
 ## Learning Model
 
@@ -103,14 +104,10 @@ Feature-family policies act as a small structural model-selection layer:
 
 | Policy | Active families | Purpose |
 | --- | --- | --- |
-| `microchunk` | `microchunk` | Tests whether scalar analogues of the stream rejector evidence are sufficient. |
-| `microchunk_plus_score` | `microchunk`, `score` | Adds stored class correlation/FRC-like evidence. This is the current chunk default. |
-| `microchunk_plus_signal` | `microchunk`, `signal` | Adds center/edge and presence evidence without stored score evidence. |
-| `microchunk_plus_score_signal` | `microchunk`, `score`, `signal` | Uses the pre-texture full feature bank. |
-| `microchunk_plus_texture` | `microchunk`, `texture` | Adds edge-vs-interior texture evidence without stored score or signal evidence. |
-| `microchunk_plus_score_texture` | `microchunk`, `score`, `texture` | Adds stored score and edge-vs-interior texture evidence. |
-| `microchunk_plus_signal_texture` | `microchunk`, `signal`, `texture` | Adds signal and edge-vs-interior texture evidence. |
-| `microchunk_plus_score_signal_texture` | `microchunk`, `score`, `signal`, `texture` | Uses the full current feature bank. |
+| `microchunk` | `microchunk`, `overfit` | Tests whether scalar analogues of the stream rejector plus overfit local-variance evidence are sufficient. |
+| `microchunk_plus_score` | `microchunk`, `overfit`, `score` | Adds stored class correlation/FRC-like evidence. This is the current chunk default. |
+| `microchunk_plus_signal` | `microchunk`, `overfit`, `signal` | Adds center/edge and presence evidence without stored score evidence. |
+| `microchunk_plus_score_signal` | `microchunk`, `overfit`, `score`, `signal` | Uses the full compact quality feature set. |
 
 Learn mode reports feature signal, feature-drop diagnostics, and leave-one-dataset-out feature-policy diagnostics so that the selected model can be interpreted as a compact scientific statement about which evidence family and weight structure generalized on the supplied training set.
 
@@ -120,7 +117,7 @@ Learn mode reports feature signal, feature-drop diagnostics, and leave-one-datas
 
 `quality_mode=analyze` computes the same model output but treats the existing `cls2D` state as the manual reference. It writes `cavgs_quality_analysis.txt` and the selected/rejected stacks. The project selection is left unchanged.
 
-`quality_mode=learn` reads a file table of `cavgs_quality_analysis.txt` files and searches for a model specification. It writes a learned model file controlled by `fname=` and writes `cavgs_quality_learn_report.txt`.
+`quality_mode=learn` reads a file table of `cavgs_quality_analysis.txt` files and searches for a model specification from a neutral `abinitio_learn_base` foundation. It does not accept `quality_model` or `infile` as seeds. It writes a learned model file controlled by `fname=` and writes `cavgs_quality_learn_report.txt`.
 
 `quality_mode=evaluate` applies the selected fixed model without refitting. With `filetab=`, it evaluates one or more saved `cavgs_quality_analysis.txt` files. Without `filetab=`, it evaluates a single project directly using the existing `cls2D` state as the manual reference, like analyze mode. It writes `cavgs_quality_evaluate_report.txt`, or the report path controlled by `fname=`.
 
@@ -128,22 +125,19 @@ Learn mode reports feature signal, feature-drop diagnostics, and leave-one-datas
 
 `apply` and `analyze` require `projfile` and `mskdiam`. `learn` requires `filetab`. `evaluate` requires either `filetab` or `projfile` plus `mskdiam`. `promote` requires `infile`. The commander sets `oritype=cls2D`, defaults `mkdir=yes`, and defaults `prune=no`.
 
+For `apply`, `analyze`, and `evaluate`, the command uses `chunk100mics` unless `quality_model` or `infile` is supplied. Use `overfit_hard_reject=yes` when a fixed support/local-variance hard gate should be layered on top of the standard hard gates.
+
 ## Model Selection
 
-`quality_model` selects a built-in preset. The default is `chunk_default_v2`. The available built-ins are:
+`quality_model` selects a built-in preset. The default and only hardcoded built-in is:
 
-- `chunk_default_v2`: default chunk/stream-style model.
-- `chunk_lp4`: learned chunk model trained from the `chunk_new_train2` lp4-style class-average selection references, including the `*_2*` additions.
-- `pool_default_v2`: pool/batch-style model with minimum accepted fraction enforcement.
-- `microchunk_p1`: pass-1-oriented chunk model using the `microchunk_plus_score_signal` feature policy.
-- `microchunk_p2`: pass-2-oriented chunk model using the `microchunk_plus_score_signal_texture` feature policy.
+- `chunk100mics`: default chunk/stream-style model trained from `/Users/elmlundho/cavgs_quality/chunk100mic_training_data`.
 
 When `infile` is supplied, the model file is treated as a complete model and wins over the built-in preset.
 
-Model files use `model_version=6` and explicit key-value fields:
+Model files use `model_version=8` and explicit key-value fields:
 
 - `name`
-- `context`
 - `feature_policy`
 - `feature_weights`
 - `boundary_margin`
@@ -174,20 +168,16 @@ Unknown model-file keys are rejected.
 | 7 | `log_center_edge_snr` | `signal` | Center/edge variance statistics | Log central variance relative to edge variance. |
 | 8 | `cc_area_frac` | `microchunk` | Foreground connected-component area | Largest foreground component area divided by expected mask area. |
 | 9 | `presence` | `signal` | Center/border statistics | Central signal excess relative to border background noise. |
-| 10 | `log_int_boundary_tex` | `texture` | Medium-frequency texture band plus eroded foreground mask | Log interior texture energy relative to the foreground boundary ring. |
-| 11 | `int_tex_coverage` | `texture` | Medium-frequency texture band plus robust background threshold | Fraction of eroded foreground interior with above-background texture. |
-| 12 | `tex_effective_area` | `texture` | Medium-frequency texture band plus foreground mask | Effective foreground area occupied by above-background texture. |
+| 10 | `neg_log_locvar_fg` | `overfit` | Foreground-mask local variance | Negative log local variance in the foreground Otsu mask; higher values indicate lower foreground variation. |
+| 11 | `neg_log_locvar_bg` | `overfit` | Background-mask local variance | Negative log local variance outside the foreground Otsu mask; higher values indicate quieter background. |
+| 12 | `log_locvar_fg_bg_ratio` | `overfit` | Foreground/background local variance | Log foreground/background local variance ratio; higher values indicate support-localized detail. |
 
-Feature families are used by learn mode. Every policy starts with the `microchunk` family and then appends optional evidence families:
+Feature families are used by learn mode. Every learned policy includes `microchunk` and `overfit`; the policy variants append optional evidence families:
 
 - `microchunk`
 - `microchunk_plus_score`
 - `microchunk_plus_signal`
 - `microchunk_plus_score_signal`
-- `microchunk_plus_texture`
-- `microchunk_plus_score_texture`
-- `microchunk_plus_signal_texture`
-- `microchunk_plus_score_signal_texture`
 
 Features outside the selected policy are encoded by zero weights.
 
@@ -195,20 +185,18 @@ Features outside the selected policy are encoded by zero weights.
 
 - `FOREGROUND_SEG_LP = 30.0`
 - `SIGNAL_METRIC_LP = 10.0`
-- `TEXTURE_METRIC_HP = 30.0`
-- `TEXTURE_METRIC_LP = 10.0`
-- `TEXTURE_BG_MAD_SIGMA = 3.0`
 - `CAVG_RES_HARD_REJECT_A = 40.0`
 - `POP_FRACTION_HARD_REJECT = 0.0035`
 - `LOCVAR_WINDOW = 10`
 - `MASK_HARD_OUTSIDE_PIXELS = 10`
-- `TEXTURE_RING_WIDTH = 2`
 - `LOG_EPS = 1.0e-12`
 - `CLIP_Z = 4.0`
 
 ## Hard Rejects
 
-Hard rejects are validity gates applied before model fitting, clustering, and training-score calculation. A class average is hard rejected when any of these conditions hold:
+Hard rejects are validity gates applied before model fitting, clustering, and training-score calculation.
+
+A class average is hard rejected when any of these conditions hold:
 
 - `pop <= 0`;
 - `pop < ceiling(sum(pop) * 0.0035)`;
@@ -221,103 +209,53 @@ Hard rejects are validity gates applied before model fitting, clustering, and tr
 
 Hard-rejected classes receive rejected state directly. Their normalized features are set to `-CLIP_Z`, their model scores are set to `-CLIP_Z`, and they remain visible in analysis and learning reports.
 
+### Optional Overfit Hard Gate
+
+`overfit_hard_reject=yes` is a no-model application path for project-backed `apply`, `analyze`, and `evaluate` runs. It applies the standard hard gates first, computes normalized features over the remaining rows, and then applies a fixed overfit hard rule. It does not read `infile`, does not call `model%classify`, and does not use k-medoids, Otsu thresholds, rescue, or minimum-acceptance model logic.
+
+The default hard reject is:
+
+```text
+(z_neg_log_locvar_fg > 0.0 AND z_cc_area_frac < 0.5)
+```
+
+On the FlipQR overfit-training table, the support/local-variance rule rejects 18/26 trainable overfit-labeled classes while retaining 31/33 trainable good classes. Rows rejected by the overfit hard rule are marked as hard rejects in the final decision, but their normalized features remain inspectable in the output tables because those values explain the hard-gate decision.
+
 ## Normalization
 
 `normalize_cavg_quality_features` computes per-feature robust statistics over non-hard-rejected rows only. Each feature is centered by the median and scaled by the Gaussian MAD. Values are clipped to `[-CLIP_Z, CLIP_Z]`. If a feature has no robust spread, its normalized value is set to zero for trainable rows.
 
 ## Built-In Presets
 
-`chunk_default_v2` has context `chunk`, feature policy `microchunk_plus_score`, cluster rescue disabled, and minimum accepted fraction disabled.
+`chunk100mics` uses feature policy `microchunk_plus_score_signal`, low-separation Otsu disabled, Otsu windowing enabled, cluster rescue disabled, and minimum accepted fraction enforcement enabled. It was trained from `/Users/elmlundho/cavgs_quality/chunk100mic_training_data`.
 
 ```text
-log_pop             1.355581E-01
-neg_log_res         1.808395E-01
-centered            4.942806E-02
-log_locvar_fg       1.635655E-01
-log_locvar_bg       1.726983E-01
-corr_frc_proxy      2.108072E-01
-log_center_edge_snr 0.000000E+00
-cc_area_frac        8.710331E-02
-presence            0.000000E+00
-log_int_boundary_tex 0.000000E+00
-int_tex_coverage    0.000000E+00
-tex_effective_area  0.000000E+00
+log_pop             9.978756E-02
+neg_log_res         1.167914E-01
+centered            3.642511E-02
+log_locvar_fg       1.329548E-01
+log_locvar_bg       1.402481E-01
+corr_frc_proxy      1.610645E-01
+log_center_edge_snr 6.630784E-02
+cc_area_frac        6.981037E-02
+presence            1.294257E-01
+neg_log_locvar_fg   0.000000E+00
+neg_log_locvar_bg   0.000000E+00
+log_locvar_fg_bg_ratio 4.718454E-02
 ```
 
 ```text
-boundary_margin         0.15
-min_score_separation    0.15
-otsu_min_offset         0.35
-otsu_max_offset         0.50
-cluster_rescue_margin   0.20
-min_accept_frac         0.00
-use_lowsep_otsu         true
-use_otsu_window         true
-use_cluster_rescue      false
-enforce_min_accept_frac false
-```
-
-`chunk_lp4` has context `chunk`, feature policy `microchunk_plus_signal`, cluster rescue disabled, and minimum accepted fraction disabled. It was trained from the `chunk_new_train2` lp4-style chunk references, including the `*_2*` additions.
-
-```text
-log_pop             1.256393E-01
-neg_log_res         1.026731E-01
-centered            4.134843E-02
-log_locvar_fg       1.367731E-01
-log_locvar_bg       1.996999E-01
-corr_frc_proxy      0.000000E+00
-log_center_edge_snr 2.763570E-02
-cc_area_frac        1.404427E-01
-presence            2.257877E-01
-log_int_boundary_tex 0.000000E+00
-int_tex_coverage    0.000000E+00
-tex_effective_area  0.000000E+00
-```
-
-```text
-boundary_margin        -0.15
-min_score_separation    0.15
-otsu_min_offset         0.35
+boundary_margin         0.30
+min_score_separation    0.05
+otsu_min_offset         0.05
 otsu_max_offset         0.40
 cluster_rescue_margin   0.20
-min_accept_frac         0.00
-use_lowsep_otsu         true
+min_accept_frac         0.50
+use_lowsep_otsu         false
 use_otsu_window         true
 use_cluster_rescue      false
-enforce_min_accept_frac false
-```
-
-`pool_default_v2` has context `pool`, feature policy `microchunk_plus_score_signal`, cluster rescue enabled, Otsu windowing disabled, and minimum accepted fraction enforcement enabled.
-
-```text
-log_pop             1.826303E-01
-neg_log_res         2.379928E-01
-centered            0.000000E+00
-log_locvar_fg       7.328372E-02
-log_locvar_bg       6.126274E-02
-corr_frc_proxy      1.257789E-01
-log_center_edge_snr 1.572098E-01
-cc_area_frac        2.139509E-02
-presence            1.404466E-01
-log_int_boundary_tex 0.000000E+00
-int_tex_coverage    0.000000E+00
-tex_effective_area  0.000000E+00
-```
-
-```text
-boundary_margin         1.70
-min_score_separation    0.20
-otsu_min_offset         0.15
-otsu_max_offset         0.50
-cluster_rescue_margin   0.20
-min_accept_frac         0.95
-use_lowsep_otsu         true
-use_otsu_window         false
-use_cluster_rescue      true
 enforce_min_accept_frac true
 ```
-
-`microchunk_p1` and `microchunk_p2` are chunk-context built-ins intended for stage-specific validation and comparison against streaming microchunk behavior. They do not replace the live `simple_microchunked2D` rejector in this tree; the stream path still calls `simple_cluster2D_rejector`.
 
 All model weights are clipped to non-negative values and normalized to sum to one when a model is initialized or read.
 
@@ -350,7 +288,7 @@ Common hard-only reasons are `too_few_trainable`, `flat_feature_distances`, `inv
 
 ## Analysis Output
 
-`cavgs_quality_analysis.txt` starts with `# model_cavgs_rejection_analysis_version=5`. It includes:
+`cavgs_quality_analysis.txt` starts with `# model_cavgs_rejection_analysis_version=7`. It includes:
 
 - dataset and model identity;
 - selected/rejected counts;
@@ -397,19 +335,22 @@ Good-only datasets use a recall guard in the learn score. Raw recall is still re
 
 Learn mode searches:
 
-- feature policies: `microchunk`, `microchunk_plus_score`, `microchunk_plus_signal`, `microchunk_plus_score_signal`, `microchunk_plus_texture`, `microchunk_plus_score_texture`, `microchunk_plus_signal_texture`, `microchunk_plus_score_signal_texture`;
+- feature policies: `microchunk`, `microchunk_plus_score`, `microchunk_plus_signal`, `microchunk_plus_score_signal`;
 - feature weights: one AUC-derived candidate for each feature policy;
 - `min_score_separation`: `0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.50`;
-- chunk `boundary_margin`: `-0.60, -0.50, -0.40, -0.30, -0.25, -0.15, -0.05, 0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80`;
-- pool `boundary_margin`: `-0.60, -0.50, -0.40, -0.30, -0.25, -0.15, -0.05, 0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80`,
+- `boundary_margin`: `-0.60, -0.50, -0.40, -0.30, -0.25, -0.15, -0.05, 0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80`,
   `0.90, 1.00, 1.10, 1.20, 1.30, 1.40, 1.50, 1.60, 1.70, 1.80, 1.90, 2.00, 2.25, 2.50, 2.75, 3.00, 3.50, 4.00`;
 - `use_lowsep_otsu`: `false, true`;
 - `use_otsu_window`: `false, true`;
-- `otsu_min_offset`: `0.05, 0.10, 0.15, 0.25, 0.35` when the Otsu window is enabled;
-- `otsu_max_offset`: `0.25, 0.30, 0.35, 0.40, 0.50, 0.65` when the Otsu window is enabled;
-- `min_accept_frac`: `0.50, 0.60, 0.65, 0.70, 0.80, 0.85, 0.90, 0.925, 0.95, 0.975, 1.00` for pool-context training.
+- `otsu_min_offset`: `0.05, 0.10, 0.15, 0.25, 0.35, 0.40, 0.45, 0.50, 0.60` when the Otsu window is enabled;
+- `otsu_max_offset`: `0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.60, 0.75, 0.90` when the Otsu window is enabled;
+- `use_cluster_rescue`: `false, true`;
+- `enforce_min_accept_frac`: `false, true`;
+- `min_accept_frac`: `0.50, 0.60, 0.65, 0.70, 0.80, 0.85, 0.90, 0.925, 0.95, 0.975, 1.00` when `enforce_min_accept_frac` is true.
 
-Each candidate is evaluated by running the full classifier on every scoreable training dataset and averaging the role-specific learn score. If multiple candidates tie, the selected candidate is the one closest to the starting model in the searched threshold controls.
+The training algorithm is unified and ab initio with respect to the rejection model. It uses a neutral foundation with zero starting weights, no rescue, no minimum-acceptance enforcement, and no Otsu rescue/window behavior. This foundation is only a tie-break anchor and a source of inactive-field defaults; it is not a chunk or pool preset. Chunk, pool, and stage-specific behavior should be represented by the learned model parameters or by promoted model definitions, not by separate training procedures.
+
+Each candidate is evaluated by running the full classifier on every scoreable training dataset and averaging the role-specific learn score. If multiple candidates tie, the selected candidate is the one closest to the neutral foundation in the searched threshold controls and policy flags.
 
 The learn report includes the search grid, `macro_learn_score`, suggested weights, selected model, dataset-role diagnostics, Otsu ablation diagnostics, feature-signal diagnostics, feature-drop diagnostics, leave-one-dataset-out feature-policy diagnostics, top candidates, best ties, and per-dataset confusion metrics.
 
@@ -441,13 +382,24 @@ simple_exec prg=model_cavgs_rejection \
   mkdir=yes
 ```
 
+Apply only the standard hard gates plus the fixed overfit hard gate:
+
+```bash
+simple_exec prg=model_cavgs_rejection \
+  quality_mode=apply \
+  overfit_hard_reject=yes \
+  projfile=my_project.simple \
+  mskdiam=180 \
+  mkdir=yes
+```
+
 Train from a file table of analysis outputs:
 
 ```bash
 simple_exec prg=model_cavgs_rejection \
   quality_mode=learn \
   filetab=analysis_files.txt \
-  fname=cavgs_quality_model_chunk_learned.txt \
+  fname=cavgs_quality_model_learned.txt \
   mkdir=yes
 ```
 
@@ -456,7 +408,7 @@ Evaluate a fixed built-in model on held-out analysis outputs:
 ```bash
 simple_exec prg=model_cavgs_rejection \
   quality_mode=evaluate \
-  quality_model=chunk_lp4 \
+  quality_model=chunk100mics \
   filetab=holdout_analysis_files.txt \
   fname=cavgs_quality_evaluate_report.txt \
   mkdir=yes
@@ -467,7 +419,7 @@ Evaluate a single manually selected project directly:
 ```bash
 simple_exec prg=model_cavgs_rejection \
   quality_mode=evaluate \
-  quality_model=chunk_lp4 \
+  quality_model=chunk100mics \
   projfile=my_project.simple \
   mskdiam=180 \
   fname=cavgs_quality_evaluate_report.txt \
@@ -479,7 +431,7 @@ Apply a learned model file:
 ```bash
 simple_exec prg=model_cavgs_rejection \
   quality_mode=apply \
-  infile=cavgs_quality_model_chunk_learned.txt \
+  infile=cavgs_quality_model_learned.txt \
   projfile=my_project.simple \
   mskdiam=180 \
   mkdir=yes
@@ -490,7 +442,7 @@ Promote a learned model:
 ```bash
 simple_exec prg=model_cavgs_rejection \
   quality_mode=promote \
-  infile=cavgs_quality_model_chunk_learned.txt \
-  fname=cavgs_quality_model_chunk_builtin_code.txt \
+  infile=cavgs_quality_model_learned.txt \
+  fname=cavgs_quality_model_learned_builtin_code.txt \
   mkdir=yes
 ```
