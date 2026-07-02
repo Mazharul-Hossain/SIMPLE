@@ -437,6 +437,7 @@ type :: parameters
     integer :: reliongroups=0
     integer :: shift_stage=0
     integer :: split_stage=6       !< splitting stage when multivol_mode==docked
+    integer :: sgd_cavg_min_cands=2 !< joint-SGD min retained candidates for weighted class averages
     integer :: sgd_inner_its=2     !< joint-SGD latent optimizer inner iterations
     integer :: sgd_topk=8          !< joint-SGD compact candidate count per particle
     integer :: startit=1           !< start iterating from here
@@ -548,6 +549,7 @@ type :: parameters
     real    :: scale=1.            !< image scale factor{1}
     real    :: scale_movies=1.     !< movie scale factor
     real    :: sgd_balance_weight=0.0 !< joint-SGD optional class-balance weight
+    real    :: sgd_cavg_max_entropy=0.95 !< joint-SGD max normalized entropy for weighted class averages
     real    :: sgd_eta_cavg=0.1    !< joint-SGD class-average learning rate
     real    :: sgd_eta_latent=0.5  !< joint-SGD latent-logit learning rate
     real    :: sgd_eta_shift=0.25  !< joint-SGD shift learning rate

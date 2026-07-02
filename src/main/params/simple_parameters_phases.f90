@@ -715,8 +715,14 @@ contains
             if( self%sgd_topk < 1 )then
                 THROW_HARD('sgd_topk must be >= 1')
             endif
+            if( self%sgd_cavg_min_cands < 1 )then
+                THROW_HARD('sgd_cavg_min_cands must be >= 1')
+            endif
             if( self%sgd_inner_its < 1 )then
                 THROW_HARD('sgd_inner_its must be >= 1')
+            endif
+            if( self%sgd_cavg_max_entropy < 0.0 .or. self%sgd_cavg_max_entropy > 1.0 )then
+                THROW_HARD('sgd_cavg_max_entropy must be between 0 and 1')
             endif
             if( self%sgd_eta_cavg <= 0.0 )then
                 THROW_HARD('sgd_eta_cavg must be > 0')
