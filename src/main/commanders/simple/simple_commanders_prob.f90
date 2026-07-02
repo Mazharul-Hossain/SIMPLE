@@ -375,7 +375,7 @@ contains
     subroutine exec_prob_align2D( self, cline )
         use simple_eul_prob_tab2D,          only: eul_prob_tab2D, PRIOR2D_STAGE5_FNAME
         use simple_eul_prob_tab_utils,      only: materialize_seed_shift
-        use simple_strategy2D_joint_sgd_candidates, only: joint2D_candidate_table
+        use simple_strategy2D_joint_sgd_candidates, only: joint2D_candidate_table, JOINT2D_CANDIDATES_FNAME
         use simple_strategy2D_matcher,      only: set_b_p_ptrs2D
         use simple_matcher_smpl_and_lplims, only: sample_ptcls4update2D
         use simple_builder,                 only: builder
@@ -391,6 +391,7 @@ contains
         type(cmdline)              :: cline_prob_tab
         type(qsys_env)             :: qenv
         type(chash)                :: job_descr
+        real, allocatable :: base_shifts(:,:)
         integer :: nptcls, ipart, iptcl
         call cline%set('mkdir',  'no')
         call cline%set('stream', 'no')
@@ -411,6 +412,7 @@ contains
         call flush(logfhandle)
         ! write sampling to project
         call build%spproj%write_segment_inside(params%oritype)
+        call del_file(JOINT2D_CANDIDATES_FNAME)
         ! build the global prob table (nclasses x nptcls)
         call eulprob_obj_glob%new(params, build, pinds)
         ! generate partition-wise dist tables
@@ -440,7 +442,14 @@ contains
         if( params%l_sgd .and. trim(params%sgd_mode) == 'joint' )then
             call joint_candidates%build_from_loc_tab(eulprob_obj_glob%loc_tab, params%sgd_topk,&
                 &params%sgd_tau, params%sgd_tau_min)
+            allocate(base_shifts(2,eulprob_obj_glob%nptcls), source=0.)
+            do iptcl = 1, eulprob_obj_glob%nptcls
+                if( pinds(iptcl) > 0 ) base_shifts(:,iptcl) = build%spproj_field%get_2Dshift(pinds(iptcl))
+            end do
+            call joint_candidates%set_base_shifts(base_shifts)
+            call joint_candidates%apply_reliability(params%sgd_cavg_min_cands, params%sgd_cavg_max_entropy)
             call joint_candidates%write_diag('prob_align2D')
+            call joint_candidates%write_table(JOINT2D_CANDIDATES_FNAME)
             call joint_candidates%write_hard_assignments(eulprob_obj_glob%assgn_map)
             do iptcl = 1, eulprob_obj_glob%nptcls
                 call materialize_seed_shift(eulprob_obj_glob%assgn_map(iptcl), eulprob_obj_glob%seed_shifts(:,iptcl),&
@@ -453,6 +462,7 @@ contains
                     eulprob_obj_glob%assgn_map(iptcl)%frac = 100.
                 endif
             end do
+            if( allocated(base_shifts) ) deallocate(base_shifts)
             call joint_candidates%kill
         else
             call eulprob_obj_glob%ref_assign

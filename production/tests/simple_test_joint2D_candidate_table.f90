@@ -6,21 +6,34 @@ implicit none
 
 #include "simple_local_flags.inc"
 
+character(len=*), parameter :: ROUNDTRIP_FNAME = 'joint2D_candidate_table_test.dat'
 type(ptcl_ref) :: loc_tab(5,4)
 type(ptcl_ref) :: assgn_map(4)
-type(joint2D_candidate_table) :: tab
+type(ptcl_ref), allocatable :: batch_refs(:,:)
+type(joint2D_candidate_table) :: tab, tab_roundtrip
+real, allocatable :: batch_weights(:,:)
+integer, allocatable :: batch_ncands(:)
 integer :: i
-real    :: weight_sum
+real    :: base_shifts(2,4), weight_sum
 
 call init_loc_tab(loc_tab)
+call init_base_shifts(base_shifts)
 
 call tab%build_from_loc_tab(loc_tab, 3, 1.0, 0.1)
+call tab%set_base_shifts(base_shifts)
+call tab%apply_reliability(2, 0.95)
 call require_true(tab%ncand(1) == 3, 'particle 1 retains three candidates')
 call require_true(tab%cand(1,1)%icls == 2, 'particle 1 rank 1 tie-breaks to lower class')
 call require_true(tab%cand(2,1)%icls == 3, 'particle 1 rank 2 keeps next tied class')
 call require_true(tab%cand(3,1)%icls == 5, 'particle 1 skips invalid inpl=0 candidate')
 call require_true(tab%hard_rank(1) == 1, 'particle 1 hard rank is first candidate')
 call require_true(tab%cand(1,1)%hard, 'particle 1 hard flag is set')
+call require_true(tab%accepted(1), 'particle 1 passes reliability gates')
+call require_true(tab%accepted(4), 'particle 4 passes reliability gates with two candidates')
+call require_close(tab%particle_weight(1), 1.0, 1.0e-6, 'accepted particle has unit particle weight')
+call require_close(tab%cand(1,1)%eff_weight, tab%cand(1,1)%weight, 1.0e-6, 'effective candidate weight is q')
+call require_close(tab%norm_entropy(1), tab%entropy(1) / log(real(tab%ncand(1))), 1.0e-6,&
+    &'normalized entropy is H/log(ncand)')
 weight_sum = sum(tab%cand(1:tab%ncand(1),1)%weight)
 call require_close(weight_sum, 1.0, 1.0e-6, 'particle 1 weights sum to one')
 assgn_map = ptcl_ref()
@@ -41,12 +54,44 @@ end do
 
 call require_true(tab%ncand(3) == 0, 'empty particle column has zero candidates')
 call require_true(tab%hard_rank(3) == 0, 'empty particle column has zero hard rank')
+call require_true(.not. tab%accepted(3), 'empty particle column is rejected')
+
+call tab%apply_reliability(3, 0.95)
+call require_true(.not. tab%accepted(4), 'too-few-candidate particle is rejected')
+call require_close(sum(tab%cand(:,4)%eff_weight), 0.0, 1.0e-6, 'rejected candidate weights are zero')
+call tab%apply_reliability(2, 0.50)
+call require_true(.not. tab%accepted(1), 'high-entropy particle is rejected')
+call tab%apply_reliability(2, 0.95)
+
+call tab%export_batch(1, 4, batch_refs, batch_weights, batch_ncands)
+call require_true(batch_ncands(1) == 3, 'batch export records retained candidate count')
+call require_close(batch_refs(1,1)%x, 10.0, 1.0e-6, 'batch export includes base x shift')
+call require_close(batch_refs(1,1)%y, 20.0, 1.0e-6, 'batch export includes base y shift')
+call require_close(batch_refs(3,1)%x, 11.5, 1.0e-6, 'batch export adds candidate x shift')
+call require_close(batch_refs(3,1)%y, 18.0, 1.0e-6, 'batch export adds candidate y shift')
+call require_true(batch_refs(1,1)%has_sh, 'batch export materializes total shift')
+call require_close(batch_weights(1,1), tab%cand(1,1)%weight, 1.0e-6, 'batch export uses effective weight')
+call require_close(sum(batch_weights(:,3)), 0.0, 1.0e-6, 'empty particle exports zero weights')
+
+call del_file(ROUNDTRIP_FNAME)
+call tab%write_table(ROUNDTRIP_FNAME)
+call tab_roundtrip%read_table(ROUNDTRIP_FNAME)
+call require_true(size(tab_roundtrip%cand, 1) == 3, 'roundtrip preserves topk dimension')
+call require_true(size(tab_roundtrip%cand, 2) == 4, 'roundtrip preserves particle dimension')
+call require_true(tab_roundtrip%accepted(1), 'roundtrip preserves reliability flag')
+call require_close(tab_roundtrip%base_shift(1,1), 10.0, 1.0e-6, 'roundtrip preserves base shift')
+call require_close(tab_roundtrip%cand(3,1)%eff_weight, tab%cand(3,1)%eff_weight, 1.0e-6,&
+    &'roundtrip preserves effective candidate weight')
+call tab_roundtrip%kill
+call del_file(ROUNDTRIP_FNAME)
 
 call tab%kill
 call tab%build_from_loc_tab(loc_tab, 1, 1.0, 0.1)
+call tab%apply_reliability(2, 0.0)
 call require_true(tab%ncand(1) == 1, 'topk=1 keeps one candidate')
 call require_close(tab%cand(1,1)%weight, 1.0, 1.0e-6, 'topk=1 candidate weight is one')
 call require_true(tab%hard_rank(1) == 1, 'topk=1 hard rank is one')
+call require_true(tab%accepted(1), 'topk=1 lowers effective min candidate count to one')
 
 call tab%write_diag('unit-test')
 call tab%kill
@@ -71,6 +116,15 @@ contains
         call set_ref(tab_in(1,4), 104, 1, 21, 5.0, 0.0, 0.0, .false.)
         call set_ref(tab_in(2,4), 104, 2, 22, 4.0, 0.0, 0.0, .false.)
     end subroutine init_loc_tab
+
+    subroutine init_base_shifts( shifts )
+        real, intent(out) :: shifts(:,:)
+        shifts = 0.
+        shifts(:,1) = [10.0, 20.0]
+        shifts(:,2) = [30.0, 40.0]
+        shifts(:,3) = [50.0, 60.0]
+        shifts(:,4) = [70.0, 80.0]
+    end subroutine init_base_shifts
 
     subroutine set_ref( ref, pind, icls, inpl, dist, x, y, has_sh )
         type(ptcl_ref), intent(inout) :: ref
