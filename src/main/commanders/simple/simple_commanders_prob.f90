@@ -374,6 +374,8 @@ contains
 
     subroutine exec_prob_align2D( self, cline )
         use simple_eul_prob_tab2D,          only: eul_prob_tab2D, PRIOR2D_STAGE5_FNAME
+        use simple_eul_prob_tab_utils,      only: materialize_seed_shift
+        use simple_strategy2D_joint_sgd_candidates, only: joint2D_candidate_table
         use simple_strategy2D_matcher,      only: set_b_p_ptrs2D
         use simple_matcher_smpl_and_lplims, only: sample_ptcls4update2D
         use simple_builder,                 only: builder
@@ -385,10 +387,11 @@ contains
         type(parameters)           :: params
         type(commander_prob_tab2D) :: xprob_tab2D
         type(eul_prob_tab2D)       :: eulprob_obj_glob
+        type(joint2D_candidate_table) :: joint_candidates
         type(cmdline)              :: cline_prob_tab
         type(qsys_env)             :: qenv
         type(chash)                :: job_descr
-        integer :: nptcls, ipart
+        integer :: nptcls, ipart, iptcl
         call cline%set('mkdir',  'no')
         call cline%set('stream', 'no')
         call build%init_params_and_build_general_tbox(cline, params, do3d=.false.)
@@ -428,9 +431,32 @@ contains
             call eulprob_obj_glob%read_tab_to_glob(fname)
         end do
         ! global probabilistic class assignment
-        write(logfhandle,'(A)') '>>> PROB_ALIGN2D: running global probabilistic assignment'
+        if( params%l_sgd .and. trim(params%sgd_mode) == 'joint' )then
+            write(logfhandle,'(A)') '>>> PROB_ALIGN2D: running joint-SGD top-K hard assignment'
+        else
+            write(logfhandle,'(A)') '>>> PROB_ALIGN2D: running global probabilistic assignment'
+        endif
         call flush(logfhandle)
-        call eulprob_obj_glob%ref_assign
+        if( params%l_sgd .and. trim(params%sgd_mode) == 'joint' )then
+            call joint_candidates%build_from_loc_tab(eulprob_obj_glob%loc_tab, params%sgd_topk,&
+                &params%sgd_tau, params%sgd_tau_min)
+            call joint_candidates%write_diag('prob_align2D')
+            call joint_candidates%write_hard_assignments(eulprob_obj_glob%assgn_map)
+            do iptcl = 1, eulprob_obj_glob%nptcls
+                call materialize_seed_shift(eulprob_obj_glob%assgn_map(iptcl), eulprob_obj_glob%seed_shifts(:,iptcl),&
+                    &eulprob_obj_glob%seed_has_sh(iptcl), params%l_doshift, eulprob_obj_glob%seed_nrots)
+                if( eulprob_obj_glob%l_sparse_snhc .and. allocated(eulprob_obj_glob%eval_touched_counts) )then
+                    eulprob_obj_glob%assgn_map(iptcl)%frac = 100. * real(eulprob_obj_glob%eval_touched_counts(iptcl))&
+                        &/ real(eulprob_obj_glob%nclasses)
+                    eulprob_obj_glob%assgn_map(iptcl)%npeaks = eulprob_obj_glob%eval_touched_counts(iptcl)
+                else
+                    eulprob_obj_glob%assgn_map(iptcl)%frac = 100.
+                endif
+            end do
+            call joint_candidates%kill
+        else
+            call eulprob_obj_glob%ref_assign
+        endif
         ! write assignment to file
         fname = string(ASSIGNMENT_FBODY)//'.dat'
         write(logfhandle,'(A,A)') '>>> PROB_ALIGN2D: writing assignment ', fname%to_char()

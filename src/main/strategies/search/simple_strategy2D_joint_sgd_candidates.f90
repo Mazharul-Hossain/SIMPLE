@@ -31,6 +31,7 @@ type :: joint2D_candidate_table
     real,                    allocatable :: winner_weight(:) !< soft weight of the hard winner
 contains
     procedure :: build_from_loc_tab
+    procedure :: write_hard_assignments
     procedure :: write_diag
     procedure :: kill => kill_candidate_table
 end type joint2D_candidate_table
@@ -69,6 +70,38 @@ contains
             call finalize_particle(self, iptcl, tau_eff)
         end do
     end subroutine build_from_loc_tab
+
+    subroutine write_hard_assignments( self, assgn_map, empty_is_error )
+        class(joint2D_candidate_table), intent(in)    :: self
+        type(ptcl_ref),                 intent(inout) :: assgn_map(:)
+        logical, optional,              intent(in)    :: empty_is_error
+        logical :: l_empty_is_error
+        integer :: iptcl, hard, nptcls
+
+        if( .not. allocated(self%ncand) ) THROW_HARD('joint2D_candidate_table: hard assignments requested before build')
+        nptcls = size(self%ncand)
+        if( size(assgn_map) /= nptcls ) THROW_HARD('joint2D_candidate_table: assignment map size mismatch')
+        l_empty_is_error = .true.
+        if( present(empty_is_error) ) l_empty_is_error = empty_is_error
+
+        do iptcl = 1, nptcls
+            if( self%ncand(iptcl) < 1 .or. self%hard_rank(iptcl) < 1 )then
+                if( l_empty_is_error ) THROW_HARD('joint2D_candidate_table: empty candidate column cannot be assigned')
+                cycle
+            endif
+            hard = self%hard_rank(iptcl)
+            assgn_map(iptcl) = ptcl_ref()
+            assgn_map(iptcl)%pind   = self%cand(hard,iptcl)%pind
+            assgn_map(iptcl)%icls   = self%cand(hard,iptcl)%icls
+            assgn_map(iptcl)%inpl   = self%cand(hard,iptcl)%inpl
+            assgn_map(iptcl)%dist   = self%cand(hard,iptcl)%dist
+            assgn_map(iptcl)%x      = self%cand(hard,iptcl)%x
+            assgn_map(iptcl)%y      = self%cand(hard,iptcl)%y
+            assgn_map(iptcl)%has_sh = self%cand(hard,iptcl)%has_sh
+            assgn_map(iptcl)%frac   = 100.
+            assgn_map(iptcl)%npeaks = self%ncand(iptcl)
+        end do
+    end subroutine write_hard_assignments
 
     subroutine write_diag( self, label )
         class(joint2D_candidate_table), intent(in) :: self

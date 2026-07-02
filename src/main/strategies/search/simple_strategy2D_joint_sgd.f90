@@ -28,9 +28,9 @@ contains
         write(logfhandle,'(a,i0)') 'sgd_topk       : ', params%sgd_topk
         write(logfhandle,'(a,i0)') 'sgd_inner_its  : ', params%sgd_inner_its
         write(logfhandle,'(a)') 'joint SGD will make the matcher a candidate generator, not the assignment owner'
-        write(logfhandle,'(a)') 'joint SGD candidate-table module is available; integration is the next milestone'
+        write(logfhandle,'(a)') 'joint SGD Phase B is implemented through prob_align2D top-K assignment handoff'
         call candidates%kill
-        THROW_HARD('sgd_mode=joint requires the top-K candidate-table optimizer; scaffold only in this pass')
+        THROW_HARD('sgd_mode=joint without probabilistic alignment is not implemented in this pass')
     end subroutine cluster2D_joint_sgd_exec
 
 end module simple_strategy2D_joint_sgd

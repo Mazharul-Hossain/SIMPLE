@@ -7,6 +7,7 @@ implicit none
 #include "simple_local_flags.inc"
 
 type(ptcl_ref) :: loc_tab(5,4)
+type(ptcl_ref) :: assgn_map(4)
 type(joint2D_candidate_table) :: tab
 integer :: i
 real    :: weight_sum
@@ -22,6 +23,14 @@ call require_true(tab%hard_rank(1) == 1, 'particle 1 hard rank is first candidat
 call require_true(tab%cand(1,1)%hard, 'particle 1 hard flag is set')
 weight_sum = sum(tab%cand(1:tab%ncand(1),1)%weight)
 call require_close(weight_sum, 1.0, 1.0e-6, 'particle 1 weights sum to one')
+assgn_map = ptcl_ref()
+call tab%write_hard_assignments(assgn_map, empty_is_error=.false.)
+call require_true(assgn_map(1)%pind == 101, 'assignment map copies particle index')
+call require_true(assgn_map(1)%icls == 2, 'assignment map copies hard class')
+call require_true(assgn_map(1)%inpl == 20, 'assignment map copies hard in-plane index')
+call require_close(assgn_map(1)%dist, 1.0, 1.0e-6, 'assignment map copies hard distance')
+call require_true(assgn_map(1)%npeaks == tab%ncand(1), 'assignment map records retained candidate count')
+call require_true(assgn_map(3)%pind == 0, 'empty assignment map entry is left untouched when allowed')
 
 call require_true(tab%ncand(2) == 3, 'particle 2 keeps three large-distance candidates')
 weight_sum = sum(tab%cand(1:tab%ncand(2),2)%weight)

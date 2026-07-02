@@ -94,8 +94,12 @@ contains
         p_ptr => params
         b_ptr => build
         if( p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'joint') )then
-            call cluster2D_joint_sgd_exec(params, build, cline, which_iter, converged)
-            return
+            if( p_ptr%l_prob_align_mode )then
+                write(logfhandle,'(A)') '>>> JOINT 2D SGD: consuming top-K assignment from prob_align2D'
+            else
+                call cluster2D_joint_sgd_exec(params, build, cline, which_iter, converged)
+                return
+            endif
         endif
         call init_ctrl()
         if( ctrl%do_bench )then
