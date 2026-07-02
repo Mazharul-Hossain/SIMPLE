@@ -18,7 +18,7 @@ implicit none
 public :: cavger_new, cavger_transf_oridat, cavger_gen2Dclassdoc
 public :: cavger_read_euclid_sigma2, cavger_kill
 ! Interpolation & restoration
-public :: cavger_init_online, cavger_update_sums, cavger_dealloc_online
+public :: cavger_init_online, cavger_update_sums, cavger_update_sums_topk, cavger_dealloc_online
 public :: cavger_apply_sgd_update
 public :: cavger_assemble_sums, cavger_restore_cavgs
 ! I/O & handling of distributed sums
@@ -118,6 +118,7 @@ type(kbinterpol)                 :: kbwin                     !< Kaiser-Bessel i
 type(builder),        pointer    :: b_ptr  => null()          !< active builder instance
 class(parameters),    pointer    :: p_ptr => null()           !< active parameters instance
 integer,             allocatable :: eo_pops(:,:)              !< Even/odd class populations
+real,                allocatable :: eo_wsupport(:,:)          !< Weighted even/odd class support
 integer,             allocatable :: phys_addrh_crop(:,:), phys_addrk_crop(:,:)  !< Fourier mapping memoization matrices
 integer                          :: ncls       = 0            !< # classes
 integer                          :: ldim(3)        = [0,0,0]  !< logical dimension of image
@@ -303,6 +304,15 @@ interface
         integer,      intent(in)    :: nptcls
         class(image), intent(inout) :: ptcl_imgs(nptcls)
     end subroutine cavger_update_sums
+
+    module subroutine cavger_update_sums_topk( nptcls, ptcl_imgs, cand_refs, cand_weights, cand_ncands )
+        use simple_math_ft, only: upsample_sigma2
+        integer,        intent(in)    :: nptcls
+        class(image),   intent(inout) :: ptcl_imgs(nptcls)
+        type(ptcl_ref), intent(in)    :: cand_refs(:,:)
+        real,           intent(in)    :: cand_weights(:,:)
+        integer,        intent(in)    :: cand_ncands(nptcls)
+    end subroutine cavger_update_sums_topk
 
     module subroutine cavger_apply_sgd_update()
     end subroutine cavger_apply_sgd_update

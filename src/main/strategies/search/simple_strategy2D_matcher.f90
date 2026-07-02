@@ -393,7 +393,12 @@ contains
             call export_joint_topk_for_batch()
             call cavger_transf_oridat(batchsz, pinds(batch_start:batch_end), updated_only=.true.)
             if( ctrl%do_bench ) t_update = tic()
-            call cavger_update_sums(batchsz, ptcl_imgs(1:batchsz))
+            if( ctrl%l_joint_topk )then
+                call cavger_update_sums_topk(batchsz, ptcl_imgs(1:batchsz), joint_topk_refs,&
+                    &joint_topk_weights, joint_topk_ncands)
+            else
+                call cavger_update_sums(batchsz, ptcl_imgs(1:batchsz))
+            endif
             if( ctrl%do_bench ) rt_cavg_interp_splat = rt_cavg_interp_splat + toc(t_update)
         end subroutine restore_class_averages_for_batch
 
