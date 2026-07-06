@@ -113,6 +113,7 @@ type(image), target, allocatable :: cavgs_merged(:)           !< Merged class av
 type(image),         allocatable :: tmp_pad_imgs(:)           !< Temporary images for on-the-fly classes update
 type(cavgs_set)                  :: cavgs                     !< Class averages
 type(cavgs_set)                  :: cavgs_sgd_prev            !< Previous class-average sufficient statistics for SGD
+type(cavgs_set)                  :: cavgs_joint_prev          !< Previous class averages for joint-SGD updates
 type(cavg_sgd_optimizer)         :: cavg_sgd_opt              !< Class-average SGD learning-rate helper
 type(kbinterpol)                 :: kbwin                     !< Kaiser-Bessel interpolation object
 type(builder),        pointer    :: b_ptr  => null()          !< active builder instance
@@ -128,6 +129,7 @@ integer                          :: ldim_croppd(3) = [0,0,0]  !< logical dimensi
 real                             :: smpd       = 0.           !< sampling distance
 real                             :: smpd_crop  = 0.           !< cropped sampling distance
 logical                          :: l_cavg_sgd_pending = .false.
+logical                          :: l_joint_cavg_sgd_pending = .false.
 
 interface
 

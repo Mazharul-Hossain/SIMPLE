@@ -146,9 +146,18 @@ contains
         logical, intent(in) :: do_frac_update
         real, allocatable :: class_update_fracs(:)
         logical :: l_sgd_prev_available
+        logical :: l_joint_cavg_sgd
         ! Zero sums or set to previous with weight
-        call cavgs%zero_set(.true.)
         l_cavg_sgd_pending = .false.
+        l_joint_cavg_sgd_pending = .false.
+        l_joint_cavg_sgd = p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'joint') .and. p_ptr%l_prob_align_mode
+        if( l_joint_cavg_sgd )then
+            call cavg_sgd_opt%new(p_ptr, p_ptr%which_iter)
+            call capture_joint_prev_cavgs
+            l_joint_cavg_sgd_pending = .true.
+            call cavg_sgd_opt%write_diag('previous class averages captured')
+        endif
+        call cavgs%zero_set(.true.)
         if( p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'cavg_only') )then
             call cavg_sgd_opt%new(p_ptr, p_ptr%which_iter)
             l_sgd_prev_available = (p_ptr%which_iter > 1) .and. cavg_partial_sums_exist()
@@ -188,6 +197,34 @@ contains
         ! Memoization for cropped padded image, will be overwritten during search
         call memoize_ft_maps(ldim_croppd(1:2), p_ptr%smpd_crop)
     end subroutine cavger_init_online
+
+    subroutine capture_joint_prev_cavgs()
+        integer :: icls
+        if( .not. allocated(cavgs_merged) ) THROW_HARD('joint CAVG SGD requires loaded references')
+        call cavgs_joint_prev%kill_set
+        call cavgs_joint_prev%new_set(ldim_crop(1:2), ncls)
+        do icls = 1,ncls
+            call copy_image_ft_to_stack(cavgs_even(icls),   cavgs_joint_prev%even,   icls)
+            call copy_image_ft_to_stack(cavgs_odd(icls),    cavgs_joint_prev%odd,    icls)
+            call copy_image_ft_to_stack(cavgs_merged(icls), cavgs_joint_prev%merged, icls)
+        enddo
+    end subroutine capture_joint_prev_cavgs
+
+    subroutine copy_image_ft_to_stack( img, cavg_stack, icls )
+        class(image), intent(in)    :: img
+        class(stack), intent(inout) :: cavg_stack
+        integer,      intent(in)    :: icls
+        type(image) :: tmp_img
+        complex, allocatable :: cmat(:,:,:)
+        call tmp_img%copy(img)
+        call tmp_img%fft
+        cmat = tmp_img%get_cmat()
+        cavg_stack%cmat(:,:,icls)  = cmat(:,:,1)
+        cavg_stack%ctfsq(:,:,icls) = 1.0
+        cavg_stack%slices(icls)%ft = .true.
+        if( allocated(cmat) ) deallocate(cmat)
+        call tmp_img%kill
+    end subroutine copy_image_ft_to_stack
 
     subroutine calc_class_center_shift( icls, cavg_img, xyz )
         integer,      intent(in)    :: icls
@@ -277,6 +314,13 @@ contains
     end subroutine cavger_dealloc_online
 
     module subroutine cavger_apply_sgd_update()
+        if( p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'joint') .and. p_ptr%l_prob_align_mode )then
+            if( .not. l_joint_cavg_sgd_pending ) return
+            call apply_joint_cavg_sgd_update
+            l_joint_cavg_sgd_pending = .false.
+            call cavg_sgd_opt%write_diag('joint preconditioned update applied')
+            return
+        endif
         if( .not. (p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'cavg_only')) ) return
         if( .not. l_cavg_sgd_pending ) return
         call cavg_sgd_opt%blend_sufficient_stats_inplace(cavgs_sgd_prev%even%cmat,  cavgs%even%cmat)
@@ -286,6 +330,42 @@ contains
         l_cavg_sgd_pending = .false.
         call cavg_sgd_opt%write_diag('cavg_only sufficient statistics blended')
     end subroutine cavger_apply_sgd_update
+
+    subroutine apply_joint_cavg_sgd_update()
+        integer :: icls, n_updated, n_preserved
+        if( cavgs_joint_prev%ncls /= ncls ) THROW_HARD('joint CAVG SGD previous references are unavailable')
+        n_updated   = 0
+        n_preserved = 0
+        do icls = 1,ncls
+            call apply_joint_cavg_side(cavgs_joint_prev%even, cavgs%even, 1, icls, n_updated, n_preserved)
+            call apply_joint_cavg_side(cavgs_joint_prev%odd,  cavgs%odd,  2, icls, n_updated, n_preserved)
+        enddo
+        if( cavg_sgd_opt%diag )then
+            write(logfhandle,'(a,1x,i0,1x,a,1x,i0)') '>>> CAVG SGD: joint EO sides updated=', &
+                &n_updated, 'preserved=', n_preserved
+        endif
+    end subroutine apply_joint_cavg_sgd_update
+
+    subroutine apply_joint_cavg_side( prev_stack, batch_stack, ieo, icls, n_updated, n_preserved )
+        class(stack), intent(in)    :: prev_stack
+        class(stack), intent(inout) :: batch_stack
+        integer,      intent(in)    :: ieo, icls
+        integer,      intent(inout) :: n_updated, n_preserved
+        if( eo_wsupport(ieo,icls) > TINY )then
+            call cavg_sgd_opt%preconditioned_cavg_update_inplace( &
+                &prev_stack%cmat(:,:,icls:icls), batch_stack%ctfsq(:,:,icls:icls), &
+                &batch_stack%cmat(:,:,icls:icls))
+            batch_stack%slices(icls)%ft = .true.
+            n_updated = n_updated + 1
+        else
+            batch_stack%cmat(:,:,icls)  = prev_stack%cmat(:,:,icls)
+            batch_stack%ctfsq(:,:,icls) = 1.0
+            batch_stack%slices(icls)%ft = .true.
+            eo_wsupport(ieo,icls) = 1.0
+            eo_pops(ieo,icls) = max(1, eo_pops(ieo,icls))
+            n_preserved = n_preserved + 1
+        endif
+    end subroutine apply_joint_cavg_side
 
     subroutine cavger_update_sums( nptcls, ptcl_imgs )
         integer,      intent(in)    :: nptcls
@@ -649,10 +729,11 @@ contains
         type(image)       :: gridcorr_img
         integer           :: eo_pop(2), icls, ithr, find, pop, filtsz_crop
         real              :: eo_support(2), support
-        logical           :: l_regularize_avg
+        logical           :: l_regularize_avg, l_joint_cavg_sgd
         ! temporary objects for frc calculation & regularization
         filtsz_crop = fdim(ldim_crop(1))-1
         l_regularize_avg   = p_ptr%l_ml_reg
+        l_joint_cavg_sgd    = p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'joint') .and. p_ptr%l_prob_align_mode
         allocate(frcs(filtsz_crop,ncls),source=0.0)
         call cavgs_bak%new_set(ldim_crop, ncls)
         call even_tmp%new_stack(ldim_crop, nthr_glob, alloc_ctfsq=.false.)
@@ -681,9 +762,9 @@ contains
                 ! backup current classes
                 if( l_regularize_avg ) call cavgs_bak%copy_fast(cavgs, icls, .true.)
                 ! CTF2 density correction
-                if( eo_support(1) > 1.0 ) call cavgs%even%ctf_dens_correct(icls)
-                if( eo_support(2) > 1.0 ) call cavgs%odd%ctf_dens_correct(icls)
-                if( support       > 1.0 ) call cavgs%merged%ctf_dens_correct(icls)
+                if( should_normalize_support(eo_support(1), l_joint_cavg_sgd) ) call cavgs%even%ctf_dens_correct(icls)
+                if( should_normalize_support(eo_support(2), l_joint_cavg_sgd) ) call cavgs%odd%ctf_dens_correct(icls)
+                if( should_normalize_support(support,       l_joint_cavg_sgd) ) call cavgs%merged%ctf_dens_correct(icls)
                 ! iFT
                 call cavgs%even%ifft(icls)
                 call cavgs%odd%ifft(icls)
@@ -997,14 +1078,26 @@ contains
         endif
     end subroutine cavger_assemble_sums_from_parts
 
+    logical function should_normalize_support( support, l_joint_cavg_sgd ) result( l_norm )
+        real,    intent(in) :: support
+        logical, intent(in) :: l_joint_cavg_sgd
+        if( l_joint_cavg_sgd )then
+            l_norm = support > TINY
+        else
+            l_norm = support > 1.0
+        endif
+    end function should_normalize_support
+
     ! DESTRUCTOR
 
     !>  \brief  is a destructor
     module subroutine cavger_kill()
         call dealloc_cavgs
         call cavgs_sgd_prev%kill_set
+        call cavgs_joint_prev%kill_set
         call cavg_sgd_opt%kill
         l_cavg_sgd_pending = .false.
+        l_joint_cavg_sgd_pending = .false.
         if( allocated(eo_pops) ) deallocate(eo_pops)
         if( allocated(eo_wsupport) ) deallocate(eo_wsupport)
     end subroutine cavger_kill
