@@ -63,6 +63,7 @@ type :: parameters
     character(len=3)          :: center='yes'         !< center image(s)/class average(s)/volume(s)(yes|no){no}
     character(len=3)          :: center_pdb='no'      !< move PDB atomic center to the center of the box(yes|no){no}
     character(len=3)          :: chunk='no'           !< indicates whether we are within a chunk(yes|no){no}
+    character(len=3)          :: chunk_hard_reject='no' !< reject class averages with hard chunk-quality rules(yes|no){no}
     character(len=3)          :: classtats='no'       !< calculate class population statistics(yes|no){no}
     character(len=3)          :: clear='no'           !< clear exising processing upon start (stream)
     character(len=3)          :: combine_eo='no'      !< Whether combined e/o volumes have been used for alignment(yes|no){no}
@@ -221,9 +222,11 @@ type :: parameters
     type(string)              :: prg                  !< SIMPLE program being executed
     type(string)              :: test                 !< SIMPLE TEST program being executed
     type(string)              :: projfile             !< SIMPLE *.simple project file
+    type(string)              :: projfile_den         !< denoise_project child SIMPLE project file with assignments
     type(string)              :: projfile_orig        !< original SIMPLE *.simple project file (unbootstrap source)
     type(string)              :: projfile_merged      !< merged SIMPLE *.simple project file output
     type(string)              :: projfile_optics      !< SIMPLE *.simple project file containing optics group definitions
+    type(string)              :: projfile_raw         !< raw SIMPLE project used as input to denoise_project
     type(string)              :: projfile_ref         !< SIMPLE project file containing reference assignments
     type(string)              :: projfile_target      !< another SIMPLE *.simple project file
     type(string)              :: projname             !< SIMPLE  project name
@@ -278,6 +281,7 @@ type :: parameters
     character(len=STDLEN)     :: imgkind='ptcl'       !< type of image(ptcl|cavg|mic|movie){ptcl}
     character(len=STDLEN)     :: import_type='auto'   !< type of import(auto|mic|ptcl2D|ptcl3D){auto}
     character(len=STDLEN)     :: mcconvention='simple'!< which frame of reference convention to use for motion correction(simple|unblur|relion){simple}
+    character(len=STDLEN)     :: model_family='logistic' !< class-average rejection learner family
     character(len=STDLEN)     :: multi_moldiams=''    !< list of molecular diameters to be used for multiple gaussian pick
     character(len=4)          :: objfun_den='no'      !< augment raw Euclidean objective with denoised-particle correlation(yes|no){no}
     character(len=7)          :: objfun='euclid'      !< objective function(euclid|cc){euclid}
@@ -285,6 +289,7 @@ type :: parameters
     character(len=STDLEN)     :: oritype='ptcl3D'     !< SIMPLE project orientation type(stk|ptcl2D|cls2D|cls3D|ptcl3D)
     character(len=STDLEN)     :: pca_mode='ppca' !< PCA mode(ppca|ppca_kpca_resid|pca_svd|kpca|diffusion_maps|steerable_diff_map|diff_map_so3){ppca}
     character(len=STDLEN)     :: steering='none' !< Orientation graph steering representation(none|so2|se2){none}
+    character(len=3)          :: trust_resolution='yes' !< allow resolution feature during quality-model learning(yes|no){yes}
     character(len=STDLEN)     :: kpca_backend='nystrom' !< kPCA backend(exact|nystrom){nystrom}
     character(len=STDLEN)     :: kpca_ker='rbf'       !< kPCA kernel(rbf|cosine){rbf}
     character(len=STDLEN)     :: pcontrast='black'    !< particle contrast(black|white){black}
@@ -301,7 +306,7 @@ type :: parameters
     character(len=STDLEN)     :: qsys_name='local'    !< name of queue system (local|coarray|slurm|pbs|lsf|sge)
     character(len=STDLEN)     :: qsys_partition2D=''  !< partition name for streaming 2D analysis
     character(len=STDLEN)     :: quality_mode='apply' !< class-average quality mode(apply|analyze|learn|evaluate|promote){apply}
-    ! class-average quality model preset(chunk100mics){chunk100mics}
+    ! class-average quality model preset(chunk100mics|chunk100mics_linear|pool){chunk100mics}
     character(len=STDLEN)     :: quality_model='chunk100mics'
     character(len=STDLEN)     :: real_filter=''
     character(len=STDLEN)     :: refine='shc'         !< refinement mode(snhc|shc|neigh|shc_neigh|prob|prob_state|prob_neigh|prob_snhc){shc}

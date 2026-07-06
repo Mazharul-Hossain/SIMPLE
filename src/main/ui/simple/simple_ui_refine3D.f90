@@ -305,11 +305,8 @@ contains
         call refine3D_multi%add_input(UI_SRCH, maxits,      required_override=.false., gui_submenu="search")
         call refine3D_multi%add_input(UI_SRCH, nstates,     required_override=.false., gui_submenu="search")
         call refine3D_multi%add_input(UI_SRCH, 'multivol_mode', 'multi', 'Multi-volume refinement mode', &
-        &'Multi-volume refinement mode(input_oris_start|input_oris_refine|input_oris_fixed){input_oris_start}', &
-        &'(input_oris_start|input_oris_refine|input_oris_fixed){input_oris_start}', .false., 'input_oris_start', &
-        &gui_submenu="search")
-        call refine3D_multi%add_input(UI_SRCH, 'prob_neigh_mode', 'multi', 'Prob-neigh neighborhood mode', &
-        &'Prob-neigh neighborhood mode(state|geom|sum|shc|snhc){sum}', '(state|geom|sum|shc|snhc){sum}', .false., 'sum', &
+        &'Multi-volume refinement mode(input_oris_refine|input_oris_fixed){input_oris_refine}', &
+        &'(input_oris_refine|input_oris_fixed){input_oris_refine}', .false., 'input_oris_refine', &
         &gui_submenu="search")
         call refine3D_multi%add_input(UI_SRCH, pgrp,                                  gui_submenu="search", gui_advanced=.false.)
         call refine3D_multi%add_input(UI_SRCH, ptcl_src, gui_submenu="search")

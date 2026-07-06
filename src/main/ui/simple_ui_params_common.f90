@@ -28,6 +28,7 @@ type(ui_param) :: ctf
 type(ui_param) :: ctf_yes
 type(ui_param) :: ctfpatch
 type(ui_param) :: ctfresthreshold
+type(ui_param) :: chunk_hard_reject
 type(ui_param) :: deftab
 type(ui_param) :: dferr
 type(ui_param) :: dfmax
@@ -67,6 +68,7 @@ type(ui_param) :: mirr
 type(ui_param) :: ml_reg
 type(ui_param) :: ml_reg_chunk
 type(ui_param) :: ml_reg_pool
+type(ui_param) :: model_family
 type(ui_param) :: moldiam
 type(ui_param) :: moldiam_max
 type(ui_param) :: mskdiam
@@ -118,7 +120,9 @@ type(ui_param) :: pick_roi
 type(ui_param) :: picker
 type(ui_param) :: pickrefs
 type(ui_param) :: projfile
+type(ui_param) :: projfile_den
 type(ui_param) :: projfile_merged
+type(ui_param) :: projfile_raw
 type(ui_param) :: projfile_ref
 type(ui_param) :: projfile_target
 type(ui_param) :: projname
@@ -161,6 +165,7 @@ type(ui_param) :: time_per_image
 type(ui_param) :: total_dose
 type(ui_param) :: trs
 type(ui_param) :: trs_mc
+type(ui_param) :: trust_resolution
 type(ui_param) :: tseries
 type(ui_param) :: update_frac
 type(ui_param) :: user_account
@@ -266,6 +271,11 @@ subroutine set_ui_params
     call ctfresthreshold%set_param('ctfresthreshold', 'num',    'CTF Resolution rejection threshold', &
                                    'Micrographs with a CTF resolution above the threshold (in Angs) will be ignored from further processing{6.}', &
                                    'CTF resolution threshold(in Angstroms){6.}', .false., 6.0)
+
+    call chunk_hard_reject%set_param('chunk_hard_reject', 'binary', 'Chunk hard reject', &
+                                   'Apply standard class-average hard gates plus fixed chunk-quality z-feature rules, '//&
+                                   'without a model(yes|no){no}', &
+                                   'Chunk hard rejection(yes|no){no}', .false., 'no')
 
     call deftab%set_param(         'deftab',          'file',   'CTF parameter file', &
                                    'CTF parameter file in plain text (.txt) or SIMPLE project (*.simple) format with dfx, dfy and angast values', &
@@ -628,6 +638,14 @@ subroutine set_ui_params
                                    'SIMPLE projectfile', &
                                    'e.g. myproject.simple', .true., '')
 
+    call projfile_raw%set_param(   'projfile_raw',    'file',   'Raw project file', &
+                                   'SIMPLE project input to denoise_project', &
+                                   'e.g. raw_project.simple', .true., '')
+
+    call projfile_den%set_param(   'projfile_den',    'file',   'Denoised child project file', &
+                                   'SIMPLE denoise_project child project containing assignments to map', &
+                                   'e.g. den_project.simple', .true., '')
+
     call projfile_target%set_param('projfile_target', 'file',   'Another project file', &
                                    'SIMPLE projectfile', &
                                    'e.g. myproject2.simple', .true., '')
@@ -661,10 +679,20 @@ subroutine set_ui_params
                                    '(apply|analyze|learn|evaluate|promote){apply}', &
                                    'Class-average quality mode(apply|analyze|learn|evaluate|promote){apply}', .false., 'apply')
 
+    call model_family%set_param(   'model_family',    'multi',  'Class-average learner family', &
+                                   'Learner family for quality_mode=learn(linear|logistic){logistic}', &
+                                   'Class-average learner family(linear|logistic){logistic}', .false., 'logistic')
+
     call quality_model%set_param(  'quality_model',   'multi',  'Class-average quality model', &
-                                   'Built-in quality model preset(chunk100mics){chunk100mics}', &
-                                   'Quality model preset(chunk100mics){chunk100mics}', &
+                                   'Built-in class-average quality model preset'//&
+                                   '(chunk100mics|chunk100mics_linear|pool){chunk100mics}', &
+                                   'Quality model(chunk100mics|chunk100mics_linear|pool){chunk100mics}', &
                                    .false., 'chunk100mics')
+
+    call trust_resolution%set_param('trust_resolution', 'binary', 'Trust resolution', &
+                                   'Allow nominal class resolution to contribute as a learned quality feature'//&
+                                   ' (yes|no){yes}', &
+                                   'Trust resolution feature during learning(yes|no){yes}', .false., 'yes')
 
     call qsys_name%set_param(      'qsys_name',       'multi',  'Queue system kind', &
                                    'Queue system kind(local|coarray|slurm|pbs|lsf|sge)', &

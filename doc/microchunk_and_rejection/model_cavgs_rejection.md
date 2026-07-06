@@ -34,7 +34,7 @@ The stream path in `simple_microchunked2D` currently calls `cluster2D_rejector`.
 
 ## Evidence Comparison
 
-The model feature bank keeps the microchunk-style image-processing evidence, optional stored-score and signal evidence, and the local-variance/support evidence needed by optional overfit hard rejection. The overfit local-variance features are part of the learned model feature vector and are included in every learn-mode feature policy. Texture descriptors were removed after they failed to justify the extra feature and extraction complexity. The current `chunk100mics` preset uses the `microchunk_plus_score_signal` policy: microchunk plus overfit-family features, stored-score evidence, and compact signal evidence.
+The model feature bank keeps the microchunk-style image-processing evidence, optional stored-score and signal evidence, and the local-variance/support evidence needed by optional overfit hard rejection. The overfit local-variance features are part of the learned model feature vector and are included in every learn-mode feature policy. Texture descriptors were removed after they failed to justify the extra feature and extraction complexity. The current `chunk100mics` preset uses the `microchunk_plus_signal` policy: microchunk plus overfit-family features, center/edge signal, presence, and fuzzy-ball signal evidence.
 
 | Evidence | Microchunk rule engine | `model_cavgs_rejection` feature-vector model | Current chunk role |
 | --- | --- | --- | --- |
@@ -45,10 +45,12 @@ The model feature bank keeps the microchunk-style image-processing evidence, opt
 | Full-image component cleanup | Connected components spanning the full image are removed before mask tests. | Same concept is applied during feature extraction before geometry features and hard mask rejection. | Hard-gate preprocessing. |
 | Foreground local variance | Robust-z rule on foreground/background local variance after 10 A low-pass and Otsu masking. | `log_locvar_fg` feature; only both variances non-positive is a hard reject. | Active feature. |
 | Background local variance | Robust-z rule paired with foreground local variance. | `log_locvar_bg` feature; only both variances non-positive is a hard reject. | Active feature. |
-| Stored score evidence | Not used by the rule engine. | `corr_frc_proxy` reads stored class correlation or FRC-like score when present. | Active feature. |
-| Center/edge signal | Not used by the rule engine. | `log_center_edge_snr` feature in the `signal` family. | Available, zero weight in current chunk default. |
-| Presence | Not used by the rule engine. | `presence` feature in the `signal` family. | Available, zero weight in current chunk default. |
+| Stored score evidence | Not used by the rule engine. | `corr_frc_proxy` reads stored class correlation or FRC-like score when present. | Inactive in the current chunk preset. |
+| Center/edge signal | Not used by the rule engine. | `log_center_edge_snr` feature in the `signal` family. | Active feature. |
+| Presence | Not used by the rule engine. | `presence` feature in the `signal` family. | Active feature. |
 | Overfit local variance | Not used by the rule engine. | `neg_log_locvar_fg`, `neg_log_locvar_bg`, and `log_locvar_fg_bg_ratio` provide low/localized variance evidence. | Active features in learned policies. |
+| Overfit band-pass localization | Not used by the rule engine. | `log_bp40_100_center_edge_var` measures center/edge variance after 100 to 40 A band-pass; raw values below `log(2)` match Joe's fuzzy-ball heuristic. | Active feature in learned policies. |
+| Fuzzy-ball signal | Not used by the rule engine. | `fuzzy_ball_signal` combines foreground texture, central presence, and 100 to 40 A center/edge localization. Low values mark the fuzzy-ball pattern as continuous learned evidence, not as an apply-time hard gate. | Active feature in learned policies. |
 | Invalid pixels | Not a named microchunk rule. | Image values containing invalid pixels are hard rejected. | Hard gate. |
 
 ## Hard-Reject Comparison
@@ -82,15 +84,17 @@ Microchunk tier thresholds:
 
 The rejection model is a low-dimensional, monotone feature-vector classifier with explicit hard constraints. In learning-theory terms, the hard rejects are prior validity constraints: they remove classes the model is not asked to rescue or fit. The remaining rows form a supervised training set from manual selections.
 
-The learned artifact has three parts:
+The standard linear learned artifact has three parts:
 
 - a feature policy, which selects a cumulative family set;
 - non-negative feature weights, which define a linear scalar quality score;
 - thresholding controls, which govern how the per-dataset score boundary is chosen after k-medoids clustering and optional Otsu thresholding.
 
+`model_family=logistic` trains a pairwise logistic artifact instead. Its fitted parameters are an intercept, linear feature coefficients, pairwise feature-interaction coefficients, a probability threshold, and a regularization strength. The coefficients are fit from the training analysis files only. On two-class trainable datasets, the logistic loss gives manually selected classes moderately higher total weight than manually deselected classes so the probability surface learns rejection evidence without becoming an overly aggressive rejector. Manually deselected examples with the overfit/support-poor or band-pass-localization signature get an additional training-time loss multiplier, so fuzzy-ball examples influence the fit without becoming an apply-time hard reject. Learn reports also expose an internal overfit-focus loss scale for experiments; it is currently neutral.
+
 The apply-time classifier is partly dataset-adaptive. Features are robustly normalized inside the current dataset. K-medoids and Otsu operate on the current score/feature distribution. The learned parameters provide the inductive bias: which features are active, how the score is weighted, and how aggressively the cluster-derived boundary is shifted or replaced.
 
-The learning objective is empirical risk minimization over manually annotated `quality_mode=analyze` runs. Feature-weight candidates are learned only from datasets where both manual states remain present after hard rejects, because those are the datasets with a learnable soft boundary. Candidate models are scored over all scoreable datasets using only non-hard-rejected rows. Two-class trainable datasets contribute balanced accuracy. Datasets where only manually good rows remain after hard rejects contribute recall, so they teach the model not to reject good classes that passed the hard gates. Datasets where only manually bad rows remain contribute specificity only when no manually good classes were removed by hard rejects. If manually good classes were entirely removed by hard rejects, the dataset is reported as hard-gate blocked and skipped for soft-model scoring. Hard-rejected rows remain visible in diagnostics, including counts of manually good classes lost to hard gates, but they do not participate in fitting the learned boundary.
+The learning objective is empirical risk minimization over manually annotated `quality_mode=analyze` runs. Feature-weight candidates are learned only from datasets where both manual states remain present after hard rejects, because those are the datasets with a learnable soft boundary. Candidate models are scored over all scoreable datasets using only non-hard-rejected rows. Two-class trainable datasets contribute specificity with a small false-negative-rate tolerance over the trainable manually good rows. Datasets where at least 20% of the trainable class averages are manually bad rows matching the fuzzy-ball signature get an additional hinge/quadratic objective penalty when the accepted fuzzy-ball-signature rate is above the tolerated rate. The signature is poor support plus either low local-variance evidence or low 100 to 40 A band-pass center/edge localization. This keeps selected-class protection global while making the objective care specifically about fuzzy-ball leakage in small-specimen chunks. The final macro score is a fixed robust score: half the mean dataset score and half the mean score over the lower tail of datasets. During pairwise-logistic fitting, manually bad rows with the same fuzzy-ball signature get extra loss weight. Datasets where only manually good rows remain after hard rejects contribute recall, so they teach the model not to reject good classes that passed the hard gates. Datasets where only manually bad rows remain contribute specificity only when no manually good classes were removed by hard rejects. If manually good classes were entirely removed by hard rejects, the dataset is reported as hard-gate blocked and skipped for soft-model scoring. Hard-rejected rows remain visible in diagnostics, including counts of manually good classes lost to hard gates, but they do not participate in fitting the learned boundary.
 
 Feature-weight search is ab initio for the supplied training data. The learner first constructs an AUC-derived seed:
 
@@ -100,12 +104,14 @@ weight(feature) = max(0, pooled_auc(feature, manual_state) - 0.5)
 
 The weights are normalized after the active feature policy is applied. Each feature policy contributes one deterministic AUC-derived weight vector to the full classifier search. There is no base-weight blending in the current learner. This means each training run derives the scalar model from the current analysis files rather than nudging an inherited default.
 
-Feature-family policies act as a small structural model-selection layer:
+Feature-family policies act as a small structural model-selection layer. For the linear learner, the training data derive the AUC feature weights and select the feature policy and thresholding controls. For the logistic learner, the training data fit the coefficients and select the feature policy, regularization lambda, and probability threshold.
+
+Use `filetab=` to define the target workflow scenario being trained. For example, early streaming chunk models should be fit from chunk analyses, while late pooled-refinement models should be fit from pool analyses. To inspect cross-scenario behavior without influencing the model, train the target model and then run `quality_mode=evaluate filetab=... infile=...` on the other scenario.
 
 | Policy | Active families | Purpose |
 | --- | --- | --- |
 | `microchunk` | `microchunk`, `overfit` | Tests whether scalar analogues of the stream rejector plus overfit local-variance evidence are sufficient. |
-| `microchunk_plus_score` | `microchunk`, `overfit`, `score` | Adds stored class correlation/FRC-like evidence. This is the current chunk default. |
+| `microchunk_plus_score` | `microchunk`, `overfit`, `score` | Adds stored class correlation/FRC-like evidence. |
 | `microchunk_plus_signal` | `microchunk`, `overfit`, `signal` | Adds center/edge and presence evidence without stored score evidence. |
 | `microchunk_plus_score_signal` | `microchunk`, `overfit`, `score`, `signal` | Uses the full compact quality feature set. |
 
@@ -117,7 +123,7 @@ Learn mode reports feature signal, feature-drop diagnostics, and leave-one-datas
 
 `quality_mode=analyze` computes the same model output but treats the existing `cls2D` state as the manual reference. It writes `cavgs_quality_analysis.txt` and the selected/rejected stacks. The project selection is left unchanged.
 
-`quality_mode=learn` reads a file table of `cavgs_quality_analysis.txt` files and searches for a model specification from a neutral `abinitio_learn_base` foundation. It does not accept `quality_model` or `infile` as seeds. It writes a learned model file controlled by `fname=` and writes `cavgs_quality_learn_report.txt`.
+`quality_mode=learn` reads a training file table of `cavgs_quality_analysis.txt` files from `filetab=` and searches for a model specification from a neutral `abinitio_learn_base` foundation. `model_family=linear|logistic` selects the model family to train; if omitted, learn mode uses `logistic`. `trust_resolution=yes|no` controls whether the normalized resolution feature `neg_log_res` is allowed to participate in training; when set to `no`, resolution remains present in analysis tables and reports but is excluded from learned weights, logistic coefficients, and pairwise interactions. It does not accept `quality_model` or `infile` as a seed. It writes a learned model file controlled by `fname=` and writes `cavgs_quality_learn_report.txt`.
 
 `quality_mode=evaluate` applies the selected fixed model without refitting. With `filetab=`, it evaluates one or more saved `cavgs_quality_analysis.txt` files. Without `filetab=`, it evaluates a single project directly using the existing `cls2D` state as the manual reference, like analyze mode. It writes `cavgs_quality_evaluate_report.txt`, or the report path controlled by `fname=`.
 
@@ -125,17 +131,19 @@ Learn mode reports feature signal, feature-drop diagnostics, and leave-one-datas
 
 `apply` and `analyze` require `projfile` and `mskdiam`. `learn` requires `filetab`. `evaluate` requires either `filetab` or `projfile` plus `mskdiam`. `promote` requires `infile`. The commander sets `oritype=cls2D`, defaults `mkdir=yes`, and defaults `prune=no`.
 
-For `apply`, `analyze`, and `evaluate`, the command uses `chunk100mics` unless `quality_model` or `infile` is supplied. Use `overfit_hard_reject=yes` when a fixed support/local-variance hard gate should be layered on top of the standard hard gates.
+For `apply`, `analyze`, and `evaluate`, the command uses `chunk100mics` unless `quality_model` or `infile` is supplied. Use `overfit_hard_reject=yes` when a fixed support/local-variance hard gate should be layered on top of the standard hard gates. Use `chunk_hard_reject=yes` when the fixed v3 chunk-quality hard-gate surrogate should be layered on top of the standard hard gates without loading or applying a model.
 
 ## Model Selection
 
-`quality_model` selects a built-in preset. The default and only hardcoded built-in is:
+`quality_model` selects a built-in preset outside learn mode. The promoted built-ins are:
 
-- `chunk100mics`: default chunk/stream-style model trained from `/Users/elmlundho/cavgs_quality/chunk100mic_training_data`.
+- `chunk100mics`: default chunk/stream-style pairwise logistic model trained from `/Users/elmlundho/cavgs_quality/chunk100mic_training_data_v3`.
+- `chunk100mics_linear`: interpretable linear chunk/stream-style model trained from `/Users/elmlundho/cavgs_quality/chunk100mic_training_data`.
+- `pool`: late pooled-refinement pairwise logistic model trained from `/Users/elmlundho/cavgs_quality/pool_training2`.
 
 When `infile` is supplied, the model file is treated as a complete model and wins over the built-in preset.
 
-Model files use `model_version=8` and explicit key-value fields:
+Linear model files use `model_version=8`, pairwise logistic model files use `model_version=9`, and both use explicit key-value fields:
 
 - `name`
 - `feature_policy`
@@ -155,7 +163,7 @@ Unknown model-file keys are rejected.
 
 ## Feature Bank
 
-`CAVG_QUALITY_NFEATS` is 12. All feature directions are `higher_is_better`. The model consumes normalized `z_*` values; raw values are written for diagnostics.
+`CAVG_QUALITY_NFEATS` is 14. All feature directions are `higher_is_better`. The model consumes normalized `z_*` values; raw values are written for diagnostics.
 
 | Index | Feature | Family | Source | Meaning |
 | --- | --- | --- | --- | --- |
@@ -171,6 +179,8 @@ Unknown model-file keys are rejected.
 | 10 | `neg_log_locvar_fg` | `overfit` | Foreground-mask local variance | Negative log local variance in the foreground Otsu mask; higher values indicate lower foreground variation. |
 | 11 | `neg_log_locvar_bg` | `overfit` | Background-mask local variance | Negative log local variance outside the foreground Otsu mask; higher values indicate quieter background. |
 | 12 | `log_locvar_fg_bg_ratio` | `overfit` | Foreground/background local variance | Log foreground/background local variance ratio; higher values indicate support-localized detail. |
+| 13 | `log_bp40_100_center_edge_var` | `overfit` | Band-pass center/edge variance | Log center/edge variance ratio after 100 to 40 A band-pass; low raw values flag overfit fuzzy balls. |
+| 14 | `fuzzy_ball_signal` | `overfit` | Combined overfit evidence | Sum of `log_locvar_fg`, `presence`, and `log_bp40_100_center_edge_var`; low values indicate fuzzy-ball overfit evidence. |
 
 Feature families are used by learn mode. Every learned policy includes `microchunk` and `overfit`; the policy variants append optional evidence families:
 
@@ -179,12 +189,16 @@ Feature families are used by learn mode. Every learned policy includes `microchu
 - `microchunk_plus_signal`
 - `microchunk_plus_score_signal`
 
+`trust_resolution=no` intersects each learn-mode feature policy with an explicit training mask that removes feature 2, `neg_log_res`. This is a training-time decision only: regenerated or saved analysis files can still contain resolution values for reporting and diagnostics, and the learned model file remains self-contained because disabled resolution terms are written as zero or omitted.
+
 Features outside the selected policy are encoded by zero weights.
 
 ## Extraction Constants
 
 - `FOREGROUND_SEG_LP = 30.0`
 - `SIGNAL_METRIC_LP = 10.0`
+- `OVERFIT_SIGNAL_BP_HP = 100.0`
+- `OVERFIT_SIGNAL_BP_LP = 40.0`
 - `CAVG_RES_HARD_REJECT_A = 40.0`
 - `POP_FRACTION_HARD_REJECT = 0.0035`
 - `LOCVAR_WINDOW = 10`
@@ -221,13 +235,63 @@ The default hard reject is:
 
 On the FlipQR overfit-training table, the support/local-variance rule rejects 18/26 trainable overfit-labeled classes while retaining 31/33 trainable good classes. Rows rejected by the overfit hard rule are marked as hard rejects in the final decision, but their normalized features remain inspectable in the output tables because those values explain the hard-gate decision.
 
+### Optional Chunk Hard Gate
+
+`chunk_hard_reject=yes` is a no-model application path for project-backed `apply`, `analyze`, and `evaluate` runs. It applies the standard hard gates first, computes normalized features over the remaining rows, and then applies a fixed v3 chunk-quality hard-gate surrogate. It does not read `infile`, does not call `model%classify`, and does not use k-medoids, Otsu thresholds, model cluster-rescue, or minimum-acceptance model logic. It is mutually exclusive with `overfit_hard_reject=yes`.
+
+The fixed chunk hard rule rejects a trainable class when any of these paired dataset-normalized gates fire:
+
+```text
+z_neg_log_res < -0.789 AND z_fuzzy_ball_signal < -0.364
+z_fuzzy_ball_signal < -0.965 AND z_log_locvar_fg < -0.285
+z_log_locvar_fg > 2.000 AND z_log_locvar_bg > 1.500
+z_centered > 1.000 AND z_fuzzy_ball_signal < -0.364
+z_log_locvar_bg < -1.225 AND z_log_bp40_100_center_edge_var < -0.750
+z_neg_log_res < -0.789 AND z_cc_area_frac < -1.386
+```
+
+These thresholds were derived from `/Users/elmlundho/cavgs_quality/chunk100mic_training_data_v3` as a compact, interpretable hard-gate approximation to the promoted `chunk100mics` v3 logistic preset. It is not equivalent to the logistic model: on the v3 training table, the hard surrogate protected selected classes more strongly than the old hard gate (`fn=7` instead of `fn=39`) but rejected fewer manually bad classes than the logistic model (`fp=148` for the surrogate, `fp=103` for logistic v3). Rows rejected by the chunk hard rule are marked as hard rejects in the final decision, while their normalized feature values remain inspectable in the output tables.
+
 ## Normalization
 
 `normalize_cavg_quality_features` computes per-feature robust statistics over non-hard-rejected rows only. Each feature is centered by the median and scaled by the Gaussian MAD. Values are clipped to `[-CLIP_Z, CLIP_Z]`. If a feature has no robust spread, its normalized value is set to zero for trainable rows.
 
 ## Built-In Presets
 
-`chunk100mics` uses feature policy `microchunk_plus_score_signal`, low-separation Otsu disabled, Otsu windowing enabled, cluster rescue disabled, and minimum accepted fraction enforcement enabled. It was trained from `/Users/elmlundho/cavgs_quality/chunk100mic_training_data`.
+`chunk100mics` uses feature policy `microchunk_plus_signal` and the pairwise logistic family, with low-separation Otsu, Otsu windowing, cluster rescue, and minimum accepted fraction enforcement disabled. It was trained from `/Users/elmlundho/cavgs_quality/chunk100mic_training_data_v3` with the chunk learn objective in effect at the time of promotion.
+
+```text
+model_family        pairwise_logistic
+prob_threshold      4.500000E-01
+regularization      1.000000E-03
+feature_weights     uniform over the active microchunk_plus_signal vector with zero weight on stored score evidence
+```
+
+```text
+boundary_margin         0.00
+min_score_separation    0.05
+otsu_min_offset         0.00
+otsu_max_offset         0.00
+cluster_rescue_margin   0.20
+min_accept_frac         0.00
+use_lowsep_otsu         false
+use_otsu_window         false
+use_cluster_rescue      false
+enforce_min_accept_frac false
+```
+
+`pool` uses feature policy `microchunk_plus_score_signal` and the pairwise logistic family, but is tuned for late pooled-refinement data from `/Users/elmlundho/cavgs_quality/pool_training2`.
+
+```text
+model_family        pairwise_logistic
+prob_threshold      4.500000E-01
+regularization      1.000000E-04
+feature_weights     uniform over all 14 microchunk_plus_score_signal features
+```
+
+On the refreshed pool-training table, this promoted preset scored `macro_evaluate_score=0.91875`, improving over the previous built-in pool preset (`0.74351`) while reducing total soft-classification errors from `fp=15, fn=35` to `fp=3, fn=11`.
+
+`chunk100mics_linear` preserves the previous linear score-and-threshold model as an interpretability tool. Its feature weights can be read directly as non-negative contributions to the normalized scalar quality score.
 
 ```text
 log_pop             9.978756E-02
@@ -242,6 +306,8 @@ presence            1.294257E-01
 neg_log_locvar_fg   0.000000E+00
 neg_log_locvar_bg   0.000000E+00
 log_locvar_fg_bg_ratio 4.718454E-02
+log_bp40_100_center_edge_var 0.000000E+00
+fuzzy_ball_signal   0.000000E+00
 ```
 
 ```text
@@ -250,18 +316,18 @@ min_score_separation    0.05
 otsu_min_offset         0.05
 otsu_max_offset         0.40
 cluster_rescue_margin   0.20
-min_accept_frac         0.50
+min_accept_frac         0.60
 use_lowsep_otsu         false
 use_otsu_window         true
 use_cluster_rescue      false
 enforce_min_accept_frac true
 ```
 
-All model weights are clipped to non-negative values and normalized to sum to one when a model is initialized or read.
+Linear model weights are clipped to non-negative values and normalized to sum to one when a linear model is initialized or read.
 
 ## Classification
 
-For non-hard-rejected class averages:
+For non-hard-rejected class averages, `model_family=linear_score` uses the historical score-and-cluster path:
 
 1. Compute a linear quality score with `matmul(normalized_features, weights)`.
 2. Build a pairwise Euclidean distance matrix in normalized feature space using nonzero-weight features.
@@ -274,6 +340,14 @@ For non-hard-rejected class averages:
 9. If `use_otsu_window` is enabled, replace the threshold with Otsu when the Otsu threshold is at least `otsu_min_offset` and at most `otsu_max_offset` above the raw threshold, and Otsu separation is sufficient.
 10. If `use_cluster_rescue` is enabled, also accept good-cluster members within `cluster_rescue_margin` below the threshold.
 11. If `enforce_min_accept_frac` is enabled, accept enough top-scoring trainable rows to satisfy `min_accept_frac`.
+
+For `model_family=pairwise_logistic`, the model computes:
+
+```text
+prob_accept = sigmoid(intercept + sum(linear_coefficients * features) + sum(interaction_coefficients * feature_i * feature_j))
+```
+
+Non-hard-rejected rows are accepted when `prob_accept >= prob_threshold`. Standard hard gates still run before the logistic model.
 
 If there are fewer than four trainable rows, the distance matrix is degenerate, clustering fails, or the low-separation branch has no acceptable Otsu threshold, all non-hard-rejected rows are accepted as a single cluster.
 
@@ -296,7 +370,7 @@ Common hard-only reasons are `too_few_trainable`, `flat_feature_distances`, `inv
 - confusion metrics against the manual `cls2D` state;
 - score AUC;
 - raw threshold, threshold offset, and effective threshold;
-- best balanced-accuracy and F1 thresholds against the manual reference;
+- best learn-score and F1 thresholds against the manual reference;
 - model fields as comments;
 - feature inventory;
 - per-feature AUC, robust separation, current weight, and suggested weight;
@@ -312,13 +386,13 @@ Common hard-only reasons are `too_few_trainable`, `flat_feature_distances`, `inv
 - `dataset_id`
 - `hard_reject`
 - `manual_state`
-- all `z_*` feature columns for the 12-feature bank
+- all required `z_*` feature columns for the 14-feature bank
 
 Hard-rejected rows are kept in reports but excluded from feature-weight estimation, candidate scoring, feature-signal diagnostics, feature-drop diagnostics, and feature-policy diagnostics.
 
 Learn mode assigns each dataset an automatic role:
 
-- `balanced`: both manual good and manual bad rows remain after hard rejects; used for feature weights and scored by balanced accuracy.
+- `balanced`: both manual good and manual bad rows remain after hard rejects; used for feature weights and scored by specificity with a small false-negative-rate tolerance.
 - `trainable_good_only`: only manual good rows remain after hard rejects; not used for feature weights, scored by guarded recall.
 - `trainable_bad_only`: only manual bad rows remain after hard rejects and no manually good rows were hard rejected; not used for feature weights, scored by specificity.
 - `skip_hard_gate_blocked`: only manual bad rows remain because all manually good rows were hard rejected; reported but skipped for soft-model fitting and scoring.
@@ -331,7 +405,7 @@ weight(feature) = max(0, pooled_auc(feature, manual_state) - 0.5)
 
 The weights are normalized to sum to one. If all active weights are zero for a policy, uniform weights are assigned over the active policy features. The full classifier search chooses among the AUC-derived candidate vectors for the available feature policies.
 
-Good-only datasets use a recall guard in the learn score. Raw recall is still reported in the dataset table, but the learn score applies an additional shortfall penalty below the recall floor. This prevents a candidate model from improving balanced datasets by rejecting a large number of classes from datasets that contain only trainable manual positives.
+Balanced datasets use specificity with a small false-negative-rate tolerance over trainable manually good rows. Overfit-focused datasets also subtract a hinge/quadratic penalty for the accepted manually bad fuzzy-ball-signature rate above the tolerated rate. The final macro score blends the mean dataset score with a fractional lower tail of the dataset scores. This makes threshold selection care about datasets where bad fuzzy-ball classes still leak through, while still penalizing candidates that reject too large a fraction of manually selected classes. Good-only datasets use a recall guard in the learn score. Raw recall is still reported in the dataset table, but the guarded learn score applies an additional shortfall penalty below the good-only recall floor. This prevents a candidate model from improving balanced datasets by rejecting a large fraction of classes from datasets that contain only trainable manual positives.
 
 Learn mode searches:
 
@@ -347,6 +421,8 @@ Learn mode searches:
 - `use_cluster_rescue`: `false, true`;
 - `enforce_min_accept_frac`: `false, true`;
 - `min_accept_frac`: `0.50, 0.60, 0.65, 0.70, 0.80, 0.85, 0.90, 0.925, 0.95, 0.975, 1.00` when `enforce_min_accept_frac` is true.
+
+When `trust_resolution=no`, the same search is run after removing `neg_log_res` from every feature policy. The learn report records `trust_resolution=no` and lists `neg_log_res` under `inactive_training_features`.
 
 The training algorithm is unified and ab initio with respect to the rejection model. It uses a neutral foundation with zero starting weights, no rescue, no minimum-acceptance enforcement, and no Otsu rescue/window behavior. This foundation is only a tie-break anchor and a source of inactive-field defaults; it is not a chunk or pool preset. Chunk, pool, and stage-specific behavior should be represented by the learned model parameters or by promoted model definitions, not by separate training procedures.
 
@@ -393,11 +469,23 @@ simple_exec prg=model_cavgs_rejection \
   mkdir=yes
 ```
 
+Apply only the standard hard gates plus the fixed chunk hard gates:
+
+```bash
+simple_exec prg=model_cavgs_rejection \
+  quality_mode=apply \
+  chunk_hard_reject=yes \
+  projfile=my_project.simple \
+  mskdiam=180 \
+  mkdir=yes
+```
+
 Train from a file table of analysis outputs:
 
 ```bash
 simple_exec prg=model_cavgs_rejection \
   quality_mode=learn \
+  model_family=logistic \
   filetab=analysis_files.txt \
   fname=cavgs_quality_model_learned.txt \
   mkdir=yes
