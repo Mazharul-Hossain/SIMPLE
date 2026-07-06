@@ -10,7 +10,7 @@ private
 #include "simple_local_flags.inc"
 
 character(len=*), parameter :: JOINT2D_CANDIDATES_FNAME = 'joint2D_topk_candidates.dat'
-integer,          parameter :: JOINT2D_CANDIDATES_VERSION = 1
+integer,          parameter :: JOINT2D_CANDIDATES_VERSION = 2
 integer,          parameter :: RELIABILITY_OK           = 0
 integer,          parameter :: RELIABILITY_EMPTY        = 1
 integer,          parameter :: RELIABILITY_TOO_FEW      = 2
@@ -35,16 +35,22 @@ type :: joint2D_candidate_table
     type(joint2D_candidate), allocatable :: cand(:,:)        !< top-K candidates (topk,nptcls)
     integer,                 allocatable :: ncand(:)         !< valid candidates retained per particle
     integer,                 allocatable :: hard_rank(:)     !< selected straight-through rank per particle
+    integer,                 allocatable :: initial_hard_rank(:) !< hard rank before latent-logit optimization
     integer,                 allocatable :: reject_reason(:) !< reliability gate reason per particle
     real,                    allocatable :: entropy(:)       !< entropy over retained soft weights
+    real,                    allocatable :: initial_entropy(:) !< entropy before latent-logit optimization
     real,                    allocatable :: norm_entropy(:)  !< entropy normalized by log(ncand)
     real,                    allocatable :: winner_weight(:) !< soft weight of the hard winner
+    real,                    allocatable :: expected_loss(:) !< current expected candidate loss
+    real,                    allocatable :: initial_expected_loss(:) !< expected loss before optimization
+    real,                    allocatable :: loss_delta(:)    !< initial_expected_loss - expected_loss
     real,                    allocatable :: particle_weight(:) !< effective particle weight after gates
     real,                    allocatable :: base_shift(:,:)  !< pre-assignment/base shift (2,nptcls)
     logical,                 allocatable :: accepted(:)      !< reliability gate result
 contains
     procedure :: build_from_loc_tab
     procedure :: set_base_shifts
+    procedure :: optimize_logits
     procedure :: apply_reliability
     procedure :: write_hard_assignments
     procedure :: write_table
@@ -73,16 +79,22 @@ contains
         nclasses = size(loc_tab, 1)
         nptcls   = size(loc_tab, 2)
         allocate(self%cand(topk,nptcls), self%ncand(nptcls), self%hard_rank(nptcls),&
-            &self%reject_reason(nptcls), self%entropy(nptcls), self%norm_entropy(nptcls),&
-            &self%winner_weight(nptcls), self%particle_weight(nptcls), self%base_shift(2,nptcls),&
-            &self%accepted(nptcls))
+            &self%initial_hard_rank(nptcls), self%reject_reason(nptcls), self%entropy(nptcls),&
+            &self%initial_entropy(nptcls), self%norm_entropy(nptcls), self%winner_weight(nptcls),&
+            &self%expected_loss(nptcls), self%initial_expected_loss(nptcls), self%loss_delta(nptcls),&
+            &self%particle_weight(nptcls), self%base_shift(2,nptcls), self%accepted(nptcls))
         self%cand            = joint2D_candidate()
         self%ncand           = 0
         self%hard_rank       = 0
+        self%initial_hard_rank = 0
         self%reject_reason   = RELIABILITY_EMPTY
         self%entropy         = 0.
+        self%initial_entropy = 0.
         self%norm_entropy    = 0.
         self%winner_weight   = 0.
+        self%expected_loss   = 0.
+        self%initial_expected_loss = 0.
+        self%loss_delta      = 0.
         self%particle_weight = 0.
         self%base_shift      = 0.
         self%accepted        = .false.
@@ -109,6 +121,34 @@ contains
         endif
         self%base_shift = base_shift
     end subroutine set_base_shifts
+
+    subroutine optimize_logits( self, inner_its, eta_latent, tau, tau_min )
+        class(joint2D_candidate_table), intent(inout) :: self
+        integer,                        intent(in)    :: inner_its
+        real,                           intent(in)    :: eta_latent
+        real,                           intent(in)    :: tau
+        real,                           intent(in)    :: tau_min
+        integer :: iter, iptcl
+        real    :: tau_eff
+
+        call require_allocated(self, 'latent-logit optimization requested before build/read')
+        if( inner_its < 1 ) THROW_HARD('joint2D_candidate_table: inner_its must be >= 1')
+        if( eta_latent <= 0. ) THROW_HARD('joint2D_candidate_table: eta_latent must be > 0')
+        tau_eff = max(tau, tau_min)
+        if( tau_eff <= 0. ) THROW_HARD('joint2D_candidate_table: tau_eff must be > 0')
+
+        do iter = 1, inner_its
+            do iptcl = 1, size(self%ncand)
+                call optimize_particle_logits(self, iptcl, eta_latent, tau_eff)
+                call refresh_particle(self, iptcl, tau_eff)
+            end do
+        end do
+        do iptcl = 1, size(self%ncand)
+            if( self%ncand(iptcl) > 0 )then
+                self%loss_delta(iptcl) = self%initial_expected_loss(iptcl) - self%expected_loss(iptcl)
+            endif
+        end do
+    end subroutine optimize_logits
 
     subroutine apply_reliability( self, min_cands, max_entropy )
         class(joint2D_candidate_table), intent(inout) :: self
@@ -207,12 +247,14 @@ contains
         call fileiochk('joint2D_candidate_table; write_table(header); file: '//trim(fname), io_stat)
         write(unit=funit, iostat=io_stat) self%cand
         call fileiochk('joint2D_candidate_table; write_table(cand); file: '//trim(fname), io_stat)
-        write(unit=funit, iostat=io_stat) self%ncand, self%hard_rank, self%reject_reason
+        write(unit=funit, iostat=io_stat) self%ncand, self%hard_rank, self%initial_hard_rank, self%reject_reason
         call fileiochk('joint2D_candidate_table; write_table(ints); file: '//trim(fname), io_stat)
-        write(unit=funit, iostat=io_stat) self%entropy, self%norm_entropy, self%winner_weight
+        write(unit=funit, iostat=io_stat) self%entropy, self%initial_entropy, self%norm_entropy, self%winner_weight
         call fileiochk('joint2D_candidate_table; write_table(reals1); file: '//trim(fname), io_stat)
-        write(unit=funit, iostat=io_stat) self%particle_weight, self%base_shift
+        write(unit=funit, iostat=io_stat) self%expected_loss, self%initial_expected_loss, self%loss_delta
         call fileiochk('joint2D_candidate_table; write_table(reals2); file: '//trim(fname), io_stat)
+        write(unit=funit, iostat=io_stat) self%particle_weight, self%base_shift
+        call fileiochk('joint2D_candidate_table; write_table(reals3); file: '//trim(fname), io_stat)
         write(unit=funit, iostat=io_stat) self%accepted
         call fileiochk('joint2D_candidate_table; write_table(flags); file: '//trim(fname), io_stat)
         close(funit)
@@ -239,17 +281,20 @@ contains
             THROW_HARD('joint2D_candidate_table: invalid file dimensions')
         endif
         allocate(self%cand(topk,nptcls), self%ncand(nptcls), self%hard_rank(nptcls),&
-            &self%reject_reason(nptcls), self%entropy(nptcls), self%norm_entropy(nptcls),&
-            &self%winner_weight(nptcls), self%particle_weight(nptcls), self%base_shift(2,nptcls),&
-            &self%accepted(nptcls))
+            &self%initial_hard_rank(nptcls), self%reject_reason(nptcls), self%entropy(nptcls),&
+            &self%initial_entropy(nptcls), self%norm_entropy(nptcls), self%winner_weight(nptcls),&
+            &self%expected_loss(nptcls), self%initial_expected_loss(nptcls), self%loss_delta(nptcls),&
+            &self%particle_weight(nptcls), self%base_shift(2,nptcls), self%accepted(nptcls))
         read(unit=funit, iostat=io_stat) self%cand
         call fileiochk('joint2D_candidate_table; read_table(cand); file: '//trim(fname), io_stat)
-        read(unit=funit, iostat=io_stat) self%ncand, self%hard_rank, self%reject_reason
+        read(unit=funit, iostat=io_stat) self%ncand, self%hard_rank, self%initial_hard_rank, self%reject_reason
         call fileiochk('joint2D_candidate_table; read_table(ints); file: '//trim(fname), io_stat)
-        read(unit=funit, iostat=io_stat) self%entropy, self%norm_entropy, self%winner_weight
+        read(unit=funit, iostat=io_stat) self%entropy, self%initial_entropy, self%norm_entropy, self%winner_weight
         call fileiochk('joint2D_candidate_table; read_table(reals1); file: '//trim(fname), io_stat)
-        read(unit=funit, iostat=io_stat) self%particle_weight, self%base_shift
+        read(unit=funit, iostat=io_stat) self%expected_loss, self%initial_expected_loss, self%loss_delta
         call fileiochk('joint2D_candidate_table; read_table(reals2); file: '//trim(fname), io_stat)
+        read(unit=funit, iostat=io_stat) self%particle_weight, self%base_shift
+        call fileiochk('joint2D_candidate_table; read_table(reals3); file: '//trim(fname), io_stat)
         read(unit=funit, iostat=io_stat) self%accepted
         call fileiochk('joint2D_candidate_table; read_table(flags); file: '//trim(fname), io_stat)
         close(funit)
@@ -291,7 +336,9 @@ contains
         class(joint2D_candidate_table), intent(in) :: self
         character(len=*),               intent(in) :: label
         integer :: nptcls, topk, nonempty, empty_count, accepted_count, too_few_count, entropy_count
-        real    :: avg_ncand, avg_entropy, avg_norm_entropy, avg_winner_weight
+        integer :: winner_churn_count
+        real    :: avg_ncand, avg_entropy, avg_initial_entropy, avg_norm_entropy, avg_winner_weight
+        real    :: avg_initial_loss, avg_expected_loss, avg_loss_delta
 
         if( .not. allocated(self%ncand) )then
             write(logfhandle,'(A,1X,A)') '>>> JOINT2D SGD TOPK:', trim(label)//' table not allocated'
@@ -304,23 +351,36 @@ contains
         accepted_count = count(self%accepted)
         too_few_count  = count(self%reject_reason == RELIABILITY_TOO_FEW)
         entropy_count  = count(self%reject_reason == RELIABILITY_HIGH_ENTROPY)
+        winner_churn_count = count((self%ncand > 0) .and. (self%initial_hard_rank /= self%hard_rank))
         avg_ncand = 0.
         avg_entropy = 0.
+        avg_initial_entropy = 0.
         avg_norm_entropy = 0.
         avg_winner_weight = 0.
+        avg_initial_loss = 0.
+        avg_expected_loss = 0.
+        avg_loss_delta = 0.
         if( nptcls > 0 ) avg_ncand = real(sum(self%ncand)) / real(nptcls)
         if( nonempty > 0 )then
             avg_entropy       = sum(self%entropy,       mask=self%ncand > 0) / real(nonempty)
+            avg_initial_entropy = sum(self%initial_entropy, mask=self%ncand > 0) / real(nonempty)
             avg_norm_entropy  = sum(self%norm_entropy,  mask=self%ncand > 0) / real(nonempty)
             avg_winner_weight = sum(self%winner_weight, mask=self%ncand > 0) / real(nonempty)
+            avg_initial_loss  = sum(self%initial_expected_loss, mask=self%ncand > 0) / real(nonempty)
+            avg_expected_loss = sum(self%expected_loss, mask=self%ncand > 0) / real(nonempty)
+            avg_loss_delta    = sum(self%loss_delta, mask=self%ncand > 0) / real(nonempty)
         endif
         write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
             &'>>> JOINT2D SGD TOPK:', trim(label), 'topk=', topk, 'nptcls=', nptcls, 'empty=', empty_count,&
             &'accepted=', accepted_count, 'too_few=', too_few_count, 'high_entropy=', entropy_count
-        write(logfhandle,'(A,1X,A,1X,A,F7.3,1X,A,F7.3,1X,A,F7.3,1X,A,F7.3)')&
+        write(logfhandle,'(A,1X,A,1X,A,F7.3,1X,A,F7.3,1X,A,F7.3,1X,A,F7.3,1X,A,I0)')&
             &'>>> JOINT2D SGD TOPK STATS:', trim(label), 'avg_ncand=', avg_ncand,&
             &'avg_entropy=', avg_entropy, 'avg_norm_entropy=', avg_norm_entropy,&
-            &'avg_winner_weight=', avg_winner_weight
+            &'avg_winner_weight=', avg_winner_weight, 'winner_churn=', winner_churn_count
+        write(logfhandle,'(A,1X,A,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4,1X,A,F7.3)')&
+            &'>>> JOINT2D SGD LATENT:', trim(label), 'avg_initial_loss=', avg_initial_loss,&
+            &'avg_final_loss=', avg_expected_loss, 'avg_loss_delta=', avg_loss_delta,&
+            &'avg_initial_entropy=', avg_initial_entropy
     end subroutine write_diag
 
     subroutine kill_candidate_table( self )
@@ -328,10 +388,15 @@ contains
         if( allocated(self%cand)            ) deallocate(self%cand)
         if( allocated(self%ncand)           ) deallocate(self%ncand)
         if( allocated(self%hard_rank)       ) deallocate(self%hard_rank)
+        if( allocated(self%initial_hard_rank) ) deallocate(self%initial_hard_rank)
         if( allocated(self%reject_reason)   ) deallocate(self%reject_reason)
         if( allocated(self%entropy)         ) deallocate(self%entropy)
+        if( allocated(self%initial_entropy) ) deallocate(self%initial_entropy)
         if( allocated(self%norm_entropy)    ) deallocate(self%norm_entropy)
         if( allocated(self%winner_weight)   ) deallocate(self%winner_weight)
+        if( allocated(self%expected_loss)   ) deallocate(self%expected_loss)
+        if( allocated(self%initial_expected_loss) ) deallocate(self%initial_expected_loss)
+        if( allocated(self%loss_delta)      ) deallocate(self%loss_delta)
         if( allocated(self%particle_weight) ) deallocate(self%particle_weight)
         if( allocated(self%base_shift)      ) deallocate(self%base_shift)
         if( allocated(self%accepted)        ) deallocate(self%accepted)
@@ -400,38 +465,86 @@ contains
         integer,                        intent(in)    :: iptcl
         real,                           intent(in)    :: tau_eff
         integer :: irank, nc
-        real    :: max_logit, denom, w, best_weight
 
         nc = self%ncand(iptcl)
         if( nc < 1 ) return
 
-        max_logit = -huge(1.0)
         do irank = 1, nc
-            self%cand(irank,iptcl)%rank  = irank
-            self%cand(irank,iptcl)%hard  = .false.
-            self%cand(irank,iptcl)%logit = -self%cand(irank,iptcl)%dist / tau_eff
-            max_logit = max(max_logit, self%cand(irank,iptcl)%logit)
+            self%cand(irank,iptcl)%logit = -self%cand(irank,iptcl)%dist
+        end do
+        call refresh_particle(self, iptcl, tau_eff)
+        self%initial_hard_rank(iptcl)     = self%hard_rank(iptcl)
+        self%initial_entropy(iptcl)       = self%entropy(iptcl)
+        self%initial_expected_loss(iptcl) = self%expected_loss(iptcl)
+        self%loss_delta(iptcl)            = 0.
+    end subroutine finalize_particle
+
+    subroutine optimize_particle_logits( self, iptcl, eta_latent, tau_eff )
+        class(joint2D_candidate_table), intent(inout) :: self
+        integer,                        intent(in)    :: iptcl
+        real,                           intent(in)    :: eta_latent, tau_eff
+        integer :: irank, nc
+        real    :: grad, loss
+
+        nc = self%ncand(iptcl)
+        if( nc < 1 ) return
+        loss = self%expected_loss(iptcl)
+        do irank = 1, nc
+            grad = (self%cand(irank,iptcl)%weight / tau_eff) * (self%cand(irank,iptcl)%dist - loss)
+            self%cand(irank,iptcl)%logit = self%cand(irank,iptcl)%logit - eta_latent * grad
+        end do
+    end subroutine optimize_particle_logits
+
+    subroutine refresh_particle( self, iptcl, tau_eff )
+        class(joint2D_candidate_table), intent(inout) :: self
+        integer,                        intent(in)    :: iptcl
+        real,                           intent(in)    :: tau_eff
+        integer :: irank, nc
+        real    :: max_score, denom, score, w, best_weight
+
+        nc = self%ncand(iptcl)
+        self%hard_rank(iptcl)     = 0
+        self%entropy(iptcl)       = 0.
+        self%norm_entropy(iptcl)  = 0.
+        self%winner_weight(iptcl) = 0.
+        self%expected_loss(iptcl) = 0.
+        do irank = 1, size(self%cand, 1)
+            self%cand(irank,iptcl)%hard       = .false.
+            self%cand(irank,iptcl)%weight     = 0.
+            self%cand(irank,iptcl)%eff_weight = 0.
+        end do
+        if( nc < 1 ) return
+
+        max_score = -huge(1.0)
+        do irank = 1, nc
+            self%cand(irank,iptcl)%rank = irank
+            score = self%cand(irank,iptcl)%logit / tau_eff
+            max_score = max(max_score, score)
         end do
 
         denom = 0.
         do irank = 1, nc
-            denom = denom + exp(self%cand(irank,iptcl)%logit - max_logit)
+            score = self%cand(irank,iptcl)%logit / tau_eff
+            denom = denom + exp(score - max_score)
         end do
         if( denom <= 0. .or. denom /= denom )then
-            self%cand(1,iptcl)%weight = 1.
+            self%cand(1,iptcl)%weight     = 1.
             self%cand(1,iptcl)%eff_weight = 1.
-            self%hard_rank(iptcl) = 1
-            self%winner_weight(iptcl) = 1.
-            self%cand(1,iptcl)%hard = .true.
+            self%hard_rank(iptcl)         = 1
+            self%winner_weight(iptcl)     = 1.
+            self%expected_loss(iptcl)     = self%cand(1,iptcl)%dist
+            self%cand(1,iptcl)%hard       = .true.
             return
         endif
 
         best_weight = -1.
         self%hard_rank(iptcl) = 1
         do irank = 1, nc
-            w = exp(self%cand(irank,iptcl)%logit - max_logit) / denom
+            score = self%cand(irank,iptcl)%logit / tau_eff
+            w = exp(score - max_score) / denom
             self%cand(irank,iptcl)%weight = w
             self%cand(irank,iptcl)%eff_weight = w
+            self%expected_loss(iptcl) = self%expected_loss(iptcl) + w * self%cand(irank,iptcl)%dist
             if( w > 0. ) self%entropy(iptcl) = self%entropy(iptcl) - w * log(w)
             if( w > best_weight )then
                 best_weight = w
@@ -440,7 +553,8 @@ contains
         end do
         self%winner_weight(iptcl) = self%cand(self%hard_rank(iptcl),iptcl)%weight
         self%cand(self%hard_rank(iptcl),iptcl)%hard = .true.
-    end subroutine finalize_particle
+        if( nc > 1 ) self%norm_entropy(iptcl) = self%entropy(iptcl) / log(real(nc))
+    end subroutine refresh_particle
 
     type(ptcl_ref) function ref_from_candidate( self, irank, iptcl ) result( ref )
         class(joint2D_candidate_table), intent(in) :: self

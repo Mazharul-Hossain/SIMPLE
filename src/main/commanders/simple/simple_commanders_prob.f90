@@ -447,6 +447,8 @@ contains
                 if( pinds(iptcl) > 0 ) base_shifts(:,iptcl) = build%spproj_field%get_2Dshift(pinds(iptcl))
             end do
             call joint_candidates%set_base_shifts(base_shifts)
+            call joint_candidates%optimize_logits(params%sgd_inner_its, params%sgd_eta_latent,&
+                &params%sgd_tau, params%sgd_tau_min)
             call joint_candidates%apply_reliability(params%sgd_cavg_min_cands, params%sgd_cavg_max_entropy)
             call joint_candidates%write_diag('prob_align2D')
             call joint_candidates%write_table(JOINT2D_CANDIDATES_FNAME)

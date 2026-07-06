@@ -14,13 +14,33 @@ type(joint2D_candidate_table) :: tab, tab_roundtrip
 real, allocatable :: batch_weights(:,:)
 integer, allocatable :: batch_ncands(:)
 integer :: i
-real    :: base_shifts(2,4), weight_sum
+real    :: base_shifts(2,4), weight_sum, expected_weight
+real    :: p4_initial_weight, p4_initial_loss, p4_initial_entropy
 
 call init_loc_tab(loc_tab)
 call init_base_shifts(base_shifts)
 
 call tab%build_from_loc_tab(loc_tab, 3, 1.0, 0.1)
 call tab%set_base_shifts(base_shifts)
+expected_weight = exp(-4.0) / (exp(-4.0) + exp(-5.0))
+call require_close(tab%cand(1,4)%weight, expected_weight, 1.0e-6,&
+    &'initial weights match softmax(-dist/tau)')
+call require_close(tab%cand(1,4)%logit, -4.0, 1.0e-6, 'initial logit is raw negative distance')
+call require_close(tab%cand(1,1)%weight, tab%cand(2,1)%weight, 1.0e-6,&
+    &'equal-distance candidates start tied')
+p4_initial_weight = tab%cand(1,4)%weight
+p4_initial_loss = tab%expected_loss(4)
+p4_initial_entropy = tab%entropy(4)
+call tab%optimize_logits(8, 1.0, 1.0, 0.1)
+call require_true(tab%cand(1,4)%weight > p4_initial_weight,&
+    &'latent optimization increases weight on lower-distance candidate')
+call require_true(tab%expected_loss(4) < p4_initial_loss,&
+    &'latent optimization decreases expected candidate loss')
+call require_true(tab%loss_delta(4) > 0.0, 'latent optimization records positive loss improvement')
+call require_true(tab%entropy(4) < p4_initial_entropy, 'latent optimization lowers entropy for separated candidates')
+call require_close(tab%cand(1,1)%weight, tab%cand(2,1)%weight, 1.0e-6,&
+    &'equal-distance candidates remain tied after optimization')
+call require_true(tab%hard_rank(1) == 1, 'equal-distance hard winner remains deterministic')
 call tab%apply_reliability(2, 0.95)
 call require_true(tab%ncand(1) == 3, 'particle 1 retains three candidates')
 call require_true(tab%cand(1,1)%icls == 2, 'particle 1 rank 1 tie-breaks to lower class')
@@ -63,6 +83,7 @@ call tab%export_batch(1, 4, batch_refs, batch_weights, batch_ncands)
 call require_close(sum(batch_weights(:,4)), 0.0, 1.0e-6, 'too-few-candidate export has zero support')
 call tab%apply_reliability(2, 0.50)
 call require_true(.not. tab%accepted(1), 'high-entropy particle is rejected')
+call require_true(tab%accepted(4), 'reliability gates use post-optimization entropy')
 call tab%export_batch(1, 4, batch_refs, batch_weights, batch_ncands)
 call require_close(sum(batch_weights(:,1)), 0.0, 1.0e-6, 'high-entropy export has zero support')
 call tab%apply_reliability(2, 0.95)
@@ -89,16 +110,25 @@ call require_true(tab_roundtrip%accepted(1), 'roundtrip preserves reliability fl
 call require_close(tab_roundtrip%base_shift(1,1), 10.0, 1.0e-6, 'roundtrip preserves base shift')
 call require_close(tab_roundtrip%cand(3,1)%eff_weight, tab%cand(3,1)%eff_weight, 1.0e-6,&
     &'roundtrip preserves effective candidate weight')
+call require_close(tab_roundtrip%expected_loss(4), tab%expected_loss(4), 1.0e-6,&
+    &'roundtrip preserves final expected loss')
+call require_close(tab_roundtrip%initial_expected_loss(4), tab%initial_expected_loss(4), 1.0e-6,&
+    &'roundtrip preserves initial expected loss')
+call require_close(tab_roundtrip%loss_delta(4), tab%loss_delta(4), 1.0e-6,&
+    &'roundtrip preserves latent optimizer diagnostics')
+call require_true(tab_roundtrip%hard_rank(1) == tab%hard_rank(1), 'roundtrip preserves final hard rank')
 call tab_roundtrip%kill
 call del_file(ROUNDTRIP_FNAME)
 
 call tab%kill
 call tab%build_from_loc_tab(loc_tab, 1, 1.0, 0.1)
 call tab%set_base_shifts(base_shifts)
+call tab%optimize_logits(8, 1.0, 1.0, 0.1)
 call tab%apply_reliability(2, 0.0)
 call require_true(tab%ncand(1) == 1, 'topk=1 keeps one candidate')
 call require_close(tab%cand(1,1)%weight, 1.0, 1.0e-6, 'topk=1 candidate weight is one')
 call require_true(tab%hard_rank(1) == 1, 'topk=1 hard rank is one')
+call require_close(tab%loss_delta(1), 0.0, 1.0e-6, 'topk=1 optimizer is no-op on expected loss')
 call require_true(tab%accepted(1), 'topk=1 lowers effective min candidate count to one')
 assgn_map = ptcl_ref()
 call tab%write_hard_assignments(assgn_map, empty_is_error=.false.)
