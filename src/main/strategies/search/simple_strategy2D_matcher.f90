@@ -313,6 +313,9 @@ contains
             if( size(joint_topk_candidates%ncand) /= nptcls2update )then
                 THROW_HARD('joint 2D top-K candidate table particle count does not match cluster2D batch set')
             endif
+            if( count(joint_topk_candidates%accepted) == 0 )then
+                THROW_HARD('joint 2D top-K candidate table has zero accepted particles')
+            endif
             do iptcl_map = 1, nptcls2update
                 if( joint_topk_candidates%ncand(iptcl_map) < 1 ) cycle
                 if( joint_topk_candidates%cand(1,iptcl_map)%pind /= pinds(iptcl_map) )then

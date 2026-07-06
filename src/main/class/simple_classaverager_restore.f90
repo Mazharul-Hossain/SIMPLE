@@ -332,38 +332,41 @@ contains
     end subroutine cavger_apply_sgd_update
 
     subroutine apply_joint_cavg_sgd_update()
-        integer :: icls, n_updated, n_preserved
+        type(cavg_sgd_diagnostics) :: update_diag
+        integer :: icls
         if( cavgs_joint_prev%ncls /= ncls ) THROW_HARD('joint CAVG SGD previous references are unavailable')
-        n_updated   = 0
-        n_preserved = 0
+        call update_diag%reset
         do icls = 1,ncls
-            call apply_joint_cavg_side(cavgs_joint_prev%even, cavgs%even, 1, icls, n_updated, n_preserved)
-            call apply_joint_cavg_side(cavgs_joint_prev%odd,  cavgs%odd,  2, icls, n_updated, n_preserved)
+            call apply_joint_cavg_side(cavgs_joint_prev%even, cavgs%even, 1, icls, update_diag)
+            call apply_joint_cavg_side(cavgs_joint_prev%odd,  cavgs%odd,  2, icls, update_diag)
         enddo
-        if( cavg_sgd_opt%diag )then
-            write(logfhandle,'(a,1x,i0,1x,a,1x,i0)') '>>> CAVG SGD: joint EO sides updated=', &
-                &n_updated, 'preserved=', n_preserved
+        call cavg_sgd_opt%write_update_diag('joint preconditioned update', update_diag)
+        if( update_diag%n_nonfinite > 0 )then
+            THROW_HARD('joint CAVG SGD update produced nonfinite diagnostics')
+        endif
+        if( update_diag%n_updated == 0 )then
+            THROW_HARD('joint CAVG SGD update has zero weighted support')
         endif
     end subroutine apply_joint_cavg_sgd_update
 
-    subroutine apply_joint_cavg_side( prev_stack, batch_stack, ieo, icls, n_updated, n_preserved )
+    subroutine apply_joint_cavg_side( prev_stack, batch_stack, ieo, icls, update_diag )
         class(stack), intent(in)    :: prev_stack
         class(stack), intent(inout) :: batch_stack
         integer,      intent(in)    :: ieo, icls
-        integer,      intent(inout) :: n_updated, n_preserved
+        type(cavg_sgd_diagnostics), intent(inout) :: update_diag
         if( eo_wsupport(ieo,icls) > TINY )then
             call cavg_sgd_opt%preconditioned_cavg_update_inplace( &
                 &prev_stack%cmat(:,:,icls:icls), batch_stack%ctfsq(:,:,icls:icls), &
-                &batch_stack%cmat(:,:,icls:icls))
+                &batch_stack%cmat(:,:,icls:icls), update_diag, eo_wsupport(ieo,icls),&
+                &throw_on_nonfinite=.true.)
             batch_stack%slices(icls)%ft = .true.
-            n_updated = n_updated + 1
         else
             batch_stack%cmat(:,:,icls)  = prev_stack%cmat(:,:,icls)
             batch_stack%ctfsq(:,:,icls) = 1.0
             batch_stack%slices(icls)%ft = .true.
             eo_wsupport(ieo,icls) = 1.0
             eo_pops(ieo,icls) = max(1, eo_pops(ieo,icls))
-            n_preserved = n_preserved + 1
+            call update_diag%record_preserved()
         endif
     end subroutine apply_joint_cavg_side
 
@@ -816,6 +819,7 @@ contains
             call b_ptr%clsfrcs%set_frc(icls, frcs(:,icls), 1)
         end do
         !$omp end parallel do
+        if( l_joint_cavg_sgd ) call write_joint_restore_diag(frcs)
         ! write FRCs
         call b_ptr%clsfrcs%write(frcs_fname)
         ! cleanup
@@ -1077,6 +1081,93 @@ contains
             call fclose(fnr)
         endif
     end subroutine cavger_assemble_sums_from_parts
+
+    subroutine write_joint_restore_diag( frcs )
+        real, intent(in) :: frcs(:,:)
+        integer :: icls, ifreq, zero_support, support_count, usable_frc_count, nonfinite_count
+        real    :: support, support_min, support_sum, support_max
+        real    :: peak, frc_peak_sum, frc_peak_max, support_mean, frc_peak_mean
+        zero_support     = 0
+        support_count    = 0
+        usable_frc_count = 0
+        nonfinite_count  = 0
+        support_min      = huge(1.0)
+        support_sum      = 0.0
+        support_max      = 0.0
+        frc_peak_sum     = 0.0
+        frc_peak_max     = 0.0
+
+        do icls = 1, size(frcs,2)
+            support = sum(eo_wsupport(:,icls))
+            if( .not. finite_real_restore(support) )then
+                nonfinite_count = nonfinite_count + 1
+            else if( support <= TINY )then
+                zero_support = zero_support + 1
+            else
+                support_count = support_count + 1
+                support_sum   = support_sum + support
+                support_min   = min(support_min, support)
+                support_max   = max(support_max, support)
+            endif
+
+            peak = 0.0
+            do ifreq = 1, size(frcs,1)
+                if( finite_real_restore(frcs(ifreq,icls)) )then
+                    peak = max(peak, frcs(ifreq,icls))
+                else
+                    nonfinite_count = nonfinite_count + 1
+                endif
+            enddo
+            frc_peak_sum = frc_peak_sum + peak
+            frc_peak_max = max(frc_peak_max, peak)
+            if( peak > TINY ) usable_frc_count = usable_frc_count + 1
+        enddo
+
+        nonfinite_count = nonfinite_count + count_nonfinite_stack_rmat(cavgs%even)
+        nonfinite_count = nonfinite_count + count_nonfinite_stack_rmat(cavgs%odd)
+        nonfinite_count = nonfinite_count + count_nonfinite_stack_rmat(cavgs%merged)
+
+        support_mean  = 0.0
+        frc_peak_mean = 0.0
+        if( support_count > 0 )then
+            support_mean = support_sum / real(support_count)
+        else
+            support_min = 0.0
+        endif
+        if( size(frcs,2) > 0 ) frc_peak_mean = frc_peak_sum / real(size(frcs,2))
+
+        if( cavg_sgd_opt%diag )then
+            write(logfhandle,'(a,1x,a,i0,1x,a,i0,1x,a,i0,1x,a,i0)')&
+                &'>>> CAVG SGD RESTORE:', 'classes=', size(frcs,2), 'zero_support=', zero_support,&
+                &'usable_frc=', usable_frc_count, 'nonfinite=', nonfinite_count
+            write(logfhandle,'(a,1x,a,es12.4,1x,a,es12.4,1x,a,es12.4)')&
+                &'>>> CAVG SGD RESTORE SUPPORT:', 'min=', support_min, 'mean=', support_mean,&
+                &'max=', support_max
+            write(logfhandle,'(a,1x,a,es12.4,1x,a,es12.4)')&
+                &'>>> CAVG SGD RESTORE FRC:', 'mean_peak=', frc_peak_mean, 'max_peak=', frc_peak_max
+        endif
+        if( nonfinite_count > 0 )then
+            THROW_HARD('joint CAVG SGD restoration diagnostics found nonfinite values')
+        endif
+    end subroutine write_joint_restore_diag
+
+    integer function count_nonfinite_stack_rmat( cavg_stack ) result( nbad )
+        class(stack), intent(in) :: cavg_stack
+        integer :: i, j, k
+        nbad = 0
+        do k = 1, size(cavg_stack%rmat,3)
+            do j = 1, size(cavg_stack%rmat,2)
+                do i = 1, size(cavg_stack%rmat,1)
+                    if( .not. finite_real_restore(cavg_stack%rmat(i,j,k)) ) nbad = nbad + 1
+                enddo
+            enddo
+        enddo
+    end function count_nonfinite_stack_rmat
+
+    logical function finite_real_restore( val ) result( is_finite )
+        real, intent(in) :: val
+        is_finite = (val == val) .and. (abs(val) < huge(val))
+    end function finite_real_restore
 
     logical function should_normalize_support( support, l_joint_cavg_sgd ) result( l_norm )
         real,    intent(in) :: support

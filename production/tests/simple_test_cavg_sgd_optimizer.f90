@@ -1,12 +1,13 @@
 program simple_test_cavg_sgd_optimizer
 use iso_c_binding, only: c_float_complex
 use simple_core_module_api
-use simple_cavg_sgd_optimizer, only: cavg_sgd_optimizer
+use simple_cavg_sgd_optimizer, only: cavg_sgd_optimizer, cavg_sgd_diagnostics
 implicit none
 
 #include "simple_local_flags.inc"
 
 type(cavg_sgd_optimizer) :: opt
+type(cavg_sgd_diagnostics) :: diag
 complex(kind=c_float_complex) :: oldc(2,2,1), statsc(2,2,1)
 real :: oldr(2,2,1), statsr(2,2,1), rho(2,2,1)
 
@@ -47,6 +48,32 @@ oldr  = 10.0
 statsr = 30.0
 call opt%blend_sufficient_stats_inplace(oldr, statsr)
 call require_close(statsr(1,1,1), 15.0, 1.0e-6, 'cavg_only blend behavior is unchanged')
+
+call diag%reset
+opt%eta0 = 0.25
+oldc  = cmplx(2.0, 1.0, kind=c_float_complex)
+rho   = 4.0
+statsc = cmplx(40.0, 20.0, kind=c_float_complex)
+call opt%preconditioned_cavg_update_inplace(oldc, rho, statsc, diag, 7.5)
+call require_true(diag%n_updated == 1, 'diagnostics count updated sides')
+call require_true(diag%n_preserved == 0, 'diagnostics keep preserved sides separate')
+call require_true(diag%n_nonfinite == 0, 'finite update has no nonfinite diagnostics')
+call require_close(diag%support_min, 7.5, 1.0e-6, 'diagnostics support min is recorded')
+call require_close(diag%support_max, 7.5, 1.0e-6, 'diagnostics support max is recorded')
+call require_close(real(diag%grad_sq_sum), 5120.0, 1.0e-3, 'diagnostics gradient norm input')
+call require_close(real(diag%step_sq_sum), 20.0, 1.0e-5, 'diagnostics step norm input')
+call require_close(real(diag%old_sq_sum), 20.0, 1.0e-5, 'diagnostics old norm input')
+call diag%record_preserved()
+call require_true(diag%n_preserved == 1, 'diagnostics record preserved sides')
+
+call diag%reset
+oldc  = cmplx(2.0, 1.0, kind=c_float_complex)
+rho   = 4.0
+statsc = cmplx(40.0, 20.0, kind=c_float_complex)
+statsc(1,1,1) = cmplx(huge(1.0), 0.0, kind=c_float_complex)
+call opt%preconditioned_cavg_update_inplace(oldc, rho, statsc, diag, 1.0,&
+    &throw_on_nonfinite=.false.)
+call require_true(diag%n_nonfinite > 0, 'nonfinite synthetic input is diagnosed')
 
 write(logfhandle,'(A)') 'simple_test_cavg_sgd_optimizer complete'
 

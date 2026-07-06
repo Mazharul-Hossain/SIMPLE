@@ -6,7 +6,7 @@ use simple_ctf,               only: ctf
 use simple_euclid_sigma2,     only: euclid_sigma2
 use simple_image,             only: image
 use simple_parameters,        only: parameters
-use simple_cavg_sgd_optimizer, only: cavg_sgd_optimizer
+use simple_cavg_sgd_optimizer, only: cavg_sgd_optimizer, cavg_sgd_diagnostics
 use simple_memoize_ft_maps
 use simple_fftw3
 use simple_ftiter

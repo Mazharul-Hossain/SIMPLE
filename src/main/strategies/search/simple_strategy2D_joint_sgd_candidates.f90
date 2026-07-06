@@ -339,6 +339,8 @@ contains
         integer :: winner_churn_count
         real    :: avg_ncand, avg_entropy, avg_initial_entropy, avg_norm_entropy, avg_winner_weight
         real    :: avg_initial_loss, avg_expected_loss, avg_loss_delta
+        real    :: accepted_fraction, entropy_min, entropy_max, norm_entropy_min, norm_entropy_max
+        real    :: winner_weight_min, winner_weight_max
 
         if( .not. allocated(self%ncand) )then
             write(logfhandle,'(A,1X,A)') '>>> JOINT2D SGD TOPK:', trim(label)//' table not allocated'
@@ -360,7 +362,15 @@ contains
         avg_initial_loss = 0.
         avg_expected_loss = 0.
         avg_loss_delta = 0.
+        accepted_fraction = 0.
+        entropy_min = 0.
+        entropy_max = 0.
+        norm_entropy_min = 0.
+        norm_entropy_max = 0.
+        winner_weight_min = 0.
+        winner_weight_max = 0.
         if( nptcls > 0 ) avg_ncand = real(sum(self%ncand)) / real(nptcls)
+        if( nptcls > 0 ) accepted_fraction = real(accepted_count) / real(nptcls)
         if( nonempty > 0 )then
             avg_entropy       = sum(self%entropy,       mask=self%ncand > 0) / real(nonempty)
             avg_initial_entropy = sum(self%initial_entropy, mask=self%ncand > 0) / real(nonempty)
@@ -369,6 +379,12 @@ contains
             avg_initial_loss  = sum(self%initial_expected_loss, mask=self%ncand > 0) / real(nonempty)
             avg_expected_loss = sum(self%expected_loss, mask=self%ncand > 0) / real(nonempty)
             avg_loss_delta    = sum(self%loss_delta, mask=self%ncand > 0) / real(nonempty)
+            entropy_min       = minval(self%entropy,       mask=self%ncand > 0)
+            entropy_max       = maxval(self%entropy,       mask=self%ncand > 0)
+            norm_entropy_min  = minval(self%norm_entropy,  mask=self%ncand > 0)
+            norm_entropy_max  = maxval(self%norm_entropy,  mask=self%ncand > 0)
+            winner_weight_min = minval(self%winner_weight, mask=self%ncand > 0)
+            winner_weight_max = maxval(self%winner_weight, mask=self%ncand > 0)
         endif
         write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
             &'>>> JOINT2D SGD TOPK:', trim(label), 'topk=', topk, 'nptcls=', nptcls, 'empty=', empty_count,&
@@ -381,6 +397,13 @@ contains
             &'>>> JOINT2D SGD LATENT:', trim(label), 'avg_initial_loss=', avg_initial_loss,&
             &'avg_final_loss=', avg_expected_loss, 'avg_loss_delta=', avg_loss_delta,&
             &'avg_initial_entropy=', avg_initial_entropy
+        write(logfhandle,'(A,1X,A,1X,A,F7.3,1X,A,F7.3,1X,A,F7.3,1X,A,F7.3,1X,A,F7.3)')&
+            &'>>> JOINT2D SGD TOPK RANGES:', trim(label), 'accepted_frac=', accepted_fraction,&
+            &'entropy_min=', entropy_min, 'entropy_max=', entropy_max,&
+            &'norm_entropy_min=', norm_entropy_min, 'norm_entropy_max=', norm_entropy_max
+        write(logfhandle,'(A,1X,A,1X,A,F7.3,1X,A,F7.3)')&
+            &'>>> JOINT2D SGD WINNER:', trim(label), 'weight_min=', winner_weight_min,&
+            &'weight_max=', winner_weight_max
     end subroutine write_diag
 
     subroutine kill_candidate_table( self )

@@ -450,6 +450,9 @@ contains
             call joint_candidates%optimize_logits(params%sgd_inner_its, params%sgd_eta_latent,&
                 &params%sgd_tau, params%sgd_tau_min)
             call joint_candidates%apply_reliability(params%sgd_cavg_min_cands, params%sgd_cavg_max_entropy)
+            if( count(joint_candidates%accepted) == 0 )then
+                THROW_HARD('joint 2D top-K reliability rejected all particles')
+            endif
             call joint_candidates%write_diag('prob_align2D')
             call joint_candidates%write_table(JOINT2D_CANDIDATES_FNAME)
             call joint_candidates%write_hard_assignments(eulprob_obj_glob%assgn_map)
