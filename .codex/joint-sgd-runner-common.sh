@@ -33,12 +33,17 @@ joint_sgd_common_init() {
 
 find_simple_exec_dir() {
   local candidate_dir="$1"
+  if [[ -f "$candidate_dir" ]]; then
+    candidate_dir="$(dirname -- "$candidate_dir")"
+  fi
   [[ -d "$candidate_dir" ]] || return 1
 
   if [[ -x "$candidate_dir/simple_exec" || -x "$candidate_dir/simple_exec.exe" ]]; then
     simple_exec_dir="$(cd -- "$candidate_dir" && pwd -P)"
     if [[ "$(basename -- "$simple_exec_dir")" == "bin" ]]; then
       simple_install_root="$(cd -- "$simple_exec_dir/.." && pwd -P)"
+    elif [[ "$(basename -- "$simple_exec_dir")" == "production" && "$(basename -- "$(dirname -- "$simple_exec_dir")")" == build* ]]; then
+      simple_install_root="$(cd -- "$simple_exec_dir/../.." && pwd -P)"
     else
       simple_install_root="$simple_exec_dir"
     fi
@@ -64,8 +69,10 @@ setup_simple_path() {
       "$SIMPLE_PATH"
       "$SIMPLE_PATH/build-debug/bin"
       "$SIMPLE_PATH/build-debug"
+      "$SIMPLE_PATH/build-debug/production"
       "$SIMPLE_PATH/build/bin"
       "$SIMPLE_PATH/build"
+      "$SIMPLE_PATH/build/production"
     )
   fi
 
@@ -75,19 +82,26 @@ setup_simple_path() {
     candidate_dirs+=(
       "$build_copy/build-debug/bin" \
       "$build_copy/build-debug" \
+      "$build_copy/build-debug/production" \
       "$build_copy/build/bin" \
       "$build_copy/build" \
+      "$build_copy/build/production" \
       "$simple_home/build-debug/bin" \
       "$simple_home/build-debug" \
+      "$simple_home/build-debug/production" \
       "$simple_home/build-release/bin" \
       "$simple_home/build-release" \
+      "$simple_home/build-release/production" \
       "$simple_home/bin" \
       "$simple_home/build/bin" \
       "$simple_home/build" \
+      "$simple_home/build/production" \
       "$projects_home/SIMPLE/build-debug/bin" \
       "$projects_home/SIMPLE/build-debug" \
+      "$projects_home/SIMPLE/build-debug/production" \
       "$projects_home/SIMPLE/build/bin" \
-      "$projects_home/SIMPLE/build"
+      "$projects_home/SIMPLE/build" \
+      "$projects_home/SIMPLE/build/production"
     )
 
     for candidate_dir in "${candidate_dirs[@]}"
