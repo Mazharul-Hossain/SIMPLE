@@ -30,6 +30,9 @@ joint_sgd_common_init() {
   build_jobs="${JOINT_SGD_BUILD_JOBS:-4}"
   cmake_build_type="${JOINT_SGD_CMAKE_BUILD_TYPE:-Debug}"
   betagal_data="${JOINT_SGD_BETAGAL_DATA:-/mnt/beegfs/elmlund/testing-datasets/betagal}"
+  betagal_sample_count="${JOINT_SGD_BETAGAL_SAMPLE_COUNT:-}"
+  prep_nparts="${JOINT_SGD_PREP_NPARTS:-1}"
+  prep_nthr="${JOINT_SGD_PREP_NTHR:-4}"
 }
 
 resolve_simple_install_root() {
@@ -110,6 +113,35 @@ run_simple_script() {
 
   command -v perl >/dev/null 2>&1 || fail "Perl is required to run non-executable SIMPLE script: $script_path"
   perl "$script_path" "$@"
+}
+
+prep_log() {
+  local line
+  line="[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+  printf '%s\n' "$line"
+  if [[ -n "${PREP_LOG_FILE:-}" ]]; then
+    printf '%s\n' "$line" >> "$PREP_LOG_FILE"
+  fi
+}
+
+run_prep_cmd() {
+  local stage="$1"
+  local log_file="$2"
+  shift 2
+  local status
+
+  prep_log "START $stage"
+  prep_log "Log: $log_file"
+  prep_log "Command: $*"
+  set +e
+  "$@" 2>&1 | tee -a "$log_file"
+  status=${PIPESTATUS[0]}
+  set -e
+  if [[ "$status" -ne 0 ]]; then
+    prep_log "FAILED $stage exit=$status"
+    return "$status"
+  fi
+  prep_log "DONE $stage"
 }
 
 setup_simple_path() {
@@ -267,31 +299,58 @@ prepare_betagal_extract() {
   local prep_root="${!prep_root_env_var:-$projects_home/simple_joint_sgd_betagal_extract_$(date +%Y%m%d_%H%M%S)}"
   local filetab_movs_pl=""
   local filetab_mrc_pl=""
+  local simple_log=""
 
   [[ -d "$betagal_data" ]] || fail "betagal NAS data not reachable: $betagal_data"
   command -v simple_exec >/dev/null 2>&1 || fail "simple_exec is not on PATH; run --prepare-build or set SIMPLE_EXEC_DIR"
   filetab_movs_pl="$(find_simple_script filetab_movs.pl)" || fail "filetab_movs.pl not found; set SIMPLE_PATH to a SIMPLE source/build root with scripts/"
   filetab_mrc_pl="$(find_simple_script filetab_mrc.pl)" || fail "filetab_mrc.pl not found; set SIMPLE_PATH to a SIMPLE source/build root with scripts/"
 
+  [[ "$prep_nparts" =~ ^[0-9]+$ && "$prep_nparts" -ge 1 ]] || fail "JOINT_SGD_PREP_NPARTS must be a positive integer"
+  [[ "$prep_nthr" =~ ^[0-9]+$ && "$prep_nthr" -ge 1 ]] || fail "JOINT_SGD_PREP_NTHR must be a positive integer"
+  if [[ -n "$betagal_sample_count" ]]; then
+    [[ "$betagal_sample_count" =~ ^[0-9]+$ && "$betagal_sample_count" -ge 1 ]] || fail "JOINT_SGD_BETAGAL_SAMPLE_COUNT must be a positive integer when set"
+  fi
+
   mkdir -p "$prep_root"
+  PREP_LOG_FILE="$prep_root/prepare-betagal-extract.log"
+  : > "$PREP_LOG_FILE"
+
+  prep_log "Betagal prep root: $prep_root"
+  prep_log "Wrapper log: $PREP_LOG_FILE"
+  prep_log "Betagal data root: $betagal_data"
+  prep_log "Betagal prep nparts=$prep_nparts nthr=$prep_nthr sample_count=${betagal_sample_count:-all}"
+  prep_log "This prep reads NAS files as SIMPLE needs them; it does not batch-copy /mnt/beegfs."
+
   (
     cd "$prep_root"
-    simple_exec prg=new_project projname=betagal > LOG
+    run_prep_cmd "new_project" "$PREP_LOG_FILE" simple_exec prg=new_project projname=betagal
     cd betagal
-    run_simple_script "$filetab_movs_pl" "$betagal_data/movies"
-    echo " >>> PROGRAM: import_movies" > LOG
-    simple_exec prg=import_movies cs=1.4 fraca=0.1 kv=200 smpd=0.885 filetab=movies.txt >> LOG
-    echo " >>> PROGRAM: motion_correct" >> LOG
-    simple_exec prg=motion_correct nparts=5 nthr=8 gainref="$betagal_data/gain/gain.mrc" total_dose=30.65 smpd_downscale=1.3 >> LOG
-    echo " >>> PROGRAM: ctf_estimate" >> LOG
-    simple_exec prg=ctf_estimate nparts=5 nthr=8 projfile=2_motion_correct/betagal.simple >> LOG
-    run_simple_script "$filetab_mrc_pl" 2_motion_correct/
-    echo " >>> PROGRAM: pick" >> LOG
-    simple_exec prg=pick picker=segdiam projfile=3_ctf_estimate/betagal.simple nparts=5 nthr=8 >> LOG
-    echo " >>> PROGRAM: extract" >> LOG
-    simple_exec prg=extract box=256 nparts=5 nthr=8 projfile=4_pick/betagal.simple >> LOG
+    simple_log="$PWD/LOG"
+    : > "$simple_log"
+    prep_log "SIMPLE pipeline log: $simple_log"
+    prep_log "Writing movies.txt from NAS movie directory"
+    if [[ -n "$betagal_sample_count" ]]; then
+      run_prep_cmd "filetab_movs" "$PREP_LOG_FILE" run_simple_script "$filetab_movs_pl" "$betagal_data/movies" "$betagal_sample_count"
+    else
+      run_prep_cmd "filetab_movs" "$PREP_LOG_FILE" run_simple_script "$filetab_movs_pl" "$betagal_data/movies"
+    fi
+    echo " >>> PROGRAM: import_movies" | tee -a "$simple_log"
+    run_prep_cmd "import_movies" "$simple_log" simple_exec prg=import_movies cs=1.4 fraca=0.1 kv=200 smpd=0.885 filetab=movies.txt
+    echo " >>> PROGRAM: motion_correct" | tee -a "$simple_log"
+    run_prep_cmd "motion_correct" "$simple_log" simple_exec prg=motion_correct nparts="$prep_nparts" nthr="$prep_nthr" gainref="$betagal_data/gain/gain.mrc" total_dose=30.65 smpd_downscale=1.3
+    echo " >>> PROGRAM: ctf_estimate" | tee -a "$simple_log"
+    run_prep_cmd "ctf_estimate" "$simple_log" simple_exec prg=ctf_estimate nparts="$prep_nparts" nthr="$prep_nthr" projfile=2_motion_correct/betagal.simple
+    run_prep_cmd "filetab_mrc" "$PREP_LOG_FILE" run_simple_script "$filetab_mrc_pl" 2_motion_correct/
+    echo " >>> PROGRAM: pick" | tee -a "$simple_log"
+    run_prep_cmd "pick" "$simple_log" simple_exec prg=pick picker=segdiam projfile=3_ctf_estimate/betagal.simple nparts="$prep_nparts" nthr="$prep_nthr"
+    echo " >>> PROGRAM: extract" | tee -a "$simple_log"
+    run_prep_cmd "extract" "$simple_log" simple_exec prg=extract box=256 nparts="$prep_nparts" nthr="$prep_nthr" projfile=4_pick/betagal.simple
   )
+  prep_log "Betagal extraction complete"
   echo "Betagal extracted project ready: $prep_root/betagal/5_extract/betagal.simple"
+  echo "Wrapper log: $PREP_LOG_FILE"
+  echo "SIMPLE pipeline log: $prep_root/betagal/LOG"
   echo "Run validation with:"
   echo "$project_env_var=$prep_root/betagal/5_extract/betagal.simple $runner_script"
 }
@@ -325,6 +384,9 @@ print_common_check() {
   fi
   echo "Build type: $cmake_build_type"
   echo "Build jobs: $build_jobs"
+  echo "Betagal prep nparts: $prep_nparts"
+  echo "Betagal prep nthr: $prep_nthr"
+  echo "Betagal sample count: ${betagal_sample_count:-all}"
   echo "Inherited SIMPLE_PATH: ${inherited_simple_path:-not set}"
   echo "Effective SIMPLE_PATH: ${SIMPLE_PATH:-not set}"
   if [[ -d "$testing_home" ]]; then
