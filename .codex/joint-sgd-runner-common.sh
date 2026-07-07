@@ -23,6 +23,7 @@ prepend_path() {
 joint_sgd_common_init() {
   script_dir="${script_dir:-$joint_sgd_common_dir}"
   simple_home="${simple_home:-$joint_sgd_default_simple_home}"
+  inherited_simple_path="${SIMPLE_PATH:-}"
   testing_home="${SIMPLE_DATA_TESTING_HOME:-${simple_home}_data_testing}"
   projects_home="${JOINT_SGD_PROJECTS_HOME:-$HOME/Projects}"
   build_copy="${JOINT_SGD_BUILD_COPY:-$projects_home/SIMPLE_joint_sgd_build}"
@@ -31,8 +32,24 @@ joint_sgd_common_init() {
   betagal_data="${JOINT_SGD_BETAGAL_DATA:-/mnt/beegfs/elmlund/testing-datasets/betagal}"
 }
 
+resolve_simple_install_root() {
+  local probe="$1"
+  local depth
+
+  probe="$(cd -- "$probe" && pwd -P)" || return 1
+  for depth in 0 1 2 3 4; do
+    if [[ -d "$probe/scripts" ]]; then
+      echo "$probe"
+      return 0
+    fi
+    probe="$(cd -- "$probe/.." && pwd -P)" || return 1
+  done
+  return 1
+}
+
 find_simple_exec_dir() {
   local candidate_dir="$1"
+  local resolved_root=""
   if [[ -f "$candidate_dir" ]]; then
     candidate_dir="$(dirname -- "$candidate_dir")"
   fi
@@ -40,7 +57,9 @@ find_simple_exec_dir() {
 
   if [[ -x "$candidate_dir/simple_exec" || -x "$candidate_dir/simple_exec.exe" ]]; then
     simple_exec_dir="$(cd -- "$candidate_dir" && pwd -P)"
-    if [[ "$(basename -- "$simple_exec_dir")" == "bin" ]]; then
+    if resolved_root="$(resolve_simple_install_root "$simple_exec_dir")"; then
+      simple_install_root="$resolved_root"
+    elif [[ "$(basename -- "$simple_exec_dir")" == "bin" ]]; then
       simple_install_root="$(cd -- "$simple_exec_dir/.." && pwd -P)"
     elif [[ "$(basename -- "$simple_exec_dir")" == "production" && "$(basename -- "$(dirname -- "$simple_exec_dir")")" == build* ]]; then
       simple_install_root="$(cd -- "$simple_exec_dir/../.." && pwd -P)"
@@ -113,7 +132,9 @@ setup_simple_path() {
   fi
 
   if [[ -n "$simple_install_root" ]]; then
-    export SIMPLE_PATH="${SIMPLE_PATH:-$simple_install_root}"
+    if [[ -z "${SIMPLE_PATH:-}" || ! -d "$SIMPLE_PATH/scripts" ]]; then
+      export SIMPLE_PATH="$simple_install_root"
+    fi
     prepend_path "$simple_exec_dir"
     prepend_path "$simple_install_root/bin"
     prepend_path "$simple_install_root/scripts"
@@ -256,7 +277,8 @@ print_common_check() {
   fi
   echo "Build type: $cmake_build_type"
   echo "Build jobs: $build_jobs"
-  echo "SIMPLE path: ${SIMPLE_PATH:-not set}"
+  echo "Inherited SIMPLE_PATH: ${inherited_simple_path:-not set}"
+  echo "Effective SIMPLE_PATH: ${SIMPLE_PATH:-not set}"
   if [[ -d "$testing_home" ]]; then
     echo "Testing home: $testing_home"
   else
