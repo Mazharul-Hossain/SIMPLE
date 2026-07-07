@@ -71,6 +71,47 @@ find_simple_exec_dir() {
   return 1
 }
 
+find_simple_script() {
+  local script_name="$1"
+  local found_path=""
+  local -a candidates=()
+
+  if found_path="$(command -v "$script_name" 2>/dev/null)"; then
+    echo "$found_path"
+    return 0
+  fi
+
+  candidates+=(
+    "${SIMPLE_PATH:-}/scripts/$script_name"
+    "${simple_install_root:-}/scripts/$script_name"
+    "$build_copy/scripts/$script_name"
+    "$simple_home/scripts/$script_name"
+    "$projects_home/SIMPLE/scripts/$script_name"
+  )
+
+  for found_path in "${candidates[@]}"; do
+    if [[ -f "$found_path" ]]; then
+      found_path="$(cd -- "$(dirname -- "$found_path")" && pwd -P)/$(basename -- "$found_path")"
+      echo "$found_path"
+      return 0
+    fi
+  done
+  return 1
+}
+
+run_simple_script() {
+  local script_path="$1"
+  shift
+
+  if [[ -x "$script_path" ]]; then
+    "$script_path" "$@"
+    return
+  fi
+
+  command -v perl >/dev/null 2>&1 || fail "Perl is required to run non-executable SIMPLE script: $script_path"
+  perl "$script_path" "$@"
+}
+
 setup_simple_path() {
   simple_exec_dir=""
   simple_install_root=""
@@ -224,24 +265,27 @@ prepare_betagal_extract() {
   local project_env_var="$2"
   local runner_script="$3"
   local prep_root="${!prep_root_env_var:-$projects_home/simple_joint_sgd_betagal_extract_$(date +%Y%m%d_%H%M%S)}"
+  local filetab_movs_pl=""
+  local filetab_mrc_pl=""
 
   [[ -d "$betagal_data" ]] || fail "betagal NAS data not reachable: $betagal_data"
   command -v simple_exec >/dev/null 2>&1 || fail "simple_exec is not on PATH; run --prepare-build or set SIMPLE_EXEC_DIR"
-  command -v filetab_movs.pl >/dev/null 2>&1 || fail "filetab_movs.pl is not on PATH through SIMPLE_PATH/scripts"
+  filetab_movs_pl="$(find_simple_script filetab_movs.pl)" || fail "filetab_movs.pl not found; set SIMPLE_PATH to a SIMPLE source/build root with scripts/"
+  filetab_mrc_pl="$(find_simple_script filetab_mrc.pl)" || fail "filetab_mrc.pl not found; set SIMPLE_PATH to a SIMPLE source/build root with scripts/"
 
   mkdir -p "$prep_root"
   (
     cd "$prep_root"
     simple_exec prg=new_project projname=betagal > LOG
     cd betagal
-    filetab_movs.pl "$betagal_data/movies"
+    run_simple_script "$filetab_movs_pl" "$betagal_data/movies"
     echo " >>> PROGRAM: import_movies" > LOG
     simple_exec prg=import_movies cs=1.4 fraca=0.1 kv=200 smpd=0.885 filetab=movies.txt >> LOG
     echo " >>> PROGRAM: motion_correct" >> LOG
     simple_exec prg=motion_correct nparts=5 nthr=8 gainref="$betagal_data/gain/gain.mrc" total_dose=30.65 smpd_downscale=1.3 >> LOG
     echo " >>> PROGRAM: ctf_estimate" >> LOG
     simple_exec prg=ctf_estimate nparts=5 nthr=8 projfile=2_motion_correct/betagal.simple >> LOG
-    filetab_mrc.pl 2_motion_correct/
+    run_simple_script "$filetab_mrc_pl" 2_motion_correct/
     echo " >>> PROGRAM: pick" >> LOG
     simple_exec prg=pick picker=segdiam projfile=3_ctf_estimate/betagal.simple nparts=5 nthr=8 >> LOG
     echo " >>> PROGRAM: extract" >> LOG
@@ -265,7 +309,11 @@ copy_case_root() {
 print_common_check() {
   local root_line="$1"
   local simple_exec_path
+  local filetab_movs_path
+  local filetab_mrc_path
   simple_exec_path="$(command -v simple_exec 2>/dev/null || true)"
+  filetab_movs_path="$(find_simple_script filetab_movs.pl 2>/dev/null || true)"
+  filetab_mrc_path="$(find_simple_script filetab_mrc.pl 2>/dev/null || true)"
 
   echo "SIMPLE home: $simple_home"
   echo "Projects home: $projects_home"
@@ -291,6 +339,8 @@ print_common_check() {
   if [[ -z "$simple_exec_path" ]]; then
     echo "simple_exec hint: run --prepare-build, or set SIMPLE_EXEC_DIR to the directory containing simple_exec"
   fi
+  echo "filetab_movs.pl: ${filetab_movs_path:-not found}"
+  echo "filetab_mrc.pl: ${filetab_mrc_path:-not found}"
   echo "Project found: $project_found"
   [[ "$project_found" == "yes" ]] && echo "Project: $project_path"
   echo "Betagal NAS data: $data_hint ($betagal_data)"
