@@ -27,6 +27,7 @@ use simple_strategy2D_tseries,       only: strategy2D_tseries
 use simple_strategy2D_joint_sgd,     only: cluster2D_joint_sgd_exec
 use simple_strategy2D_joint_sgd_candidates, only: joint2D_candidate_table, joint2D_balance_diag,&
                                                   JOINT2D_CANDIDATES_FNAME
+use simple_strategy2D_joint_sgd_refs, only: joint2D_ref_refresh_policy
 use simple_eul_prob_tab2D,           only: eul_prob_tab2D
 use simple_eul_prob_tab_utils,       only: eulprob_corr_switch, eulprob_dist_switch
 use simple_pftc_shsrch_grad,         only: pftc_shsrch_grad
@@ -90,6 +91,7 @@ contains
         integer,                   allocatable   :: pinds(:), batches(:,:)
         type(eul_prob_tab2D),      target        :: eulprob_obj_part
         type(joint2D_candidate_table)            :: joint_topk_candidates
+        type(joint2D_ref_refresh_policy)         :: joint_ref_policy
         type(ptcl_ref),             allocatable  :: joint_topk_refs(:,:)
         real,                       allocatable  :: joint_topk_weights(:,:)
         integer,                    allocatable  :: joint_topk_ncands(:)
@@ -285,6 +287,14 @@ contains
             call cavger_new(p_ptr, b_ptr)
             if( .not. cline%defined('refs') )then
                 THROW_HARD('need refs to be part of command line for cluster2D execution')
+            endif
+            if( ctrl%l_joint_topk )then
+                ! Joint SGD is intentionally one-iteration-lagged block-coordinate:
+                ! all scoring and batch updates use refs loaded here, and restored
+                ! cavgs are written for the next iteration rather than reloaded mid-run.
+                call joint_ref_policy%new(p_ptr%refs%to_char(), p_ptr%which_iter)
+                call joint_ref_policy%require_input_refs('cluster2D')
+                call joint_ref_policy%write_diag('cluster2D')
             endif
             call cavger_read_all
             ctrl%l_partial_sums = ctrl%l_frac_restore .or. &
@@ -837,9 +847,18 @@ contains
                 if(.not. ctrl%l_stream) call progressfile_update(conv%get('progress'))
                 if( ctrl%l_restore_cavgs )then
                     if( cline%defined('which_iter') )then
-                        p_ptr%refs      = CAVGS_ITER_FBODY//int2str_pad(p_ptr%which_iter,3)//MRC_EXT
-                        p_ptr%refs_even = CAVGS_ITER_FBODY//int2str_pad(p_ptr%which_iter,3)//'_even'//MRC_EXT
-                        p_ptr%refs_odd  = CAVGS_ITER_FBODY//int2str_pad(p_ptr%which_iter,3)//'_odd'//MRC_EXT
+                        if( ctrl%l_joint_topk )then
+                            if( .not. joint_ref_policy%is_one_iteration_lag() )then
+                                THROW_HARD('joint 2D SGD reference refresh policy is not one-iteration-lagged')
+                            endif
+                            p_ptr%refs      = joint_ref_policy%refs_out
+                            p_ptr%refs_even = joint_ref_policy%refs_even_out
+                            p_ptr%refs_odd  = joint_ref_policy%refs_odd_out
+                        else
+                            p_ptr%refs      = CAVGS_ITER_FBODY//int2str_pad(p_ptr%which_iter,3)//MRC_EXT
+                            p_ptr%refs_even = CAVGS_ITER_FBODY//int2str_pad(p_ptr%which_iter,3)//'_even'//MRC_EXT
+                            p_ptr%refs_odd  = CAVGS_ITER_FBODY//int2str_pad(p_ptr%which_iter,3)//'_odd'//MRC_EXT
+                        endif
                     else
                         THROW_HARD('which_iter expected to be part of command line in shared-memory execution')
                     endif

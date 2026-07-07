@@ -151,6 +151,8 @@ contains
         call cline%set('which_iter', params%which_iter)
         call cline%set('extr_iter',  params%extr_iter)
         if( params%l_prob_align_mode )then
+            ! Joint SGD reference semantics stay block-coordinate here:
+            ! prob_align2D scores old refs, cluster2D restores new refs for the next iteration.
             cline_prob_align = cline
             call cline_prob_align%set('prg', 'prob_align2D')
             call cline_prob_align%set('which_iter', params%which_iter)

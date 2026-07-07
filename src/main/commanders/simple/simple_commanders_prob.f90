@@ -377,6 +377,7 @@ contains
         use simple_eul_prob_tab_utils,      only: materialize_seed_shift
         use simple_strategy2D_joint_sgd_candidates, only: joint2D_candidate_table, joint2D_balance_diag,&
             &JOINT2D_CANDIDATES_FNAME
+        use simple_strategy2D_joint_sgd_refs, only: joint2D_ref_refresh_policy
         use simple_strategy2D_matcher,      only: set_b_p_ptrs2D
         use simple_matcher_smpl_and_lplims, only: sample_ptcls4update2D
         use simple_builder,                 only: builder
@@ -390,6 +391,7 @@ contains
         type(eul_prob_tab2D)       :: eulprob_obj_glob
         type(joint2D_candidate_table) :: joint_candidates
         type(joint2D_balance_diag)    :: balance_diag
+        type(joint2D_ref_refresh_policy) :: ref_policy
         type(cmdline)              :: cline_prob_tab
         type(qsys_env)             :: qenv
         type(chash)                :: job_descr
@@ -436,6 +438,9 @@ contains
         end do
         ! global probabilistic class assignment
         if( params%l_sgd .and. trim(params%sgd_mode) == 'joint' )then
+            call ref_policy%new(params%refs%to_char(), params%which_iter)
+            call ref_policy%require_input_refs('prob_align2D')
+            call ref_policy%write_diag('prob_align2D')
             write(logfhandle,'(A)') '>>> PROB_ALIGN2D: running joint-SGD top-K hard assignment'
         else
             write(logfhandle,'(A)') '>>> PROB_ALIGN2D: running global probabilistic assignment'
