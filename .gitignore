@@ -48,5 +48,10 @@ db.sqlite3
 __pycache__
 # Docs
 docs/
-/.codex
+/.codex/*
+!/.codex/check-joint-sgd-smoke-log.sh
+!/.codex/run-joint-sgd-smoke.sh
+!/.codex/check-joint-sgd-science-log.sh
+!/.codex/run-joint-sgd-science.sh
+!/.codex/summarize-joint-sgd-science.sh
 /.vscode
