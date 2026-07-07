@@ -4,7 +4,7 @@ use simple_core_module_api
 use simple_type_defs, only: ptcl_ref
 implicit none
 
-public :: joint2D_candidate, joint2D_candidate_table, JOINT2D_CANDIDATES_FNAME
+public :: joint2D_candidate, joint2D_balance_diag, joint2D_candidate_table, JOINT2D_CANDIDATES_FNAME
 private
 
 #include "simple_local_flags.inc"
@@ -15,6 +15,7 @@ integer,          parameter :: RELIABILITY_OK           = 0
 integer,          parameter :: RELIABILITY_EMPTY        = 1
 integer,          parameter :: RELIABILITY_TOO_FEW      = 2
 integer,          parameter :: RELIABILITY_HIGH_ENTROPY = 3
+real,             parameter :: BALANCE_EPS              = 1.0e-6
 
 type :: joint2D_candidate
     integer :: pind = 0
@@ -30,6 +31,25 @@ type :: joint2D_candidate
     logical :: has_sh = .false.
     logical :: hard = .false.
 end type joint2D_candidate
+
+type :: joint2D_balance_diag
+    integer :: nclasses = 0
+    integer :: active_classes = 0
+    integer :: zero_support_classes = 0
+    integer :: accepted_particles = 0
+    integer :: rejected_particles = 0
+    integer :: candidates = 0
+    integer :: winner_churn = 0
+    integer :: nonfinite = 0
+    real    :: balance_weight = 0.
+    real    :: support_min = 0.
+    real    :: support_mean = 0.
+    real    :: support_max = 0.
+    real    :: prior_min = 0.
+    real    :: prior_max = 0.
+    real    :: entropy_before = 0.
+    real    :: entropy_after = 0.
+end type joint2D_balance_diag
 
 type :: joint2D_candidate_table
     type(joint2D_candidate), allocatable :: cand(:,:)        !< top-K candidates (topk,nptcls)
@@ -51,6 +71,7 @@ contains
     procedure :: build_from_loc_tab
     procedure :: set_base_shifts
     procedure :: optimize_logits
+    procedure :: apply_balance_prior
     procedure :: apply_inpl_refinement
     procedure :: apply_shift_refinement
     procedure :: apply_reliability
@@ -59,6 +80,7 @@ contains
     procedure :: read_table
     procedure :: export_batch
     procedure :: write_diag
+    procedure :: write_balance_diag
     procedure :: kill => kill_candidate_table
 end type joint2D_candidate_table
 
@@ -151,6 +173,130 @@ contains
             endif
         end do
     end subroutine optimize_logits
+
+    subroutine apply_balance_prior( self, nclasses, balance_weight, tau, tau_min, diag, first_ptcl, last_ptcl )
+        class(joint2D_candidate_table),      intent(inout) :: self
+        integer,                             intent(in)    :: nclasses
+        real,                                intent(in)    :: balance_weight
+        real,                                intent(in)    :: tau
+        real,                                intent(in)    :: tau_min
+        type(joint2D_balance_diag), optional,intent(out)   :: diag
+        integer, optional,                   intent(in)    :: first_ptcl
+        integer, optional,                   intent(in)    :: last_ptcl
+        type(joint2D_balance_diag) :: local_diag
+        real, allocatable :: support(:), prior(:)
+        integer :: first, last, iptcl, irank, icls, nc, hard_before, k
+        real    :: support_total, tau_eff
+
+        call require_allocated(self, 'class-balance prior requested before build/read')
+        if( nclasses < 1 ) THROW_HARD('joint2D_candidate_table: nclasses must be >= 1')
+        if( balance_weight < 0. ) THROW_HARD('joint2D_candidate_table: balance_weight must be >= 0')
+        tau_eff = max(tau, tau_min)
+        if( tau_eff <= 0. ) THROW_HARD('joint2D_candidate_table: tau_eff must be > 0')
+
+        first = 1
+        last  = size(self%ncand)
+        if( present(first_ptcl) ) first = first_ptcl
+        if( present(last_ptcl)  ) last  = last_ptcl
+        if( first < 1 .or. last < first .or. last > size(self%ncand) )then
+            THROW_HARD('joint2D_candidate_table: invalid class-balance prior particle range')
+        endif
+
+        allocate(support(nclasses), prior(nclasses), source=0.)
+        local_diag = joint2D_balance_diag()
+        local_diag%nclasses       = nclasses
+        local_diag%balance_weight = balance_weight
+
+        do iptcl = first, last
+            if( .not. self%accepted(iptcl) ) cycle
+            local_diag%accepted_particles = local_diag%accepted_particles + 1
+            local_diag%entropy_before = local_diag%entropy_before + self%entropy(iptcl)
+            nc = self%ncand(iptcl)
+            if( nc < 1 ) cycle
+            local_diag%candidates = local_diag%candidates + nc
+            do irank = 1, nc
+                icls = self%cand(irank,iptcl)%icls
+                if( icls < 1 .or. icls > nclasses )then
+                    THROW_HARD('joint2D_candidate_table: class-balance prior class index out of range')
+                endif
+                if( .not. finite_real(self%cand(irank,iptcl)%weight) )then
+                    THROW_HARD('joint2D_candidate_table: nonfinite class-balance candidate weight')
+                endif
+                support(icls) = support(icls) + self%cand(irank,iptcl)%weight
+            end do
+        end do
+        local_diag%rejected_particles = (last - first + 1) - local_diag%accepted_particles
+
+        support_total = 0.
+        do k = 1, nclasses
+            if( support(k) > BALANCE_EPS )then
+                local_diag%active_classes = local_diag%active_classes + 1
+                support_total = support_total + support(k)
+                if( local_diag%active_classes == 1 )then
+                    local_diag%support_min = support(k)
+                    local_diag%support_max = support(k)
+                else
+                    local_diag%support_min = min(local_diag%support_min, support(k))
+                    local_diag%support_max = max(local_diag%support_max, support(k))
+                endif
+            endif
+        end do
+        local_diag%zero_support_classes = nclasses - local_diag%active_classes
+        if( local_diag%active_classes > 0 )then
+            local_diag%support_mean = support_total / real(local_diag%active_classes)
+            local_diag%prior_min = huge(1.0)
+            local_diag%prior_max = -huge(1.0)
+            do k = 1, nclasses
+                if( support(k) <= BALANCE_EPS ) cycle
+                prior(k) = balance_weight * log((local_diag%support_mean + BALANCE_EPS)&
+                    &/ (support(k) + BALANCE_EPS))
+                if( .not. finite_real(prior(k)) )then
+                    THROW_HARD('joint2D_candidate_table: nonfinite class-balance prior')
+                endif
+                local_diag%prior_min = min(local_diag%prior_min, prior(k))
+                local_diag%prior_max = max(local_diag%prior_max, prior(k))
+            end do
+        endif
+
+        if( balance_weight > 0. .and. local_diag%active_classes > 0 )then
+            do iptcl = first, last
+                if( .not. self%accepted(iptcl) ) cycle
+                nc = self%ncand(iptcl)
+                if( nc < 1 ) cycle
+                hard_before = self%hard_rank(iptcl)
+                do irank = 1, nc
+                    icls = self%cand(irank,iptcl)%icls
+                    if( support(icls) <= BALANCE_EPS ) cycle
+                    self%cand(irank,iptcl)%logit = self%cand(irank,iptcl)%logit + prior(icls)
+                    if( .not. finite_real(self%cand(irank,iptcl)%logit) )then
+                        THROW_HARD('joint2D_candidate_table: nonfinite class-balance logit')
+                    endif
+                end do
+                call refresh_particle(self, iptcl, tau_eff)
+                call require_finite_particle(self, iptcl, 'class-balance prior')
+                if( hard_before > 0 .and. self%hard_rank(iptcl) > 0 .and.&
+                    &hard_before /= self%hard_rank(iptcl) )then
+                    local_diag%winner_churn = local_diag%winner_churn + 1
+                endif
+            end do
+        endif
+
+        do iptcl = first, last
+            if( .not. self%accepted(iptcl) ) cycle
+            local_diag%entropy_after = local_diag%entropy_after + self%entropy(iptcl)
+        end do
+        if( local_diag%accepted_particles > 0 )then
+            local_diag%entropy_before = local_diag%entropy_before / real(local_diag%accepted_particles)
+            local_diag%entropy_after  = local_diag%entropy_after  / real(local_diag%accepted_particles)
+        endif
+        if( local_diag%active_classes == 0 )then
+            local_diag%prior_min = 0.
+            local_diag%prior_max = 0.
+        endif
+
+        if( present(diag) ) diag = local_diag
+        deallocate(support, prior)
+    end subroutine apply_balance_prior
 
     subroutine apply_inpl_refinement( self, iptcl, irank, new_inpl, refined_dist, tau, tau_min, old_inpl, updated )
         class(joint2D_candidate_table), intent(inout)        :: self
@@ -513,6 +659,29 @@ contains
             &'weight_max=', winner_weight_max
     end subroutine write_diag
 
+    subroutine write_balance_diag( self, label, diag )
+        class(joint2D_candidate_table), intent(in) :: self
+        character(len=*),               intent(in) :: label
+        type(joint2D_balance_diag),     intent(in) :: diag
+
+        if( .not. allocated(self%ncand) )then
+            write(logfhandle,'(A,1X,A)') '>>> JOINT2D SGD BALANCE:', trim(label)//' table not allocated'
+            return
+        endif
+        write(logfhandle,'(A,1X,A,1X,A,ES12.4,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
+            &'>>> JOINT2D SGD BALANCE:', trim(label), 'weight=', diag%balance_weight,&
+            &'accepted=', diag%accepted_particles, 'rejected=', diag%rejected_particles,&
+            &'candidates=', diag%candidates, 'winner_churn=', diag%winner_churn
+        write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,I0,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4)')&
+            &'>>> JOINT2D SGD BALANCE SUPPORT:', trim(label), 'active_classes=', diag%active_classes,&
+            &'zero_support_classes=', diag%zero_support_classes, 'support_min=', diag%support_min,&
+            &'support_mean=', diag%support_mean, 'support_max=', diag%support_max
+        write(logfhandle,'(A,1X,A,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4,1X,A,I0)')&
+            &'>>> JOINT2D SGD BALANCE PRIOR:', trim(label), 'prior_min=', diag%prior_min,&
+            &'prior_max=', diag%prior_max, 'entropy_before=', diag%entropy_before,&
+            &'entropy_after=', diag%entropy_after, 'nonfinite=', diag%nonfinite
+    end subroutine write_balance_diag
+
     subroutine kill_candidate_table( self )
         class(joint2D_candidate_table), intent(inout) :: self
         if( allocated(self%cand)            ) deallocate(self%cand)
@@ -722,5 +891,29 @@ contains
             THROW_HARD('joint2D_candidate_table: '//trim(msg))
         endif
     end subroutine require_allocated
+
+    subroutine require_finite_particle( self, iptcl, msg )
+        class(joint2D_candidate_table), intent(in) :: self
+        integer,                        intent(in) :: iptcl
+        character(len=*),               intent(in) :: msg
+        integer :: irank, nc
+
+        if( iptcl < 1 .or. iptcl > size(self%ncand) )then
+            THROW_HARD('joint2D_candidate_table: finite check particle index out of range')
+        endif
+        if( .not. finite_real(self%entropy(iptcl)) .or. .not. finite_real(self%winner_weight(iptcl)) .or.&
+            &.not. finite_real(self%expected_loss(iptcl)) )then
+            THROW_HARD('joint2D_candidate_table: nonfinite '//trim(msg)//' particle diagnostic')
+        endif
+        nc = self%ncand(iptcl)
+        do irank = 1, nc
+            if( .not. finite_real(self%cand(irank,iptcl)%dist) .or.&
+                &.not. finite_real(self%cand(irank,iptcl)%logit) .or.&
+                &.not. finite_real(self%cand(irank,iptcl)%weight) .or.&
+                &.not. finite_real(self%cand(irank,iptcl)%eff_weight) )then
+                THROW_HARD('joint2D_candidate_table: nonfinite '//trim(msg)//' candidate diagnostic')
+            endif
+        end do
+    end subroutine require_finite_particle
 
 end module simple_strategy2D_joint_sgd_candidates

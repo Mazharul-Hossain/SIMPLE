@@ -733,6 +733,9 @@ contains
             if( self%sgd_eta_shift <= 0.0 )then
                 THROW_HARD('sgd_eta_shift must be > 0')
             endif
+            if( self%sgd_balance_weight < 0.0 )then
+                THROW_HARD('sgd_balance_weight must be >= 0')
+            endif
             if( self%sgd_tau <= 0.0 )then
                 THROW_HARD('sgd_tau must be > 0')
             endif

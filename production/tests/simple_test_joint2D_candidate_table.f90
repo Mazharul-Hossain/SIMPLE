@@ -1,6 +1,6 @@
 program simple_test_joint2D_candidate_table
 use simple_core_module_api
-use simple_strategy2D_joint_sgd_candidates, only: joint2D_candidate_table
+use simple_strategy2D_joint_sgd_candidates, only: joint2D_candidate_table, joint2D_balance_diag
 use simple_type_defs, only: ptcl_ref
 implicit none
 
@@ -8,9 +8,11 @@ implicit none
 
 character(len=*), parameter :: ROUNDTRIP_FNAME = 'joint2D_candidate_table_test.dat'
 type(ptcl_ref) :: loc_tab(5,4)
+type(ptcl_ref) :: balance_loc_tab(3,3)
 type(ptcl_ref) :: assgn_map(4)
 type(ptcl_ref), allocatable :: batch_refs(:,:)
-type(joint2D_candidate_table) :: tab, tab_roundtrip, tab_shift, tab_inpl
+type(joint2D_candidate_table) :: tab, tab_roundtrip, tab_shift, tab_inpl, tab_balance, tab_balance_zero
+type(joint2D_balance_diag) :: balance_diag, zero_diag
 real, allocatable :: batch_weights(:,:)
 integer, allocatable :: batch_ncands(:)
 integer :: i
@@ -18,9 +20,11 @@ integer :: old_inpl
 real    :: base_shifts(2,4), weight_sum, expected_weight
 real    :: p4_initial_weight, p4_initial_loss, p4_initial_entropy
 real    :: old_shift(2), new_shift(2), step_norm
+real    :: balance_range_before, balance_range_after, zero_logit, zero_weight
 logical :: updated
 
 call init_loc_tab(loc_tab)
+call init_balance_loc_tab(balance_loc_tab)
 call init_base_shifts(base_shifts)
 
 call tab%build_from_loc_tab(loc_tab, 3, 1.0, 0.1)
@@ -129,6 +133,51 @@ call tab_inpl%apply_inpl_refinement(1, 1, 20, 1.0, 1.0, 0.1, old_inpl=old_inpl, 
 call require_true(tab_inpl%hard_rank(1) == 1, 'equal-distance in-plane refinement remains deterministic')
 call tab_inpl%kill
 
+call tab_balance_zero%build_from_loc_tab(balance_loc_tab, 2, 1.0, 0.1)
+call tab_balance_zero%apply_reliability(2, 1.0)
+zero_logit = tab_balance_zero%cand(1,1)%logit
+zero_weight = tab_balance_zero%cand(1,1)%weight
+call tab_balance_zero%apply_balance_prior(4, 0.0, 1.0, 0.1, zero_diag)
+call require_close(tab_balance_zero%cand(1,1)%logit, zero_logit, 1.0e-6,&
+    &'zero balance weight leaves logits unchanged')
+call require_close(tab_balance_zero%cand(1,1)%weight, zero_weight, 1.0e-6,&
+    &'zero balance weight leaves weights unchanged')
+call require_true(tab_balance_zero%hard_rank(1) == 1, 'zero balance weight leaves hard ranks unchanged')
+call require_close(zero_diag%prior_min, 0.0, 1.0e-6, 'zero balance prior minimum is zero')
+call require_close(zero_diag%prior_max, 0.0, 1.0e-6, 'zero balance prior maximum is zero')
+call tab_balance_zero%kill
+
+call tab_balance%build_from_loc_tab(balance_loc_tab, 2, 1.0, 0.1)
+call tab_balance%apply_reliability(2, 1.0)
+balance_range_before = accepted_support_range(tab_balance, 4)
+call tab_balance%apply_balance_prior(4, 1.0, 1.0, 0.1, balance_diag)
+call tab_balance%apply_reliability(2, 1.0)
+balance_range_after = accepted_support_range(tab_balance, 4)
+call require_true(balance_diag%active_classes == 3, 'balance prior counts active retained classes')
+call require_true(balance_diag%zero_support_classes == 1, 'balance prior reports absent classes')
+call require_true(balance_diag%prior_min < 0.0, 'balance prior penalizes overrepresented classes')
+call require_true(balance_diag%prior_max > 0.0, 'balance prior boosts underrepresented classes')
+call require_true(balance_range_after < balance_range_before, 'balance prior moves support toward uniform active classes')
+call require_close(tab_balance%norm_entropy(1), tab_balance%entropy(1) / log(real(tab_balance%ncand(1))),&
+    &1.0e-6, 'balance reliability uses post-prior entropy')
+call tab_balance%apply_reliability(2, 0.0)
+call require_true(.not. tab_balance%accepted(1), 'post-balance high-entropy candidate is rejected')
+call tab_balance%apply_reliability(2, 1.0)
+call del_file(ROUNDTRIP_FNAME)
+call tab_balance%write_table(ROUNDTRIP_FNAME)
+call tab_roundtrip%read_table(ROUNDTRIP_FNAME)
+call require_close(tab_roundtrip%cand(1,1)%logit, tab_balance%cand(1,1)%logit, 1.0e-6,&
+    &'roundtrip preserves balanced logit')
+call require_close(tab_roundtrip%cand(1,1)%weight, tab_balance%cand(1,1)%weight, 1.0e-6,&
+    &'roundtrip preserves balanced weight')
+call require_true(tab_roundtrip%hard_rank(1) == tab_balance%hard_rank(1),&
+    &'roundtrip preserves balanced hard rank')
+call require_close(tab_roundtrip%cand(1,1)%eff_weight, tab_balance%cand(1,1)%eff_weight, 1.0e-6,&
+    &'roundtrip preserves balanced effective weight')
+call tab_roundtrip%kill
+call tab_balance%kill
+call del_file(ROUNDTRIP_FNAME)
+
 call del_file(ROUNDTRIP_FNAME)
 call tab%write_table(ROUNDTRIP_FNAME)
 call tab_roundtrip%read_table(ROUNDTRIP_FNAME)
@@ -187,6 +236,8 @@ call tab%build_from_loc_tab(loc_tab, 1, 1.0, 0.1)
 call tab%set_base_shifts(base_shifts)
 call tab%optimize_logits(8, 1.0, 1.0, 0.1)
 call tab%apply_reliability(2, 0.0)
+call tab%apply_balance_prior(5, 2.0, 1.0, 0.1, balance_diag)
+call tab%apply_reliability(2, 0.0)
 call require_true(tab%ncand(1) == 1, 'topk=1 keeps one candidate')
 call require_close(tab%cand(1,1)%weight, 1.0, 1.0e-6, 'topk=1 candidate weight is one')
 call require_true(tab%hard_rank(1) == 1, 'topk=1 hard rank is one')
@@ -236,6 +287,17 @@ contains
         call set_ref(tab_in(2,4), 104, 2, 22, 4.0, 0.0, 0.0, .false.)
     end subroutine init_loc_tab
 
+    subroutine init_balance_loc_tab( tab_in )
+        type(ptcl_ref), intent(inout) :: tab_in(:,:)
+        tab_in = ptcl_ref()
+        call set_ref(tab_in(1,1), 201, 1, 10, 0.0, 0.0, 0.0, .false.)
+        call set_ref(tab_in(2,1), 201, 2, 20, 0.2, 0.0, 0.0, .false.)
+        call set_ref(tab_in(1,2), 202, 1, 11, 0.0, 0.0, 0.0, .false.)
+        call set_ref(tab_in(2,2), 202, 2, 21, 0.2, 0.0, 0.0, .false.)
+        call set_ref(tab_in(1,3), 203, 1, 12, 0.0, 0.0, 0.0, .false.)
+        call set_ref(tab_in(3,3), 203, 3, 30, 0.2, 0.0, 0.0, .false.)
+    end subroutine init_balance_loc_tab
+
     subroutine init_base_shifts( shifts )
         real, intent(out) :: shifts(:,:)
         shifts = 0.
@@ -258,6 +320,32 @@ contains
         ref%y = y
         ref%has_sh = has_sh
     end subroutine set_ref
+
+    real function accepted_support_range( candidate_tab, nclasses ) result( support_range )
+        type(joint2D_candidate_table), intent(in) :: candidate_tab
+        integer,                       intent(in) :: nclasses
+        real    :: support(nclasses), support_min, support_max
+        integer :: active_count, iptcl, irank, icls
+
+        support = 0.
+        do iptcl = 1, size(candidate_tab%ncand)
+            if( .not. candidate_tab%accepted(iptcl) ) cycle
+            do irank = 1, candidate_tab%ncand(iptcl)
+                icls = candidate_tab%cand(irank,iptcl)%icls
+                if( icls >= 1 .and. icls <= nclasses )then
+                    support(icls) = support(icls) + candidate_tab%cand(irank,iptcl)%weight
+                endif
+            end do
+        end do
+        active_count = count(support > 1.0e-6)
+        if( active_count < 1 )then
+            support_range = 0.
+            return
+        endif
+        support_min = minval(support, mask=support > 1.0e-6)
+        support_max = maxval(support, mask=support > 1.0e-6)
+        support_range = support_max - support_min
+    end function accepted_support_range
 
     subroutine require_true( cond, msg )
         logical,          intent(in) :: cond

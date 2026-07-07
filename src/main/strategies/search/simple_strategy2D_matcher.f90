@@ -25,7 +25,8 @@ use simple_strategy2D_prob,          only: strategy2D_prob
 use simple_strategy2D_srch,          only: strategy2D_spec
 use simple_strategy2D_tseries,       only: strategy2D_tseries
 use simple_strategy2D_joint_sgd,     only: cluster2D_joint_sgd_exec
-use simple_strategy2D_joint_sgd_candidates, only: joint2D_candidate_table, JOINT2D_CANDIDATES_FNAME
+use simple_strategy2D_joint_sgd_candidates, only: joint2D_candidate_table, joint2D_balance_diag,&
+                                                  JOINT2D_CANDIDATES_FNAME
 use simple_eul_prob_tab2D,           only: eul_prob_tab2D
 use simple_eul_prob_tab_utils,       only: eulprob_corr_switch, eulprob_dist_switch
 use simple_pftc_shsrch_grad,         only: pftc_shsrch_grad
@@ -648,6 +649,24 @@ contains
             endif
         end subroutine refine_joint_topk_shifts_for_batch
 
+        subroutine apply_joint_balance_prior_for_batch()
+            type(joint2D_balance_diag) :: balance_diag
+
+            if( .not. ctrl%l_joint_topk ) return
+            if( .not. allocated(joint_topk_candidates%ncand) )then
+                THROW_HARD('joint 2D class-balance prior requested before top-K table was read')
+            endif
+            call joint_topk_candidates%apply_balance_prior(p_ptr%ncls, p_ptr%sgd_balance_weight,&
+                &p_ptr%sgd_tau, p_ptr%sgd_tau_min, balance_diag, first_ptcl=batch_start, last_ptcl=batch_end)
+            call joint_topk_candidates%apply_reliability(p_ptr%sgd_cavg_min_cands, p_ptr%sgd_cavg_max_entropy)
+            if( count(joint_topk_candidates%accepted) == 0 )then
+                THROW_HARD('joint 2D class-balance prior left zero accepted top-K particles')
+            endif
+            call sync_joint_hard_assignments_for_batch()
+            call joint_topk_candidates%write_balance_diag('cluster2D batch', balance_diag)
+            call joint_topk_candidates%write_diag('cluster2D balance-refined')
+        end subroutine apply_joint_balance_prior_for_batch
+
         subroutine sync_joint_hard_assignments_for_batch()
             integer :: iloc, iptcl_map, iptcl, hard
             real    :: cand_shift(2), total_shift(2), corr, e3
@@ -745,6 +764,7 @@ contains
             integer(timer_int_kind) :: t_update
             call refine_joint_topk_inpls_for_batch()
             call refine_joint_topk_shifts_for_batch()
+            call apply_joint_balance_prior_for_batch()
             call export_joint_topk_for_batch()
             call cavger_transf_oridat(batchsz, pinds(batch_start:batch_end), updated_only=.true.)
             if( ctrl%do_bench ) t_update = tic()

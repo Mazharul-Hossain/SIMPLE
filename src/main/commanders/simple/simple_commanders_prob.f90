@@ -375,7 +375,8 @@ contains
     subroutine exec_prob_align2D( self, cline )
         use simple_eul_prob_tab2D,          only: eul_prob_tab2D, PRIOR2D_STAGE5_FNAME
         use simple_eul_prob_tab_utils,      only: materialize_seed_shift
-        use simple_strategy2D_joint_sgd_candidates, only: joint2D_candidate_table, JOINT2D_CANDIDATES_FNAME
+        use simple_strategy2D_joint_sgd_candidates, only: joint2D_candidate_table, joint2D_balance_diag,&
+            &JOINT2D_CANDIDATES_FNAME
         use simple_strategy2D_matcher,      only: set_b_p_ptrs2D
         use simple_matcher_smpl_and_lplims, only: sample_ptcls4update2D
         use simple_builder,                 only: builder
@@ -388,6 +389,7 @@ contains
         type(commander_prob_tab2D) :: xprob_tab2D
         type(eul_prob_tab2D)       :: eulprob_obj_glob
         type(joint2D_candidate_table) :: joint_candidates
+        type(joint2D_balance_diag)    :: balance_diag
         type(cmdline)              :: cline_prob_tab
         type(qsys_env)             :: qenv
         type(chash)                :: job_descr
@@ -450,9 +452,13 @@ contains
             call joint_candidates%optimize_logits(params%sgd_inner_its, params%sgd_eta_latent,&
                 &params%sgd_tau, params%sgd_tau_min)
             call joint_candidates%apply_reliability(params%sgd_cavg_min_cands, params%sgd_cavg_max_entropy)
+            call joint_candidates%apply_balance_prior(params%ncls, params%sgd_balance_weight,&
+                &params%sgd_tau, params%sgd_tau_min, balance_diag)
+            call joint_candidates%apply_reliability(params%sgd_cavg_min_cands, params%sgd_cavg_max_entropy)
             if( count(joint_candidates%accepted) == 0 )then
                 THROW_HARD('joint 2D top-K reliability rejected all particles')
             endif
+            call joint_candidates%write_balance_diag('prob_align2D', balance_diag)
             call joint_candidates%write_diag('prob_align2D')
             call joint_candidates%write_table(JOINT2D_CANDIDATES_FNAME)
             call joint_candidates%write_hard_assignments(eulprob_obj_glob%assgn_map)
