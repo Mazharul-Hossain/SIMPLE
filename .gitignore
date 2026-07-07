@@ -54,4 +54,5 @@ docs/
 !/.codex/check-joint-sgd-science-log.sh
 !/.codex/run-joint-sgd-science.sh
 !/.codex/summarize-joint-sgd-science.sh
+!/.codex/joint-sgd-runner-common.sh
 /.vscode
