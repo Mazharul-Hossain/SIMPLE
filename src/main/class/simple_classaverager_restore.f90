@@ -153,9 +153,13 @@ contains
         l_joint_cavg_sgd = p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'joint') .and. p_ptr%l_prob_align_mode
         if( l_joint_cavg_sgd )then
             call cavg_sgd_opt%new(p_ptr, p_ptr%which_iter)
-            call capture_joint_prev_cavgs
-            l_joint_cavg_sgd_pending = .true.
-            call cavg_sgd_opt%write_diag('previous class averages captured')
+            if( p_ptr%l_distr_worker .and. p_ptr%nparts > 1 )then
+                call cavg_sgd_opt%write_diag('distributed worker writes raw weighted partial sums')
+            else
+                call capture_joint_prev_cavgs
+                l_joint_cavg_sgd_pending = .true.
+                call cavg_sgd_opt%write_diag('previous class averages captured')
+            endif
         endif
         call cavgs%zero_set(.true.)
         if( p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'cavg_only') )then
@@ -209,6 +213,15 @@ contains
             call copy_image_ft_to_stack(cavgs_merged(icls), cavgs_joint_prev%merged, icls)
         enddo
     end subroutine capture_joint_prev_cavgs
+
+    module subroutine cavger_prepare_joint_sgd_update()
+        if( .not. (p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'joint') .and. p_ptr%l_prob_align_mode) ) return
+        if( p_ptr%l_distr_worker ) return
+        call cavg_sgd_opt%new(p_ptr, p_ptr%which_iter)
+        call capture_joint_prev_cavgs
+        l_joint_cavg_sgd_pending = .true.
+        call cavg_sgd_opt%write_diag('distributed master previous class averages captured')
+    end subroutine cavger_prepare_joint_sgd_update
 
     subroutine copy_image_ft_to_stack( img, cavg_stack, icls )
         class(image), intent(in)    :: img
@@ -1055,6 +1068,12 @@ contains
         call cto%kill
         call cavgs4reade%kill_stack
         call cavgs4reado%kill_stack
+        if( p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'joint') .and. p_ptr%l_prob_align_mode .and.&
+            &l_joint_cavg_sgd_pending )then
+            call cavger_apply_sgd_update
+            write(logfhandle,'(A,I0)') '>>> JOINT2D SGD DISTR REDUCE: master applied joint CAVG SGD update nparts=',&
+                &p_ptr%nparts
+        endif
         ! Restoration of e/o/merged classes
         if( L_BENCH_GLOB ) t_merge_eos_and_norm = tic()
         call cavger_restore_cavgs(p_ptr%frcs)

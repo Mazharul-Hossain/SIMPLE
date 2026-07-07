@@ -796,6 +796,8 @@ contains
         type(builder)      :: build
         type(starproject)  :: starproj
         type(string)       :: benchfname
+        type(string)       :: refs_out, refs_even_out, refs_odd_out
+        type(string)       :: refs_in, refs_even_in, refs_odd_in
         real, allocatable  :: states(:)
         integer            :: iterstr_start, iterstr_end, iter, io_stat, fnr
         integer(timer_int_kind) :: t_tot, t_phase
@@ -826,6 +828,33 @@ contains
         endif
         if( L_BENCH_GLOB ) t_phase = tic()
         call cavger_new(params, build)
+        if( params%l_sgd .and. trim(params%sgd_mode) == 'joint' .and.&
+            &params%l_prob_align_mode .and. params%nparts > 1 .and.&
+            &cline%defined('sgd_refs_in') .and. cline%defined('sgd_refs_even_in') .and.&
+            &cline%defined('sgd_refs_odd_in') )then
+            refs_out      = params%refs
+            refs_even_out = params%refs_even
+            refs_odd_out  = params%refs_odd
+            refs_in      = cline%get_carg('sgd_refs_in')
+            refs_even_in = cline%get_carg('sgd_refs_even_in')
+            refs_odd_in  = cline%get_carg('sgd_refs_odd_in')
+            params%refs      = refs_in
+            params%refs_even = refs_even_in
+            params%refs_odd  = refs_odd_in
+            call cavger_read_all
+            call cavger_prepare_joint_sgd_update
+            params%refs      = refs_out
+            params%refs_even = refs_even_out
+            params%refs_odd  = refs_odd_out
+            write(logfhandle,'(A,A,1X,A,A)') '>>> JOINT2D SGD DISTR REDUCE: refs_in=',&
+                &refs_in%to_char(), 'refs_out=', params%refs%to_char()
+            call refs_in%kill
+            call refs_even_in%kill
+            call refs_odd_in%kill
+            call refs_out%kill
+            call refs_even_out%kill
+            call refs_odd_out%kill
+        endif
         call cavger_assemble_sums_from_parts
         if( L_BENCH_GLOB ) rt_reduce_partials = toc(t_phase)
         if( L_BENCH_GLOB ) t_phase = tic()

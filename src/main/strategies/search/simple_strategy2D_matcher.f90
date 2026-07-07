@@ -26,7 +26,7 @@ use simple_strategy2D_srch,          only: strategy2D_spec
 use simple_strategy2D_tseries,       only: strategy2D_tseries
 use simple_strategy2D_joint_sgd,     only: cluster2D_joint_sgd_exec
 use simple_strategy2D_joint_sgd_candidates, only: joint2D_candidate_table, joint2D_balance_diag,&
-                                                  JOINT2D_CANDIDATES_FNAME
+                                                  JOINT2D_CANDIDATES_FNAME, joint2D_candidate_part_fname
 use simple_strategy2D_joint_sgd_refs, only: joint2D_ref_refresh_policy
 use simple_eul_prob_tab2D,           only: eul_prob_tab2D
 use simple_eul_prob_tab_utils,       only: eulprob_corr_switch, eulprob_dist_switch
@@ -186,6 +186,7 @@ contains
             call restore_class_averages_for_batch()
             if( ctrl%do_bench ) rt_cavg = rt_cavg + toc(t_cavg)
         enddo
+        if( ctrl%l_joint_topk ) call write_refined_joint_topk_candidates()
         call cleanup_search_state(strategy2Dsrch, pinds, batches, eulprob_obj_part, batchsz_max, orientation)
         if( p_ptr%cc_objfun == OBJFUN_EUCLID ) call b_ptr%esig%write_sigma2
         call write_orientations()
@@ -321,8 +322,18 @@ contains
 
         subroutine read_joint_topk_candidates()
             integer :: iptcl_map
-            write(logfhandle,'(A,A)') '>>> JOINT 2D SGD: reading top-K candidate table ', JOINT2D_CANDIDATES_FNAME
-            call joint_topk_candidates%read_table(JOINT2D_CANDIDATES_FNAME)
+            character(len=STDLEN) :: cand_fname
+            if( l_distr_worker_glob )then
+                cand_fname = joint2D_candidate_part_fname(p_ptr%part, p_ptr%numlen)
+                write(logfhandle,'(A,A)') '>>> JOINT 2D SGD: reading distributed top-K candidate table ',&
+                    &trim(cand_fname)
+                call joint_topk_candidates%read_part_table(p_ptr%part, p_ptr%numlen)
+                call joint_topk_candidates%write_distributed_diag('cluster2D read-part', p_ptr%part, p_ptr%nparts)
+            else
+                write(logfhandle,'(A,A)') '>>> JOINT 2D SGD: reading top-K candidate table ', JOINT2D_CANDIDATES_FNAME
+                call joint_topk_candidates%read_table(JOINT2D_CANDIDATES_FNAME)
+                call joint_topk_candidates%write_distributed_diag('cluster2D read-global', 0, p_ptr%nparts)
+            endif
             if( size(joint_topk_candidates%ncand) /= nptcls2update )then
                 THROW_HARD('joint 2D top-K candidate table particle count does not match cluster2D batch set')
             endif
@@ -330,13 +341,31 @@ contains
                 THROW_HARD('joint 2D top-K candidate table has zero accepted particles')
             endif
             do iptcl_map = 1, nptcls2update
-                if( joint_topk_candidates%ncand(iptcl_map) < 1 ) cycle
-                if( joint_topk_candidates%cand(1,iptcl_map)%pind /= pinds(iptcl_map) )then
+                if( joint_topk_candidates%pinds(iptcl_map) > 0 )then
+                    if( joint_topk_candidates%pinds(iptcl_map) /= pinds(iptcl_map) )then
+                        THROW_HARD('joint 2D top-K candidate table does not match sampled particle order')
+                    endif
+                else if( joint_topk_candidates%ncand(iptcl_map) > 0 )then
+                    if( joint_topk_candidates%cand(1,iptcl_map)%pind /= pinds(iptcl_map) )then
+                        THROW_HARD('joint 2D top-K candidate table does not match sampled particle order')
+                    endif
+                else
                     THROW_HARD('joint 2D top-K candidate table does not match sampled particle order')
                 endif
             end do
             call joint_topk_candidates%write_diag('cluster2D')
         end subroutine read_joint_topk_candidates
+
+        subroutine write_refined_joint_topk_candidates()
+            if( .not. allocated(joint_topk_candidates%ncand) ) return
+            if( l_distr_worker_glob )then
+                call joint_topk_candidates%write_part_table(p_ptr%part, p_ptr%numlen, refined=.true.)
+                call joint_topk_candidates%write_distributed_diag('cluster2D write-refined-part',&
+                    &p_ptr%part, p_ptr%nparts)
+            else
+                call joint_topk_candidates%write_distributed_diag('cluster2D final-shared', 0, p_ptr%nparts)
+            endif
+        end subroutine write_refined_joint_topk_candidates
 
         subroutine export_joint_topk_for_batch()
             if( .not. ctrl%l_joint_topk ) return

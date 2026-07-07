@@ -389,14 +389,15 @@ contains
         type(parameters)           :: params
         type(commander_prob_tab2D) :: xprob_tab2D
         type(eul_prob_tab2D)       :: eulprob_obj_glob
-        type(joint2D_candidate_table) :: joint_candidates
+        type(joint2D_candidate_table) :: joint_candidates, joint_candidates_part
         type(joint2D_balance_diag)    :: balance_diag
         type(joint2D_ref_refresh_policy) :: ref_policy
         type(cmdline)              :: cline_prob_tab
         type(qsys_env)             :: qenv
         type(chash)                :: job_descr
         real, allocatable :: base_shifts(:,:)
-        integer :: nptcls, ipart, iptcl
+        integer, allocatable :: part_pinds(:)
+        integer :: nptcls, nptcls_part, ipart, iptcl
         call cline%set('mkdir',  'no')
         call cline%set('stream', 'no')
         call build%init_params_and_build_general_tbox(cline, params, do3d=.false.)
@@ -448,7 +449,7 @@ contains
         call flush(logfhandle)
         if( params%l_sgd .and. trim(params%sgd_mode) == 'joint' )then
             call joint_candidates%build_from_loc_tab(eulprob_obj_glob%loc_tab, params%sgd_topk,&
-                &params%sgd_tau, params%sgd_tau_min)
+                &params%sgd_tau, params%sgd_tau_min, pinds=pinds)
             allocate(base_shifts(2,eulprob_obj_glob%nptcls), source=0.)
             do iptcl = 1, eulprob_obj_glob%nptcls
                 if( pinds(iptcl) > 0 ) base_shifts(:,iptcl) = build%spproj_field%get_2Dshift(pinds(iptcl))
@@ -466,6 +467,18 @@ contains
             call joint_candidates%write_balance_diag('prob_align2D', balance_diag)
             call joint_candidates%write_diag('prob_align2D')
             call joint_candidates%write_table(JOINT2D_CANDIDATES_FNAME)
+            if( params%nparts > 1 .and. allocated(qenv%parts) )then
+                do ipart = 1, params%nparts
+                    if( allocated(part_pinds) ) deallocate(part_pinds)
+                    call build%spproj_field%sample4update_reprod(qenv%parts(ipart,:), nptcls_part, part_pinds)
+                    if( nptcls_part < 1 ) cycle
+                    call joint_candidates%extract_by_pinds(part_pinds, joint_candidates_part)
+                    call joint_candidates_part%write_part_table(ipart, params%numlen)
+                    call joint_candidates_part%write_distributed_diag('prob_align2D write-part', ipart, params%nparts)
+                    call joint_candidates_part%kill
+                end do
+                if( allocated(part_pinds) ) deallocate(part_pinds)
+            endif
             call joint_candidates%write_hard_assignments(eulprob_obj_glob%assgn_map)
             do iptcl = 1, eulprob_obj_glob%nptcls
                 call materialize_seed_shift(eulprob_obj_glob%assgn_map(iptcl), eulprob_obj_glob%seed_shifts(:,iptcl),&
@@ -479,6 +492,7 @@ contains
                 endif
             end do
             if( allocated(base_shifts) ) deallocate(base_shifts)
+            call joint_candidates_part%kill
             call joint_candidates%kill
         else
             call eulprob_obj_glob%ref_assign

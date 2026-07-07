@@ -747,8 +747,8 @@ contains
                     if( trim(self%sgd_latent) /= 'st_topk' )then
                         THROW_HARD('joint SGD scaffold currently implements only sgd_latent=st_topk')
                     endif
-                    if( self%l_distr_worker .or. self%nparts > 1 )then
-                        THROW_HARD('sgd_mode=joint is not yet supported for distributed cluster2D')
+                    if( (self%l_distr_worker .or. self%nparts > 1) .and. self%sgd_balance_weight > 0.0 )then
+                        THROW_HARD('distributed joint SGD currently requires sgd_balance_weight=0 for parity')
                     endif
                 case('cavg_only')
                     if( self%sgd_eta <= 0.0 .or. self%sgd_eta > 1.0 )then

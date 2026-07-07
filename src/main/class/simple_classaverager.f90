@@ -19,7 +19,7 @@ public :: cavger_new, cavger_transf_oridat, cavger_gen2Dclassdoc
 public :: cavger_read_euclid_sigma2, cavger_kill
 ! Interpolation & restoration
 public :: cavger_init_online, cavger_update_sums, cavger_update_sums_topk, cavger_dealloc_online
-public :: cavger_apply_sgd_update
+public :: cavger_apply_sgd_update, cavger_prepare_joint_sgd_update
 public :: cavger_assemble_sums, cavger_restore_cavgs
 ! I/O & handling of distributed sums
 public :: cavger_write_eo, cavger_write_all, cavger_write_merged, cavger_read_all
@@ -318,6 +318,8 @@ interface
 
     module subroutine cavger_apply_sgd_update()
     end subroutine cavger_apply_sgd_update
+    module subroutine cavger_prepare_joint_sgd_update()
+    end subroutine cavger_prepare_joint_sgd_update
 
     module subroutine cavger_assemble_sums( do_frac_update )
         use simple_matcher_ptcl_io, only: prepimgbatch

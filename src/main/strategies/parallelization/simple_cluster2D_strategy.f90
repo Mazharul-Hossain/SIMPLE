@@ -406,6 +406,8 @@ contains
         type(parameters), intent(in) :: params
         call del_files(DIST_FBODY,      params%nparts, ext='.dat')
         call del_files(ASSIGNMENT_FBODY,params%nparts, ext='.dat')
+        call del_files('joint2D_topk_candidates_part',         params%nparts, ext='.dat')
+        call del_files('joint2D_topk_candidates_refined_part', params%nparts, ext='.dat')
         call del_file(DIST_FBODY//'.dat')
         call del_file(ASSIGNMENT_FBODY//'.dat')
         if( trim(params%restore_cavgs) == 'yes' .and. (params%startit <= 1 .or. .not. params%l_update_frac) )then
@@ -425,6 +427,10 @@ contains
         type(commander_cavgassemble) :: xcavgassemble
         type(cmdline)                :: cline_cavgassemble
         type(string)                 :: str_iter
+        type(string)                 :: refs_in, refs_even_in, refs_odd_in
+        refs_in      = params%refs
+        refs_even_in = params%refs_even
+        refs_odd_in  = params%refs_odd
         str_iter   = int2str_pad(params%which_iter, 3)
         params%refs      = CAVGS_ITER_FBODY // str_iter%to_char()            // MRC_EXT
         params%refs_even = CAVGS_ITER_FBODY // str_iter%to_char() // '_even' // MRC_EXT
@@ -434,11 +440,19 @@ contains
         call cline_cavgassemble%set('prg',  'cavgassemble')
         call cline_cavgassemble%delete('which_iter')
         call cline_cavgassemble%set('refs', params%refs)
+        if( params%l_sgd .and. trim(params%sgd_mode) == 'joint' )then
+            call cline_cavgassemble%set('sgd_refs_in',      refs_in)
+            call cline_cavgassemble%set('sgd_refs_even_in', refs_even_in)
+            call cline_cavgassemble%set('sgd_refs_odd_in',  refs_odd_in)
+        endif
         call cline_cavgassemble%set('nthr', nthr_master)
         call terminate_stream(params, 'SIMPLE_DISTR_CLUSTER2D HARD STOP 2')
         call xcavgassemble%execute(cline_cavgassemble)
         call cline_cavgassemble%kill
         call str_iter%kill
+        call refs_in%kill
+        call refs_even_in%kill
+        call refs_odd_in%kill
     end subroutine run_distributed_cavg_assembly
 
     subroutine init_tseries_refs( cline, params, build, cline_make_cavgs, l_scale_inirefs )

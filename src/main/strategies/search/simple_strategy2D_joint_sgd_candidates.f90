@@ -5,12 +5,13 @@ use simple_type_defs, only: ptcl_ref
 implicit none
 
 public :: joint2D_candidate, joint2D_balance_diag, joint2D_candidate_table, JOINT2D_CANDIDATES_FNAME
+public :: joint2D_candidate_part_fname
 private
 
 #include "simple_local_flags.inc"
 
 character(len=*), parameter :: JOINT2D_CANDIDATES_FNAME = 'joint2D_topk_candidates.dat'
-integer,          parameter :: JOINT2D_CANDIDATES_VERSION = 2
+integer,          parameter :: JOINT2D_CANDIDATES_VERSION = 3
 integer,          parameter :: RELIABILITY_OK           = 0
 integer,          parameter :: RELIABILITY_EMPTY        = 1
 integer,          parameter :: RELIABILITY_TOO_FEW      = 2
@@ -53,6 +54,7 @@ end type joint2D_balance_diag
 
 type :: joint2D_candidate_table
     type(joint2D_candidate), allocatable :: cand(:,:)        !< top-K candidates (topk,nptcls)
+    integer,                 allocatable :: pinds(:)         !< global particle index per candidate-table column
     integer,                 allocatable :: ncand(:)         !< valid candidates retained per particle
     integer,                 allocatable :: hard_rank(:)     !< selected straight-through rank per particle
     integer,                 allocatable :: initial_hard_rank(:) !< hard rank before latent-logit optimization
@@ -78,20 +80,45 @@ contains
     procedure :: write_hard_assignments
     procedure :: write_table
     procedure :: read_table
+    procedure :: write_part_table
+    procedure :: read_part_table
+    procedure :: extract_by_pinds
+    procedure :: merge_parts_by_pinds
+    procedure :: records_equal
+    procedure :: checksum => candidate_table_checksum
     procedure :: export_batch
     procedure :: write_diag
     procedure :: write_balance_diag
+    procedure :: write_distributed_diag
     procedure :: kill => kill_candidate_table
 end type joint2D_candidate_table
 
 contains
 
-    subroutine build_from_loc_tab( self, loc_tab, topk, tau, tau_min )
+    function joint2D_candidate_part_fname( part, numlen, refined ) result( fname )
+        integer,           intent(in) :: part
+        integer,           intent(in) :: numlen
+        logical, optional, intent(in) :: refined
+        character(len=STDLEN) :: fname
+        logical :: l_refined
+
+        if( part < 1 ) THROW_HARD('joint2D_candidate_part_fname: part must be >= 1')
+        l_refined = .false.
+        if( present(refined) ) l_refined = refined
+        if( l_refined )then
+            fname = 'joint2D_topk_candidates_refined_part'//int2str_pad(part,max(1,numlen))//'.dat'
+        else
+            fname = 'joint2D_topk_candidates_part'//int2str_pad(part,max(1,numlen))//'.dat'
+        endif
+    end function joint2D_candidate_part_fname
+
+    subroutine build_from_loc_tab( self, loc_tab, topk, tau, tau_min, pinds )
         class(joint2D_candidate_table), intent(inout) :: self
         type(ptcl_ref),                 intent(in)    :: loc_tab(:,:)
         integer,                        intent(in)    :: topk
         real,                           intent(in)    :: tau
         real,                           intent(in)    :: tau_min
+        integer, optional,              intent(in)    :: pinds(:)
         integer :: icls, iptcl, nclasses, nptcls
         real    :: tau_eff
 
@@ -99,29 +126,13 @@ contains
         tau_eff = max(tau, tau_min)
         if( tau_eff <= 0. ) THROW_HARD('joint2D_candidate_table: tau_eff must be > 0')
 
-        call self%kill
         nclasses = size(loc_tab, 1)
         nptcls   = size(loc_tab, 2)
-        allocate(self%cand(topk,nptcls), self%ncand(nptcls), self%hard_rank(nptcls),&
-            &self%initial_hard_rank(nptcls), self%reject_reason(nptcls), self%entropy(nptcls),&
-            &self%initial_entropy(nptcls), self%norm_entropy(nptcls), self%winner_weight(nptcls),&
-            &self%expected_loss(nptcls), self%initial_expected_loss(nptcls), self%loss_delta(nptcls),&
-            &self%particle_weight(nptcls), self%base_shift(2,nptcls), self%accepted(nptcls))
-        self%cand            = joint2D_candidate()
-        self%ncand           = 0
-        self%hard_rank       = 0
-        self%initial_hard_rank = 0
-        self%reject_reason   = RELIABILITY_EMPTY
-        self%entropy         = 0.
-        self%initial_entropy = 0.
-        self%norm_entropy    = 0.
-        self%winner_weight   = 0.
-        self%expected_loss   = 0.
-        self%initial_expected_loss = 0.
-        self%loss_delta      = 0.
-        self%particle_weight = 0.
-        self%base_shift      = 0.
-        self%accepted        = .false.
+        call allocate_blank_table(self, topk, nptcls)
+        if( present(pinds) )then
+            if( size(pinds) /= nptcls ) THROW_HARD('joint2D_candidate_table: pinds size mismatch')
+            self%pinds = pinds
+        endif
 
         do iptcl = 1, nptcls
             do icls = 1, nclasses
@@ -130,6 +141,7 @@ contains
             end do
             call finalize_particle(self, iptcl, tau_eff)
         end do
+        call recover_column_pinds(self)
         call self%apply_reliability(1, 1.0)
     end subroutine build_from_loc_tab
 
@@ -500,7 +512,8 @@ contains
         call fileiochk('joint2D_candidate_table; write_table(header); file: '//trim(fname), io_stat)
         write(unit=funit, iostat=io_stat) self%cand
         call fileiochk('joint2D_candidate_table; write_table(cand); file: '//trim(fname), io_stat)
-        write(unit=funit, iostat=io_stat) self%ncand, self%hard_rank, self%initial_hard_rank, self%reject_reason
+        write(unit=funit, iostat=io_stat) self%pinds, self%ncand, self%hard_rank, self%initial_hard_rank,&
+            &self%reject_reason
         call fileiochk('joint2D_candidate_table; write_table(ints); file: '//trim(fname), io_stat)
         write(unit=funit, iostat=io_stat) self%entropy, self%initial_entropy, self%norm_entropy, self%winner_weight
         call fileiochk('joint2D_candidate_table; write_table(reals1); file: '//trim(fname), io_stat)
@@ -527,20 +540,21 @@ contains
         call fileiochk('joint2D_candidate_table; read_table; file: '//trim(fname), io_stat)
         read(unit=funit, iostat=io_stat) version, topk, nptcls
         call fileiochk('joint2D_candidate_table; read_table(header); file: '//trim(fname), io_stat)
-        if( version /= JOINT2D_CANDIDATES_VERSION )then
+        if( version /= JOINT2D_CANDIDATES_VERSION .and. version /= 2 )then
             THROW_HARD('joint2D_candidate_table: unsupported file version')
         endif
         if( topk < 1 .or. nptcls < 1 )then
             THROW_HARD('joint2D_candidate_table: invalid file dimensions')
         endif
-        allocate(self%cand(topk,nptcls), self%ncand(nptcls), self%hard_rank(nptcls),&
-            &self%initial_hard_rank(nptcls), self%reject_reason(nptcls), self%entropy(nptcls),&
-            &self%initial_entropy(nptcls), self%norm_entropy(nptcls), self%winner_weight(nptcls),&
-            &self%expected_loss(nptcls), self%initial_expected_loss(nptcls), self%loss_delta(nptcls),&
-            &self%particle_weight(nptcls), self%base_shift(2,nptcls), self%accepted(nptcls))
+        call allocate_blank_table(self, topk, nptcls)
         read(unit=funit, iostat=io_stat) self%cand
         call fileiochk('joint2D_candidate_table; read_table(cand); file: '//trim(fname), io_stat)
-        read(unit=funit, iostat=io_stat) self%ncand, self%hard_rank, self%initial_hard_rank, self%reject_reason
+        if( version >= 3 )then
+            read(unit=funit, iostat=io_stat) self%pinds, self%ncand, self%hard_rank, self%initial_hard_rank,&
+                &self%reject_reason
+        else
+            read(unit=funit, iostat=io_stat) self%ncand, self%hard_rank, self%initial_hard_rank, self%reject_reason
+        endif
         call fileiochk('joint2D_candidate_table; read_table(ints); file: '//trim(fname), io_stat)
         read(unit=funit, iostat=io_stat) self%entropy, self%initial_entropy, self%norm_entropy, self%winner_weight
         call fileiochk('joint2D_candidate_table; read_table(reals1); file: '//trim(fname), io_stat)
@@ -551,7 +565,123 @@ contains
         read(unit=funit, iostat=io_stat) self%accepted
         call fileiochk('joint2D_candidate_table; read_table(flags); file: '//trim(fname), io_stat)
         close(funit)
+        call recover_column_pinds(self)
     end subroutine read_table
+
+    subroutine write_part_table( self, part, numlen, refined )
+        class(joint2D_candidate_table), intent(in) :: self
+        integer,                        intent(in) :: part
+        integer,                        intent(in) :: numlen
+        logical, optional,              intent(in) :: refined
+        if( present(refined) )then
+            call self%write_table(joint2D_candidate_part_fname(part, numlen, refined))
+        else
+            call self%write_table(joint2D_candidate_part_fname(part, numlen))
+        endif
+    end subroutine write_part_table
+
+    subroutine read_part_table( self, part, numlen, refined )
+        class(joint2D_candidate_table), intent(inout) :: self
+        integer,                        intent(in)    :: part
+        integer,                        intent(in)    :: numlen
+        logical, optional,              intent(in)    :: refined
+        if( present(refined) )then
+            call self%read_table(joint2D_candidate_part_fname(part, numlen, refined))
+        else
+            call self%read_table(joint2D_candidate_part_fname(part, numlen))
+        endif
+    end subroutine read_part_table
+
+    subroutine extract_by_pinds( self, pinds, part )
+        class(joint2D_candidate_table), intent(in)    :: self
+        integer,                        intent(in)    :: pinds(:)
+        type(joint2D_candidate_table),  intent(inout) :: part
+        integer :: iptcl, src_col, topk
+
+        call require_allocated(self, 'partition extract requested before build/read')
+        if( size(pinds) < 1 ) THROW_HARD('joint2D_candidate_table: cannot extract empty particle list')
+        topk = size(self%cand, 1)
+        call allocate_blank_table(part, topk, size(pinds))
+        part%pinds = pinds
+        do iptcl = 1, size(pinds)
+            src_col = find_pind_column(self, pinds(iptcl))
+            if( src_col < 1 )then
+                THROW_HARD('joint2D_candidate_table: partition particle not found: '//int2str(pinds(iptcl)))
+            endif
+            call copy_candidate_column(self, src_col, part, iptcl)
+        end do
+    end subroutine extract_by_pinds
+
+    subroutine merge_parts_by_pinds( self, parts, pinds )
+        class(joint2D_candidate_table), intent(inout) :: self
+        type(joint2D_candidate_table),  intent(in)    :: parts(:)
+        integer,                        intent(in)    :: pinds(:)
+        integer :: ipart, iptcl, src_col, topk
+        logical :: found
+
+        if( size(parts) < 1 ) THROW_HARD('joint2D_candidate_table: no parts to merge')
+        if( size(pinds) < 1 ) THROW_HARD('joint2D_candidate_table: cannot merge empty particle list')
+        call require_allocated(parts(1), 'partition merge part is not allocated')
+        topk = size(parts(1)%cand, 1)
+        do ipart = 2, size(parts)
+            call require_allocated(parts(ipart), 'partition merge part is not allocated')
+            if( size(parts(ipart)%cand, 1) /= topk )then
+                THROW_HARD('joint2D_candidate_table: partition top-K mismatch during merge')
+            endif
+        end do
+        call allocate_blank_table(self, topk, size(pinds))
+        self%pinds = pinds
+        do iptcl = 1, size(pinds)
+            found = .false.
+            do ipart = 1, size(parts)
+                src_col = find_pind_column(parts(ipart), pinds(iptcl))
+                if( src_col > 0 )then
+                    call copy_candidate_column(parts(ipart), src_col, self, iptcl)
+                    found = .true.
+                    exit
+                endif
+            end do
+            if( .not. found )then
+                THROW_HARD('joint2D_candidate_table: merged particle not found: '//int2str(pinds(iptcl)))
+            endif
+        end do
+    end subroutine merge_parts_by_pinds
+
+    logical function records_equal( self, other, tol ) result( equal )
+        class(joint2D_candidate_table), intent(in) :: self
+        type(joint2D_candidate_table),  intent(in) :: other
+        real, optional,                 intent(in) :: tol
+        real :: rt
+        integer :: iptcl, irank
+
+        rt = 0.
+        if( present(tol) ) rt = tol
+        equal = .false.
+        if( .not. allocated(self%ncand) .or. .not. allocated(other%ncand) ) return
+        if( any(shape(self%cand) /= shape(other%cand)) ) return
+        if( size(self%ncand) /= size(other%ncand) ) return
+        if( any(self%pinds /= other%pinds) ) return
+        if( any(self%ncand /= other%ncand) ) return
+        if( any(self%hard_rank /= other%hard_rank) ) return
+        if( any(self%initial_hard_rank /= other%initial_hard_rank) ) return
+        if( any(self%reject_reason /= other%reject_reason) ) return
+        if( any(.not. (self%accepted .eqv. other%accepted)) ) return
+        if( any(abs(self%entropy - other%entropy) > rt) ) return
+        if( any(abs(self%initial_entropy - other%initial_entropy) > rt) ) return
+        if( any(abs(self%norm_entropy - other%norm_entropy) > rt) ) return
+        if( any(abs(self%winner_weight - other%winner_weight) > rt) ) return
+        if( any(abs(self%expected_loss - other%expected_loss) > rt) ) return
+        if( any(abs(self%initial_expected_loss - other%initial_expected_loss) > rt) ) return
+        if( any(abs(self%loss_delta - other%loss_delta) > rt) ) return
+        if( any(abs(self%particle_weight - other%particle_weight) > rt) ) return
+        if( any(abs(self%base_shift - other%base_shift) > rt) ) return
+        do iptcl = 1, size(self%ncand)
+            do irank = 1, size(self%cand, 1)
+                if( .not. candidates_equal(self%cand(irank,iptcl), other%cand(irank,iptcl), rt) ) return
+            end do
+        end do
+        equal = .true.
+    end function records_equal
 
     subroutine export_batch( self, first_ptcl, last_ptcl, refs, weights, ncands )
         class(joint2D_candidate_table), intent(in)  :: self
@@ -682,9 +812,75 @@ contains
             &'entropy_after=', diag%entropy_after, 'nonfinite=', diag%nonfinite
     end subroutine write_balance_diag
 
+    integer function candidate_table_checksum( self ) result( chksum )
+        class(joint2D_candidate_table), intent(in) :: self
+        integer(kind=8) :: h
+        integer :: iptcl, irank
+
+        call require_allocated(self, 'checksum requested before build/read')
+        h = 146959810_8
+        call mix_int64(h, size(self%cand, 1))
+        call mix_int64(h, size(self%cand, 2))
+        do iptcl = 1, size(self%ncand)
+            call mix_int64(h, self%pinds(iptcl))
+            call mix_int64(h, self%ncand(iptcl))
+            call mix_int64(h, self%hard_rank(iptcl))
+            call mix_int64(h, self%initial_hard_rank(iptcl))
+            call mix_int64(h, self%reject_reason(iptcl))
+            call mix_real64(h, self%entropy(iptcl))
+            call mix_real64(h, self%norm_entropy(iptcl))
+            call mix_real64(h, self%winner_weight(iptcl))
+            call mix_real64(h, self%expected_loss(iptcl))
+            call mix_real64(h, self%loss_delta(iptcl))
+            call mix_real64(h, self%particle_weight(iptcl))
+            call mix_real64(h, self%base_shift(1,iptcl))
+            call mix_real64(h, self%base_shift(2,iptcl))
+            if( self%accepted(iptcl) )then
+                call mix_int64(h, 1)
+            else
+                call mix_int64(h, 0)
+            endif
+            do irank = 1, size(self%cand, 1)
+                call mix_candidate(h, self%cand(irank,iptcl))
+            end do
+        end do
+        chksum = int(modulo(h, 2147483647_8))
+    end function candidate_table_checksum
+
+    subroutine write_distributed_diag( self, label, part, nparts )
+        class(joint2D_candidate_table), intent(in) :: self
+        character(len=*),               intent(in) :: label
+        integer, optional,              intent(in) :: part
+        integer, optional,              intent(in) :: nparts
+        integer :: ipart, nparts_eff, nptcls, accepted_count, cand_count
+        real    :: support_sum
+
+        if( .not. allocated(self%ncand) )then
+            write(logfhandle,'(A,1X,A)') '>>> JOINT2D SGD DISTR:', trim(label)//' table not allocated'
+            return
+        endif
+        ipart = 0
+        nparts_eff = 0
+        if( present(part) ) ipart = part
+        if( present(nparts) ) nparts_eff = nparts
+        nptcls = size(self%ncand)
+        accepted_count = count(self%accepted)
+        cand_count = sum(self%ncand)
+        support_sum = 0.
+        if( nptcls > 0 ) support_sum = sum(self%particle_weight)
+        write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
+            &'>>> JOINT2D SGD DISTR:', trim(label), 'part=', ipart, 'nparts=', nparts_eff,&
+            &'nptcls=', nptcls, 'topk=', size(self%cand, 1)
+        write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,ES12.4,1X,A,I0)')&
+            &'>>> JOINT2D SGD DISTR PARTS:', trim(label), 'accepted=', accepted_count,&
+            &'candidates=', cand_count, 'checksum=', self%checksum(), 'support=', support_sum,&
+            &'nonfinite=', count_nonfinite_records(self)
+    end subroutine write_distributed_diag
+
     subroutine kill_candidate_table( self )
         class(joint2D_candidate_table), intent(inout) :: self
         if( allocated(self%cand)            ) deallocate(self%cand)
+        if( allocated(self%pinds)           ) deallocate(self%pinds)
         if( allocated(self%ncand)           ) deallocate(self%ncand)
         if( allocated(self%hard_rank)       ) deallocate(self%hard_rank)
         if( allocated(self%initial_hard_rank) ) deallocate(self%initial_hard_rank)
@@ -915,5 +1111,162 @@ contains
             endif
         end do
     end subroutine require_finite_particle
+
+    subroutine allocate_blank_table( self, topk, nptcls )
+        class(joint2D_candidate_table), intent(inout) :: self
+        integer,                        intent(in)    :: topk
+        integer,                        intent(in)    :: nptcls
+
+        if( topk < 1 .or. nptcls < 1 ) THROW_HARD('joint2D_candidate_table: invalid allocation dimensions')
+        call self%kill
+        allocate(self%cand(topk,nptcls), self%pinds(nptcls), self%ncand(nptcls), self%hard_rank(nptcls),&
+            &self%initial_hard_rank(nptcls), self%reject_reason(nptcls), self%entropy(nptcls),&
+            &self%initial_entropy(nptcls), self%norm_entropy(nptcls), self%winner_weight(nptcls),&
+            &self%expected_loss(nptcls), self%initial_expected_loss(nptcls), self%loss_delta(nptcls),&
+            &self%particle_weight(nptcls), self%base_shift(2,nptcls), self%accepted(nptcls))
+        self%cand              = joint2D_candidate()
+        self%pinds             = 0
+        self%ncand             = 0
+        self%hard_rank         = 0
+        self%initial_hard_rank = 0
+        self%reject_reason     = RELIABILITY_EMPTY
+        self%entropy           = 0.
+        self%initial_entropy   = 0.
+        self%norm_entropy      = 0.
+        self%winner_weight     = 0.
+        self%expected_loss     = 0.
+        self%initial_expected_loss = 0.
+        self%loss_delta        = 0.
+        self%particle_weight   = 0.
+        self%base_shift        = 0.
+        self%accepted          = .false.
+    end subroutine allocate_blank_table
+
+    subroutine recover_column_pinds( self )
+        class(joint2D_candidate_table), intent(inout) :: self
+        integer :: iptcl
+
+        call require_allocated(self, 'column-pind recovery requested before build/read')
+        do iptcl = 1, size(self%ncand)
+            if( self%pinds(iptcl) > 0 ) cycle
+            if( self%ncand(iptcl) > 0 ) self%pinds(iptcl) = self%cand(1,iptcl)%pind
+        end do
+    end subroutine recover_column_pinds
+
+    integer function find_pind_column( self, pind ) result( col )
+        class(joint2D_candidate_table), intent(in) :: self
+        integer,                        intent(in) :: pind
+        integer :: iptcl
+
+        col = 0
+        if( pind < 1 ) return
+        call require_allocated(self, 'particle lookup requested before build/read')
+        do iptcl = 1, size(self%ncand)
+            if( self%pinds(iptcl) == pind )then
+                col = iptcl
+                return
+            endif
+            if( self%ncand(iptcl) > 0 .and. self%cand(1,iptcl)%pind == pind )then
+                col = iptcl
+                return
+            endif
+        end do
+    end function find_pind_column
+
+    subroutine copy_candidate_column( src, src_col, dst, dst_col )
+        class(joint2D_candidate_table), intent(in)    :: src
+        integer,                        intent(in)    :: src_col
+        class(joint2D_candidate_table), intent(inout) :: dst
+        integer,                        intent(in)    :: dst_col
+
+        dst%cand(:,dst_col)       = src%cand(:,src_col)
+        dst%pinds(dst_col)        = src%pinds(src_col)
+        dst%ncand(dst_col)        = src%ncand(src_col)
+        dst%hard_rank(dst_col)    = src%hard_rank(src_col)
+        dst%initial_hard_rank(dst_col) = src%initial_hard_rank(src_col)
+        dst%reject_reason(dst_col)= src%reject_reason(src_col)
+        dst%entropy(dst_col)      = src%entropy(src_col)
+        dst%initial_entropy(dst_col) = src%initial_entropy(src_col)
+        dst%norm_entropy(dst_col) = src%norm_entropy(src_col)
+        dst%winner_weight(dst_col)= src%winner_weight(src_col)
+        dst%expected_loss(dst_col)= src%expected_loss(src_col)
+        dst%initial_expected_loss(dst_col) = src%initial_expected_loss(src_col)
+        dst%loss_delta(dst_col)   = src%loss_delta(src_col)
+        dst%particle_weight(dst_col) = src%particle_weight(src_col)
+        dst%base_shift(:,dst_col) = src%base_shift(:,src_col)
+        dst%accepted(dst_col)     = src%accepted(src_col)
+    end subroutine copy_candidate_column
+
+    logical function candidates_equal( lhs, rhs, tol ) result( equal )
+        type(joint2D_candidate), intent(in) :: lhs, rhs
+        real,                    intent(in) :: tol
+        equal = lhs%pind == rhs%pind .and. lhs%icls == rhs%icls .and. lhs%inpl == rhs%inpl .and.&
+            &lhs%rank == rhs%rank .and. abs(lhs%dist - rhs%dist) <= tol .and.&
+            &abs(lhs%logit - rhs%logit) <= tol .and. abs(lhs%weight - rhs%weight) <= tol .and.&
+            &abs(lhs%eff_weight - rhs%eff_weight) <= tol .and. abs(lhs%x - rhs%x) <= tol .and.&
+            &abs(lhs%y - rhs%y) <= tol .and. (lhs%has_sh .eqv. rhs%has_sh) .and.&
+            &(lhs%hard .eqv. rhs%hard)
+    end function candidates_equal
+
+    subroutine mix_candidate( h, cand )
+        integer(kind=8),        intent(inout) :: h
+        type(joint2D_candidate),intent(in)    :: cand
+        call mix_int64(h, cand%pind)
+        call mix_int64(h, cand%icls)
+        call mix_int64(h, cand%inpl)
+        call mix_int64(h, cand%rank)
+        call mix_real64(h, cand%dist)
+        call mix_real64(h, cand%logit)
+        call mix_real64(h, cand%weight)
+        call mix_real64(h, cand%eff_weight)
+        call mix_real64(h, cand%x)
+        call mix_real64(h, cand%y)
+        if( cand%has_sh )then
+            call mix_int64(h, 1)
+        else
+            call mix_int64(h, 0)
+        endif
+        if( cand%hard )then
+            call mix_int64(h, 1)
+        else
+            call mix_int64(h, 0)
+        endif
+    end subroutine mix_candidate
+
+    subroutine mix_int64( h, val )
+        integer(kind=8), intent(inout) :: h
+        integer,         intent(in)    :: val
+        h = modulo(h * 1103515245_8 + int(val, kind=8) + 12345_8, 2147483647_8)
+    end subroutine mix_int64
+
+    subroutine mix_real64( h, val )
+        integer(kind=8), intent(inout) :: h
+        real,            intent(in)    :: val
+        real(kind=8) :: clipped
+        if( val /= val )then
+            call mix_int64(h, -214748)
+            return
+        endif
+        clipped = max(-1.0e6_8, min(1.0e6_8, real(val, kind=8)))
+        call mix_int64(h, int(nint(clipped * 1000.0_8)))
+    end subroutine mix_real64
+
+    integer function count_nonfinite_records( self ) result( nbad )
+        class(joint2D_candidate_table), intent(in) :: self
+        integer :: iptcl, irank
+
+        nbad = 0
+        do iptcl = 1, size(self%ncand)
+            if( .not. finite_real(self%entropy(iptcl)) ) nbad = nbad + 1
+            if( .not. finite_real(self%winner_weight(iptcl)) ) nbad = nbad + 1
+            if( .not. finite_real(self%expected_loss(iptcl)) ) nbad = nbad + 1
+            do irank = 1, self%ncand(iptcl)
+                if( .not. finite_real(self%cand(irank,iptcl)%dist) ) nbad = nbad + 1
+                if( .not. finite_real(self%cand(irank,iptcl)%logit) ) nbad = nbad + 1
+                if( .not. finite_real(self%cand(irank,iptcl)%weight) ) nbad = nbad + 1
+                if( .not. finite_real(self%cand(irank,iptcl)%eff_weight) ) nbad = nbad + 1
+            end do
+        end do
+    end function count_nonfinite_records
 
 end module simple_strategy2D_joint_sgd_candidates
