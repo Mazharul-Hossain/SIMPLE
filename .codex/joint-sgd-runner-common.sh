@@ -50,24 +50,47 @@ find_simple_exec_dir() {
 setup_simple_path() {
   simple_exec_dir=""
   simple_install_root=""
+  local -a candidate_dirs=()
 
   if [[ -d /ucrt64/bin ]]; then
     prepend_path /ucrt64/bin
   fi
 
+  if [[ -n "${SIMPLE_PATH:-}" ]]; then
+    prepend_path "$SIMPLE_PATH/bin"
+    prepend_path "$SIMPLE_PATH/scripts"
+    candidate_dirs+=(
+      "$SIMPLE_PATH/bin"
+      "$SIMPLE_PATH"
+      "$SIMPLE_PATH/build-debug/bin"
+      "$SIMPLE_PATH/build-debug"
+      "$SIMPLE_PATH/build/bin"
+      "$SIMPLE_PATH/build"
+    )
+  fi
+
   if [[ -n "${SIMPLE_EXEC_DIR:-}" ]]; then
     find_simple_exec_dir "$SIMPLE_EXEC_DIR" || fail "SIMPLE_EXEC_DIR does not contain simple_exec: $SIMPLE_EXEC_DIR"
   else
-    for candidate_dir in \
+    candidate_dirs+=(
       "$build_copy/build-debug/bin" \
       "$build_copy/build-debug" \
+      "$build_copy/build/bin" \
+      "$build_copy/build" \
       "$simple_home/build-debug/bin" \
       "$simple_home/build-debug" \
       "$simple_home/build-release/bin" \
       "$simple_home/build-release" \
       "$simple_home/bin" \
       "$simple_home/build/bin" \
-      "$simple_home/build"
+      "$simple_home/build" \
+      "$projects_home/SIMPLE/build-debug/bin" \
+      "$projects_home/SIMPLE/build-debug" \
+      "$projects_home/SIMPLE/build/bin" \
+      "$projects_home/SIMPLE/build"
+    )
+
+    for candidate_dir in "${candidate_dirs[@]}"
     do
       if find_simple_exec_dir "$candidate_dir"; then
         break
@@ -77,6 +100,9 @@ setup_simple_path() {
 
   if [[ -n "$simple_install_root" ]]; then
     export SIMPLE_PATH="${SIMPLE_PATH:-$simple_install_root}"
+    prepend_path "$simple_exec_dir"
+    prepend_path "$simple_install_root/bin"
+    prepend_path "$simple_install_root/scripts"
     prepend_path "$SIMPLE_PATH/bin"
     prepend_path "$SIMPLE_PATH/scripts"
   elif [[ -n "$simple_exec_dir" ]]; then
@@ -209,6 +235,11 @@ print_common_check() {
   echo "SIMPLE home: $simple_home"
   echo "Projects home: $projects_home"
   echo "Build copy: $build_copy"
+  if [[ -e "$build_copy" ]]; then
+    echo "Build copy exists: yes"
+  else
+    echo "Build copy exists: no"
+  fi
   echo "Build type: $cmake_build_type"
   echo "Build jobs: $build_jobs"
   echo "SIMPLE path: ${SIMPLE_PATH:-not set}"
@@ -217,7 +248,13 @@ print_common_check() {
   else
     echo "Testing home: missing ($testing_home)"
   fi
+  if [[ -n "${simple_exec_dir:-}" ]]; then
+    echo "Discovered simple_exec dir: $simple_exec_dir"
+  fi
   echo "simple_exec: ${simple_exec_path:-not found}"
+  if [[ -z "$simple_exec_path" ]]; then
+    echo "simple_exec hint: run --prepare-build, or set SIMPLE_EXEC_DIR to the directory containing simple_exec"
+  fi
   echo "Project found: $project_found"
   [[ "$project_found" == "yes" ]] && echo "Project: $project_path"
   echo "Betagal NAS data: $data_hint ($betagal_data)"
