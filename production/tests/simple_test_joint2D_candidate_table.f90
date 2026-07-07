@@ -10,10 +10,11 @@ character(len=*), parameter :: ROUNDTRIP_FNAME = 'joint2D_candidate_table_test.d
 type(ptcl_ref) :: loc_tab(5,4)
 type(ptcl_ref) :: assgn_map(4)
 type(ptcl_ref), allocatable :: batch_refs(:,:)
-type(joint2D_candidate_table) :: tab, tab_roundtrip, tab_shift
+type(joint2D_candidate_table) :: tab, tab_roundtrip, tab_shift, tab_inpl
 real, allocatable :: batch_weights(:,:)
 integer, allocatable :: batch_ncands(:)
 integer :: i
+integer :: old_inpl
 real    :: base_shifts(2,4), weight_sum, expected_weight
 real    :: p4_initial_weight, p4_initial_loss, p4_initial_entropy
 real    :: old_shift(2), new_shift(2), step_norm
@@ -103,6 +104,31 @@ call require_close(sum(batch_weights(1:batch_ncands(4),4)), 1.0, 1.0e-6, 'two-ca
 call require_true(all(batch_weights(1:batch_ncands(4),4) > 0.0), 'two-candidate weights are positive')
 call require_true(all(batch_weights(1:batch_ncands(4),4) < 1.0), 'two-candidate weights remain fractional')
 
+call tab%apply_inpl_refinement(1, 3, 4, 0.5, 1.0, 0.1, old_inpl=old_inpl, updated=updated)
+call require_true(updated, 'in-plane refinement reports update')
+call require_true(old_inpl == 15, 'in-plane refinement reports old in-plane index')
+call require_true(tab%cand(3,1)%inpl == 4, 'in-plane refinement updates in-plane index')
+call require_close(tab%cand(3,1)%dist, 0.5, 1.0e-6, 'in-plane refinement updates candidate distance')
+call require_close(tab%cand(3,1)%logit, -0.5, 1.0e-6, 'in-plane refinement resets logit from refined distance')
+call require_true(tab%hard_rank(1) == 3, 'in-plane refinement can change hard winner')
+call require_true(tab%cand(3,1)%weight > tab%cand(1,1)%weight,&
+    &'in-plane refinement increases weight on improved candidate')
+call tab%apply_reliability(2, 1.0)
+call require_true(tab%accepted(1), 'in-plane-refined particle remains accepted after reliability gates')
+
+call tab_inpl%build_from_loc_tab(loc_tab, 3, 1.0, 0.1)
+call tab_inpl%set_base_shifts(base_shifts)
+call tab_inpl%apply_inpl_refinement(4, 1, 23, 0.1, 1.0, 0.1, old_inpl=old_inpl, updated=updated)
+call require_true(updated, 'two-candidate in-plane refinement reports update')
+call require_true(old_inpl == 22, 'two-candidate in-plane refinement reports old in-plane index')
+call require_true(tab_inpl%hard_rank(4) == 1, 'two-candidate in-plane refinement keeps best hard rank')
+call require_true(tab_inpl%cand(1,4)%weight > 0.95, 'two-candidate in-plane refinement sharpens weight')
+call tab_inpl%apply_reliability(2, 0.50)
+call require_true(tab_inpl%accepted(4), 'reliability gates use post-in-plane-refinement entropy')
+call tab_inpl%apply_inpl_refinement(1, 1, 20, 1.0, 1.0, 0.1, old_inpl=old_inpl, updated=updated)
+call require_true(tab_inpl%hard_rank(1) == 1, 'equal-distance in-plane refinement remains deterministic')
+call tab_inpl%kill
+
 call del_file(ROUNDTRIP_FNAME)
 call tab%write_table(ROUNDTRIP_FNAME)
 call tab_roundtrip%read_table(ROUNDTRIP_FNAME)
@@ -119,6 +145,11 @@ call require_close(tab_roundtrip%initial_expected_loss(4), tab%initial_expected_
 call require_close(tab_roundtrip%loss_delta(4), tab%loss_delta(4), 1.0e-6,&
     &'roundtrip preserves latent optimizer diagnostics')
 call require_true(tab_roundtrip%hard_rank(1) == tab%hard_rank(1), 'roundtrip preserves final hard rank')
+call require_true(tab_roundtrip%cand(3,1)%inpl == 4, 'roundtrip preserves refined in-plane index')
+call require_close(tab_roundtrip%cand(3,1)%logit, tab%cand(3,1)%logit, 1.0e-6,&
+    &'roundtrip preserves refined in-plane logit')
+call require_close(tab_roundtrip%cand(3,1)%weight, tab%cand(3,1)%weight, 1.0e-6,&
+    &'roundtrip preserves refined in-plane weight')
 call tab_roundtrip%kill
 call del_file(ROUNDTRIP_FNAME)
 
@@ -174,6 +205,12 @@ call require_close(new_shift(1), 2.0, 1.0e-6, 'topk=1 shift refinement damps x')
 call require_close(new_shift(2), -2.0, 1.0e-6, 'topk=1 shift refinement damps y')
 call require_close(tab%cand(1,1)%weight, 1.0, 1.0e-6, 'topk=1 shift refinement keeps unit weight')
 call require_true(tab%hard_rank(1) == 1, 'topk=1 shift refinement keeps hard rank one')
+call tab%apply_inpl_refinement(1, 1, 7, 0.125, 1.0, 0.1, old_inpl=old_inpl, updated=updated)
+call require_true(updated, 'topk=1 in-plane refinement reports update')
+call require_true(old_inpl == 20, 'topk=1 in-plane refinement reports old in-plane index')
+call require_true(tab%cand(1,1)%inpl == 7, 'topk=1 in-plane refinement updates in-plane index')
+call require_close(tab%cand(1,1)%weight, 1.0, 1.0e-6, 'topk=1 in-plane refinement keeps unit weight')
+call require_true(tab%hard_rank(1) == 1, 'topk=1 in-plane refinement keeps hard rank one')
 
 call tab%write_diag('unit-test')
 call tab%kill

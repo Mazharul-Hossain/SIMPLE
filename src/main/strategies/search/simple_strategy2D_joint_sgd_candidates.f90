@@ -51,6 +51,7 @@ contains
     procedure :: build_from_loc_tab
     procedure :: set_base_shifts
     procedure :: optimize_logits
+    procedure :: apply_inpl_refinement
     procedure :: apply_shift_refinement
     procedure :: apply_reliability
     procedure :: write_hard_assignments
@@ -150,6 +151,47 @@ contains
             endif
         end do
     end subroutine optimize_logits
+
+    subroutine apply_inpl_refinement( self, iptcl, irank, new_inpl, refined_dist, tau, tau_min, old_inpl, updated )
+        class(joint2D_candidate_table), intent(inout)        :: self
+        integer,                        intent(in)           :: iptcl
+        integer,                        intent(in)           :: irank
+        integer,                        intent(in)           :: new_inpl
+        real,                           intent(in)           :: refined_dist
+        real,                           intent(in)           :: tau
+        real,                           intent(in)           :: tau_min
+        integer,              optional, intent(out)          :: old_inpl
+        logical,              optional, intent(out)          :: updated
+        integer :: nc, prev_inpl
+        real    :: tau_eff
+
+        call require_allocated(self, 'in-plane refinement requested before build/read')
+        if( present(old_inpl) ) old_inpl = 0
+        if( present(updated)  ) updated  = .false.
+        if( iptcl < 1 .or. iptcl > size(self%ncand) )then
+            THROW_HARD('joint2D_candidate_table: in-plane refinement particle index out of range')
+        endif
+        nc = self%ncand(iptcl)
+        if( irank < 1 .or. irank > nc )then
+            THROW_HARD('joint2D_candidate_table: in-plane refinement candidate rank out of range')
+        endif
+        if( new_inpl < 1 ) THROW_HARD('joint2D_candidate_table: refined in-plane index must be > 0')
+        tau_eff = max(tau, tau_min)
+        if( tau_eff <= 0. ) THROW_HARD('joint2D_candidate_table: tau_eff must be > 0')
+        if( .not. finite_real(refined_dist) )then
+            THROW_HARD('joint2D_candidate_table: nonfinite in-plane-refinement distance')
+        endif
+
+        prev_inpl = self%cand(irank,iptcl)%inpl
+        self%cand(irank,iptcl)%inpl  = new_inpl
+        self%cand(irank,iptcl)%dist  = refined_dist
+        self%cand(irank,iptcl)%logit = -refined_dist
+        call refresh_particle(self, iptcl, tau_eff)
+        self%loss_delta(iptcl) = self%initial_expected_loss(iptcl) - self%expected_loss(iptcl)
+
+        if( present(old_inpl) ) old_inpl = prev_inpl
+        if( present(updated)  ) updated  = .true.
+    end subroutine apply_inpl_refinement
 
     subroutine apply_shift_refinement( self, iptcl, irank, opt_shift, refined_dist, eta_shift, tau, tau_min,&
             &old_shift, new_shift, step_norm, updated )

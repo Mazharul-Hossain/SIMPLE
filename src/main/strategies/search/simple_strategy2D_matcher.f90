@@ -333,6 +333,150 @@ contains
                 &joint_topk_weights, joint_topk_ncands)
         end subroutine export_joint_topk_for_batch
 
+        subroutine refine_joint_topk_inpls_for_batch()
+            real, allocatable :: inpl_scores(:,:), inpl_dists(:,:)
+            integer :: cand_count_t(nthr_glob), changed_t(nthr_glob), nonfinite_t(nthr_glob)
+            integer :: hard_churn_t(nthr_glob), negative_delta_t(nthr_glob), invalid_t(nthr_glob)
+            real    :: loss_delta_sum_t(nthr_glob), loss_delta_max_t(nthr_glob)
+            real    :: angle_delta_sum_t(nthr_glob), angle_delta_max_t(nthr_glob)
+            integer :: iloc, iptcl_map, iptcl, irank, ithr, nc, nrots, old_inpl, new_inpl
+            integer :: accepted_batch, cand_batch, hard_before, hard_after
+            integer :: nonfinite_total, invalid_total, changed_total, cand_total, hard_churn_total, negative_total
+            real    :: cand_shift(2), score_shift(2), rotmat(2,2), refined_dist, old_dist, loss_delta
+            real    :: mean_loss_delta, mean_angle_delta, angle_delta
+            logical :: updated
+
+            if( .not. ctrl%l_joint_topk ) return
+            if( .not. allocated(joint_topk_candidates%ncand) )then
+                THROW_HARD('joint 2D in-plane refinement requested before top-K table was read')
+            endif
+            nrots = b_ptr%pftc%get_nrots()
+            if( nrots < 1 ) THROW_HARD('joint 2D in-plane refinement requires initialized PFTC rotations')
+            accepted_batch = 0
+            cand_batch     = 0
+            do iptcl_map = batch_start, batch_end
+                if( .not. joint_topk_candidates%accepted(iptcl_map) ) cycle
+                accepted_batch = accepted_batch + 1
+                cand_batch     = cand_batch + joint_topk_candidates%ncand(iptcl_map)
+            end do
+            if( cand_batch < 1 )then
+                write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
+                    &'>>> JOINT2D SGD INPL:', 'batch=', ibatch, 'accepted=', accepted_batch,&
+                    &'candidates=', cand_batch, 'changed=', 0
+                return
+            endif
+
+            allocate(inpl_scores(nrots,nthr_glob), inpl_dists(nrots,nthr_glob), source=0.)
+            cand_count_t      = 0
+            changed_t         = 0
+            nonfinite_t       = 0
+            hard_churn_t      = 0
+            negative_delta_t  = 0
+            invalid_t         = 0
+            loss_delta_sum_t  = 0.
+            loss_delta_max_t  = 0.
+            angle_delta_sum_t = 0.
+            angle_delta_max_t = 0.
+            !$omp parallel do private(iloc,iptcl_map,iptcl,irank,ithr,nc,hard_before,hard_after,old_inpl,new_inpl)&
+            !$omp private(cand_shift,score_shift,rotmat,refined_dist,old_dist,loss_delta,angle_delta,updated)&
+            !$omp default(shared) schedule(static) proc_bind(close)
+            do iloc = 1, batchsz
+                ithr = omp_get_thread_num() + 1
+                iptcl_map = batch_start + iloc - 1
+                iptcl     = pinds(iptcl_map)
+                if( .not. joint_topk_candidates%accepted(iptcl_map) ) cycle
+                nc = joint_topk_candidates%ncand(iptcl_map)
+                if( nc < 1 ) cycle
+                hard_before = joint_topk_candidates%hard_rank(iptcl_map)
+                do irank = 1, nc
+                    cand_count_t(ithr) = cand_count_t(ithr) + 1
+                    old_inpl = joint_topk_candidates%cand(irank,iptcl_map)%inpl
+                    if( joint_topk_candidates%cand(irank,iptcl_map)%icls < 1 .or.&
+                        &old_inpl < 1 .or. old_inpl > nrots )then
+                        invalid_t(ithr) = invalid_t(ithr) + 1
+                        cycle
+                    endif
+                    old_dist = joint_topk_candidates%cand(irank,iptcl_map)%dist
+                    cand_shift = 0.
+                    if( p_ptr%l_doshift .and. joint_topk_candidates%cand(irank,iptcl_map)%has_sh )then
+                        cand_shift = [joint_topk_candidates%cand(irank,iptcl_map)%x,&
+                            &joint_topk_candidates%cand(irank,iptcl_map)%y]
+                    endif
+                    score_shift = 0.
+                    if( p_ptr%l_doshift .and. joint_topk_candidates%cand(irank,iptcl_map)%has_sh )then
+                        call rotmat2d(b_ptr%pftc%get_rot(old_inpl), rotmat)
+                        score_shift = matmul(cand_shift, transpose(rotmat))
+                    endif
+                    call b_ptr%pftc%gen_objfun_vals(joint_topk_candidates%cand(irank,iptcl_map)%icls,&
+                        &iptcl, score_shift, inpl_scores(:,ithr))
+                    inpl_dists(:,ithr) = eulprob_dist_switch(inpl_scores(:,ithr), p_ptr%cc_objfun)
+                    if( any(inpl_scores(:,ithr) /= inpl_scores(:,ithr)) .or.&
+                        &any(abs(inpl_scores(:,ithr)) >= huge(1.0) / 2.0) .or.&
+                        &any(inpl_dists(:,ithr) /= inpl_dists(:,ithr)) .or.&
+                        &any(abs(inpl_dists(:,ithr)) >= huge(1.0) / 2.0) )then
+                        nonfinite_t(ithr) = nonfinite_t(ithr) + 1
+                        cycle
+                    endif
+                    new_inpl = minloc(inpl_dists(:,ithr), dim=1)
+                    if( new_inpl < 1 .or. new_inpl > nrots )then
+                        invalid_t(ithr) = invalid_t(ithr) + 1
+                        cycle
+                    endif
+                    refined_dist = inpl_dists(new_inpl,ithr)
+                    angle_delta  = inpl_angle_delta(old_inpl, new_inpl)
+                    loss_delta   = old_dist - refined_dist
+                    call joint_topk_candidates%apply_inpl_refinement(iptcl_map, irank, new_inpl, refined_dist,&
+                        &p_ptr%sgd_tau, p_ptr%sgd_tau_min, old_inpl=old_inpl, updated=updated)
+                    if( updated )then
+                        if( new_inpl /= old_inpl ) changed_t(ithr) = changed_t(ithr) + 1
+                        if( loss_delta < 0. ) negative_delta_t(ithr) = negative_delta_t(ithr) + 1
+                        loss_delta_sum_t(ithr)  = loss_delta_sum_t(ithr) + loss_delta
+                        loss_delta_max_t(ithr)  = max(loss_delta_max_t(ithr), loss_delta)
+                        angle_delta_sum_t(ithr) = angle_delta_sum_t(ithr) + angle_delta
+                        angle_delta_max_t(ithr) = max(angle_delta_max_t(ithr), angle_delta)
+                    endif
+                end do
+                hard_after = joint_topk_candidates%hard_rank(iptcl_map)
+                if( hard_before > 0 .and. hard_after > 0 .and. hard_before /= hard_after )then
+                    hard_churn_t(ithr) = hard_churn_t(ithr) + 1
+                endif
+            end do
+            !$omp end parallel do
+
+            cand_total       = sum(cand_count_t)
+            changed_total    = sum(changed_t)
+            nonfinite_total  = sum(nonfinite_t)
+            invalid_total    = sum(invalid_t)
+            hard_churn_total = sum(hard_churn_t)
+            negative_total   = sum(negative_delta_t)
+            mean_loss_delta  = 0.
+            mean_angle_delta = 0.
+            if( cand_total > 0 )then
+                mean_loss_delta  = sum(loss_delta_sum_t) / real(cand_total)
+                mean_angle_delta = sum(angle_delta_sum_t) / real(cand_total)
+            endif
+            deallocate(inpl_scores, inpl_dists)
+            write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
+                &'>>> JOINT2D SGD INPL:', 'batch=', ibatch, 'accepted=', accepted_batch,&
+                &'candidates=', cand_total, 'changed=', changed_total, 'invalid=', invalid_total,&
+                &'nonfinite=', nonfinite_total, 'negative_delta=', negative_total
+            write(logfhandle,'(A,1X,A,ES12.4,1X,A,ES12.4)')&
+                &'>>> JOINT2D SGD INPL LOSSES:', 'loss_delta_mean=', mean_loss_delta,&
+                &'loss_delta_max=', maxval(loss_delta_max_t)
+            write(logfhandle,'(A,1X,A,I0,1X,A,ES12.4,1X,A,ES12.4)')&
+                &'>>> JOINT2D SGD INPL HARD:', 'winner_churn=', hard_churn_total,&
+                &'angle_delta_mean=', mean_angle_delta, 'angle_delta_max=', maxval(angle_delta_max_t)
+            if( nonfinite_total > 0 )then
+                THROW_HARD('joint 2D in-plane refinement produced nonfinite diagnostics')
+            endif
+            call joint_topk_candidates%apply_reliability(p_ptr%sgd_cavg_min_cands, p_ptr%sgd_cavg_max_entropy)
+            if( count(joint_topk_candidates%accepted) == 0 )then
+                THROW_HARD('joint 2D in-plane refinement left zero accepted top-K particles')
+            endif
+            call sync_joint_hard_assignments_for_batch()
+            call joint_topk_candidates%write_diag('cluster2D inpl-refined')
+        end subroutine refine_joint_topk_inpls_for_batch
+
         subroutine refine_joint_topk_shifts_for_batch()
             type(pftc_shsrch_grad) :: grad_shsrch_obj(nthr_glob)
             integer :: cand_count_t(nthr_glob), refined_t(nthr_glob), invalid_t(nthr_glob)
@@ -599,6 +743,7 @@ contains
 
         subroutine restore_class_averages_for_batch()
             integer(timer_int_kind) :: t_update
+            call refine_joint_topk_inpls_for_batch()
             call refine_joint_topk_shifts_for_batch()
             call export_joint_topk_for_batch()
             call cavger_transf_oridat(batchsz, pinds(batch_start:batch_end), updated_only=.true.)
@@ -700,6 +845,14 @@ contains
             real, intent(in) :: val
             is_finite = (val == val) .and. (abs(val) < huge(val) / 2.0)
         end function finite_joint_real
+
+        real function inpl_angle_delta( old_inpl, new_inpl ) result( delta )
+            integer, intent(in) :: old_inpl, new_inpl
+            delta = 0.
+            if( old_inpl < 1 .or. new_inpl < 1 ) return
+            delta = abs(b_ptr%pftc%get_rot(new_inpl) - b_ptr%pftc%get_rot(old_inpl))
+            if( delta > 180. ) delta = 360. - delta
+        end function inpl_angle_delta
 
         subroutine maybe_write_bench(which_iter)
             integer, intent(in) :: which_iter
