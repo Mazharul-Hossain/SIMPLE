@@ -10,12 +10,14 @@ character(len=*), parameter :: ROUNDTRIP_FNAME = 'joint2D_candidate_table_test.d
 type(ptcl_ref) :: loc_tab(5,4)
 type(ptcl_ref) :: assgn_map(4)
 type(ptcl_ref), allocatable :: batch_refs(:,:)
-type(joint2D_candidate_table) :: tab, tab_roundtrip
+type(joint2D_candidate_table) :: tab, tab_roundtrip, tab_shift
 real, allocatable :: batch_weights(:,:)
 integer, allocatable :: batch_ncands(:)
 integer :: i
 real    :: base_shifts(2,4), weight_sum, expected_weight
 real    :: p4_initial_weight, p4_initial_loss, p4_initial_entropy
+real    :: old_shift(2), new_shift(2), step_norm
+logical :: updated
 
 call init_loc_tab(loc_tab)
 call init_base_shifts(base_shifts)
@@ -120,6 +122,35 @@ call require_true(tab_roundtrip%hard_rank(1) == tab%hard_rank(1), 'roundtrip pre
 call tab_roundtrip%kill
 call del_file(ROUNDTRIP_FNAME)
 
+call tab_shift%build_from_loc_tab(loc_tab, 3, 1.0, 0.1)
+call tab_shift%set_base_shifts(base_shifts)
+call tab_shift%apply_shift_refinement(1, 3, [5.5, 2.0], 0.5, 0.25, 1.0, 0.1,&
+    &old_shift=old_shift, new_shift=new_shift, step_norm=step_norm, updated=updated)
+call require_true(updated, 'shift refinement reports an updated candidate')
+call require_close(old_shift(1), 1.5, 1.0e-6, 'shift refinement reports old x')
+call require_close(old_shift(2), -2.0, 1.0e-6, 'shift refinement reports old y')
+call require_close(new_shift(1), 2.5, 1.0e-6, 'shift refinement damps x toward optimizer shift')
+call require_close(new_shift(2), -1.0, 1.0e-6, 'shift refinement damps y toward optimizer shift')
+call require_close(step_norm, sqrt(2.0), 1.0e-6, 'shift refinement reports damped step norm')
+call require_close(tab_shift%cand(3,1)%dist, 0.5, 1.0e-6, 'shift refinement updates candidate distance')
+call require_close(tab_shift%cand(3,1)%logit, -0.5, 1.0e-6, 'shift refinement resets logit from refined distance')
+call require_true(tab_shift%hard_rank(1) == 3, 'shift refinement can change hard winner')
+call require_true(tab_shift%cand(3,1)%weight > tab_shift%cand(1,1)%weight,&
+    &'shift refinement increases weight on improved candidate')
+call require_true(tab_shift%loss_delta(1) > 0.0, 'shift refinement records expected-loss improvement')
+call tab_shift%apply_reliability(2, 1.0)
+call require_true(tab_shift%accepted(1), 'shift-refined particle remains accepted after reliability gates')
+call tab_shift%export_batch(1, 1, batch_refs, batch_weights, batch_ncands)
+call require_close(batch_refs(3,1)%x, 12.5, 1.0e-6, 'shift-refined export adds damped x to base shift')
+call require_close(batch_refs(3,1)%y, 19.0, 1.0e-6, 'shift-refined export adds damped y to base shift')
+call tab_shift%apply_shift_refinement(4, 2, [2.0, 3.0], 3.0, 1.0, 1.0, 0.1,&
+    &old_shift=old_shift, new_shift=new_shift, step_norm=step_norm, updated=updated)
+call require_true(updated, 'full-eta shift refinement reports update')
+call require_close(new_shift(1), 2.0, 1.0e-6, 'full-eta shift refinement uses optimizer x')
+call require_close(new_shift(2), 3.0, 1.0e-6, 'full-eta shift refinement uses optimizer y')
+call require_true(tab_shift%hard_rank(4) == 2, 'full-eta shift refinement can change two-candidate winner')
+call tab_shift%kill
+
 call tab%kill
 call tab%build_from_loc_tab(loc_tab, 1, 1.0, 0.1)
 call tab%set_base_shifts(base_shifts)
@@ -136,6 +167,13 @@ call tab%export_batch(1, 4, batch_refs, batch_weights, batch_ncands)
 call require_true(batch_refs(1,1)%icls == assgn_map(1)%icls, 'topk=1 export class equals hard assignment')
 call require_true(batch_refs(1,1)%inpl == assgn_map(1)%inpl, 'topk=1 export in-plane equals hard assignment')
 call require_close(batch_weights(1,1), 1.0, 1.0e-6, 'topk=1 export weight is one')
+call tab%apply_shift_refinement(1, 1, [4.0, -4.0], 0.25, 0.5, 1.0, 0.1,&
+    &old_shift=old_shift, new_shift=new_shift, step_norm=step_norm, updated=updated)
+call require_true(updated, 'topk=1 shift refinement reports update')
+call require_close(new_shift(1), 2.0, 1.0e-6, 'topk=1 shift refinement damps x')
+call require_close(new_shift(2), -2.0, 1.0e-6, 'topk=1 shift refinement damps y')
+call require_close(tab%cand(1,1)%weight, 1.0, 1.0e-6, 'topk=1 shift refinement keeps unit weight')
+call require_true(tab%hard_rank(1) == 1, 'topk=1 shift refinement keeps hard rank one')
 
 call tab%write_diag('unit-test')
 call tab%kill

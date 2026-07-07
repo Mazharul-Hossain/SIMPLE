@@ -27,6 +27,8 @@ use simple_strategy2D_tseries,       only: strategy2D_tseries
 use simple_strategy2D_joint_sgd,     only: cluster2D_joint_sgd_exec
 use simple_strategy2D_joint_sgd_candidates, only: joint2D_candidate_table, JOINT2D_CANDIDATES_FNAME
 use simple_eul_prob_tab2D,           only: eul_prob_tab2D
+use simple_eul_prob_tab_utils,       only: eulprob_corr_switch, eulprob_dist_switch
+use simple_pftc_shsrch_grad,         only: pftc_shsrch_grad
 implicit none
 
 public :: cluster2D_exec
@@ -331,6 +333,210 @@ contains
                 &joint_topk_weights, joint_topk_ncands)
         end subroutine export_joint_topk_for_batch
 
+        subroutine refine_joint_topk_shifts_for_batch()
+            type(pftc_shsrch_grad) :: grad_shsrch_obj(nthr_glob)
+            integer :: cand_count_t(nthr_glob), refined_t(nthr_glob), invalid_t(nthr_glob)
+            integer :: no_better_t(nthr_glob), nonfinite_t(nthr_glob), hard_churn_t(nthr_glob)
+            real    :: step_sum_t(nthr_glob), step_max_t(nthr_glob), loss_delta_sum_t(nthr_glob)
+            real    :: loss_delta_max_t(nthr_glob), winner_shift_sum_t(nthr_glob), winner_shift_max_t(nthr_glob)
+            real    :: lims(2,2), lims_init(2,2), mean_step, mean_loss_delta, mean_winner_shift
+            integer :: iloc, iptcl_map, iptcl, irank, ithr, nc, irot, hard_before, hard_after
+            integer :: accepted_batch, cand_batch, refined_total, nonfinite_total, ithr_init
+            integer :: invalid_total, no_better_total, hard_churn_total
+            real    :: cxy(3), old_shift(2), old_shift_opt(2), opt_shift(2), damped_shift(2)
+            real    :: score_shift(2), rotmat(2,2), refined_corr, refined_dist, old_dist, step
+            real    :: loss_delta, winner_shift(2)
+            logical :: updated
+
+            if( .not. ctrl%l_joint_topk ) return
+            if( .not. allocated(joint_topk_candidates%ncand) )then
+                THROW_HARD('joint 2D shift refinement requested before top-K table was read')
+            endif
+            accepted_batch = 0
+            cand_batch     = 0
+            do iptcl_map = batch_start, batch_end
+                if( .not. joint_topk_candidates%accepted(iptcl_map) ) cycle
+                accepted_batch = accepted_batch + 1
+                cand_batch     = cand_batch + joint_topk_candidates%ncand(iptcl_map)
+            end do
+            if( cand_batch < 1 )then
+                write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
+                    &'>>> JOINT2D SGD SHIFT:', 'batch=', ibatch, 'accepted=', accepted_batch,&
+                    &'candidates=', cand_batch, 'refined=', 0
+                return
+            endif
+            if( .not. p_ptr%l_doshift )then
+                write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
+                    &'>>> JOINT2D SGD SHIFT:', 'batch=', ibatch, 'accepted=', accepted_batch,&
+                    &'candidates=', cand_batch, 'refined=', 0
+                write(logfhandle,'(A,1X,A)') '>>> JOINT2D SGD SHIFT HARD:', 'shift search disabled'
+                return
+            endif
+
+            lims(:,1)      = -p_ptr%trs
+            lims(:,2)      =  p_ptr%trs
+            lims_init(:,1) = -SHC_INPL_TRSHWDTH
+            lims_init(:,2) =  SHC_INPL_TRSHWDTH
+            do ithr_init = 1, nthr_glob
+                call grad_shsrch_obj(ithr_init)%new(b_ptr, lims, lims_init=lims_init,&
+                    &maxits=p_ptr%maxits_sh, opt_angle=.false.)
+            end do
+
+            cand_count_t       = 0
+            refined_t          = 0
+            invalid_t          = 0
+            no_better_t        = 0
+            nonfinite_t        = 0
+            hard_churn_t       = 0
+            step_sum_t         = 0.
+            step_max_t         = 0.
+            loss_delta_sum_t   = 0.
+            loss_delta_max_t   = 0.
+            winner_shift_sum_t = 0.
+            winner_shift_max_t = 0.
+            !$omp parallel do private(iloc,iptcl_map,iptcl,irank,ithr,nc,irot,hard_before,hard_after,cxy)&
+            !$omp private(old_shift,old_shift_opt,opt_shift,damped_shift,score_shift,rotmat)&
+            !$omp private(refined_corr,refined_dist,old_dist,step,loss_delta,winner_shift,updated)&
+            !$omp default(shared) schedule(static) proc_bind(close)
+            do iloc = 1, batchsz
+                ithr = omp_get_thread_num() + 1
+                iptcl_map = batch_start + iloc - 1
+                iptcl     = pinds(iptcl_map)
+                if( .not. joint_topk_candidates%accepted(iptcl_map) ) cycle
+                nc = joint_topk_candidates%ncand(iptcl_map)
+                if( nc < 1 ) cycle
+                hard_before = joint_topk_candidates%hard_rank(iptcl_map)
+                do irank = 1, nc
+                    cand_count_t(ithr) = cand_count_t(ithr) + 1
+                    if( joint_topk_candidates%cand(irank,iptcl_map)%icls < 1 .or.&
+                        &joint_topk_candidates%cand(irank,iptcl_map)%inpl < 1 )then
+                        invalid_t(ithr) = invalid_t(ithr) + 1
+                        cycle
+                    endif
+                    irot      = joint_topk_candidates%cand(irank,iptcl_map)%inpl
+                    old_dist  = joint_topk_candidates%cand(irank,iptcl_map)%dist
+                    old_shift = 0.
+                    if( joint_topk_candidates%cand(irank,iptcl_map)%has_sh )then
+                        old_shift = [joint_topk_candidates%cand(irank,iptcl_map)%x,&
+                            &joint_topk_candidates%cand(irank,iptcl_map)%y]
+                    endif
+                    call rotmat2d(b_ptr%pftc%get_rot(irot), rotmat)
+                    old_shift_opt = matmul(old_shift, transpose(rotmat))
+                    call grad_shsrch_obj(ithr)%set_indices(joint_topk_candidates%cand(irank,iptcl_map)%icls, iptcl)
+                    cxy = grad_shsrch_obj(ithr)%minimize(irot=irot, sh_rot=.true., xy_in=old_shift_opt)
+                    if( irot <= 0 )then
+                        no_better_t(ithr) = no_better_t(ithr) + 1
+                        cycle
+                    endif
+                    opt_shift    = cxy(2:3)
+                    damped_shift = old_shift + p_ptr%sgd_eta_shift * (opt_shift - old_shift)
+                    score_shift  = matmul(damped_shift, transpose(rotmat))
+                    refined_corr = real(b_ptr%pftc%gen_corr_for_rot_8(&
+                        &joint_topk_candidates%cand(irank,iptcl_map)%icls, iptcl, real(score_shift,dp), irot))
+                    refined_dist = eulprob_dist_switch(refined_corr, p_ptr%cc_objfun)
+                    if( .not. finite_joint_real(refined_corr) .or. .not. finite_joint_real(refined_dist) .or.&
+                        &.not. finite_joint_real(opt_shift(1)) .or. .not. finite_joint_real(opt_shift(2)) )then
+                        nonfinite_t(ithr) = nonfinite_t(ithr) + 1
+                        cycle
+                    endif
+                    call joint_topk_candidates%apply_shift_refinement(iptcl_map, irank, opt_shift, refined_dist,&
+                        &p_ptr%sgd_eta_shift, p_ptr%sgd_tau, p_ptr%sgd_tau_min, old_shift=old_shift,&
+                        &new_shift=damped_shift, step_norm=step, updated=updated)
+                    if( updated )then
+                        refined_t(ithr) = refined_t(ithr) + 1
+                        loss_delta = old_dist - refined_dist
+                        step_sum_t(ithr)       = step_sum_t(ithr) + step
+                        step_max_t(ithr)       = max(step_max_t(ithr), step)
+                        loss_delta_sum_t(ithr) = loss_delta_sum_t(ithr) + loss_delta
+                        loss_delta_max_t(ithr) = max(loss_delta_max_t(ithr), loss_delta)
+                    endif
+                end do
+                hard_after = joint_topk_candidates%hard_rank(iptcl_map)
+                if( hard_before > 0 .and. hard_after > 0 .and. hard_before /= hard_after )then
+                    hard_churn_t(ithr) = hard_churn_t(ithr) + 1
+                endif
+                winner_shift = 0.
+                if( hard_after > 0 )then
+                    if( joint_topk_candidates%cand(hard_after,iptcl_map)%has_sh )then
+                        winner_shift = [joint_topk_candidates%cand(hard_after,iptcl_map)%x,&
+                            &joint_topk_candidates%cand(hard_after,iptcl_map)%y]
+                    endif
+                    winner_shift_sum_t(ithr) = winner_shift_sum_t(ithr) + sqrt(sum(winner_shift * winner_shift))
+                    winner_shift_max_t(ithr) = max(winner_shift_max_t(ithr), sqrt(sum(winner_shift * winner_shift)))
+                endif
+            end do
+            !$omp end parallel do
+
+            do ithr_init = 1, nthr_glob
+                call grad_shsrch_obj(ithr_init)%kill
+            end do
+            refined_total    = sum(refined_t)
+            nonfinite_total  = sum(nonfinite_t)
+            invalid_total    = sum(invalid_t)
+            no_better_total  = sum(no_better_t)
+            hard_churn_total = sum(hard_churn_t)
+            mean_step        = 0.
+            mean_loss_delta  = 0.
+            mean_winner_shift = 0.
+            if( refined_total > 0 )then
+                mean_step       = sum(step_sum_t) / real(refined_total)
+                mean_loss_delta = sum(loss_delta_sum_t) / real(refined_total)
+            endif
+            if( accepted_batch > 0 ) mean_winner_shift = sum(winner_shift_sum_t) / real(accepted_batch)
+            call joint_topk_candidates%apply_reliability(p_ptr%sgd_cavg_min_cands, p_ptr%sgd_cavg_max_entropy)
+            if( count(joint_topk_candidates%accepted) == 0 )then
+                THROW_HARD('joint 2D shift refinement left zero accepted top-K particles')
+            endif
+            call sync_joint_hard_assignments_for_batch()
+            call joint_topk_candidates%write_diag('cluster2D shift-refined')
+            write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
+                &'>>> JOINT2D SGD SHIFT:', 'batch=', ibatch, 'accepted=', accepted_batch,&
+                &'candidates=', sum(cand_count_t), 'refined=', refined_total, 'no_better=', no_better_total,&
+                &'invalid=', invalid_total, 'nonfinite=', nonfinite_total
+            write(logfhandle,'(A,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4)')&
+                &'>>> JOINT2D SGD SHIFT NORMS:', 'step_mean=', mean_step, 'step_max=', maxval(step_max_t),&
+                &'loss_delta_mean=', mean_loss_delta, 'loss_delta_max=', maxval(loss_delta_max_t)
+            write(logfhandle,'(A,1X,A,I0,1X,A,ES12.4,1X,A,ES12.4)')&
+                &'>>> JOINT2D SGD SHIFT HARD:', 'winner_churn=', hard_churn_total,&
+                &'winner_shift_mean=', mean_winner_shift, 'winner_shift_max=', maxval(winner_shift_max_t)
+            if( nonfinite_total > 0 )then
+                THROW_HARD('joint 2D shift refinement produced nonfinite diagnostics')
+            endif
+        end subroutine refine_joint_topk_shifts_for_batch
+
+        subroutine sync_joint_hard_assignments_for_batch()
+            integer :: iloc, iptcl_map, iptcl, hard
+            real    :: cand_shift(2), total_shift(2), corr, e3
+
+            do iloc = 1, batchsz
+                iptcl_map = batch_start + iloc - 1
+                iptcl     = pinds(iptcl_map)
+                if( .not. joint_topk_candidates%accepted(iptcl_map) ) cycle
+                hard = joint_topk_candidates%hard_rank(iptcl_map)
+                if( hard < 1 ) cycle
+                cand_shift = 0.
+                if( joint_topk_candidates%cand(hard,iptcl_map)%has_sh )then
+                    cand_shift = [joint_topk_candidates%cand(hard,iptcl_map)%x,&
+                        &joint_topk_candidates%cand(hard,iptcl_map)%y]
+                endif
+                total_shift = joint_topk_candidates%base_shift(:,iptcl_map) + cand_shift
+                corr = eulprob_corr_switch(joint_topk_candidates%cand(hard,iptcl_map)%dist, p_ptr%cc_objfun)
+                if( .not. finite_joint_real(total_shift(1)) .or. .not. finite_joint_real(total_shift(2)) .or.&
+                    &.not. finite_joint_real(corr) )then
+                    THROW_HARD('joint 2D shift refinement produced nonfinite hard assignment')
+                endif
+                e3 = 360. - b_ptr%pftc%get_rot(joint_topk_candidates%cand(hard,iptcl_map)%inpl)
+                call b_ptr%spproj_field%e3set(iptcl, e3)
+                call b_ptr%spproj_field%set_shift(iptcl, total_shift)
+                call b_ptr%spproj_field%set(iptcl, 'shincarg', arg(cand_shift))
+                call b_ptr%spproj_field%set(iptcl, 'inpl', real(joint_topk_candidates%cand(hard,iptcl_map)%inpl))
+                call b_ptr%spproj_field%set(iptcl, 'class', real(joint_topk_candidates%cand(hard,iptcl_map)%icls))
+                call b_ptr%spproj_field%set(iptcl, 'corr', corr)
+                call b_ptr%spproj_field%set(iptcl, 'frac', 100.)
+                call b_ptr%spproj_field%set(iptcl, 'npeaks', real(joint_topk_candidates%ncand(iptcl_map)))
+            end do
+        end subroutine sync_joint_hard_assignments_for_batch
+
         subroutine allocate_strategy_for_particle(iptcl, iptcl_batch)
             integer, intent(in) :: iptcl, iptcl_batch
             logical :: first_or_unsearched, has_been_searched, l_fresh_start
@@ -393,6 +599,7 @@ contains
 
         subroutine restore_class_averages_for_batch()
             integer(timer_int_kind) :: t_update
+            call refine_joint_topk_shifts_for_batch()
             call export_joint_topk_for_batch()
             call cavger_transf_oridat(batchsz, pinds(batch_start:batch_end), updated_only=.true.)
             if( ctrl%do_bench ) t_update = tic()
@@ -488,6 +695,11 @@ contains
                 endif
             endif
         end subroutine finalize_restoration_and_convergence
+
+        logical function finite_joint_real( val ) result( is_finite )
+            real, intent(in) :: val
+            is_finite = (val == val) .and. (abs(val) < huge(val) / 2.0)
+        end function finite_joint_real
 
         subroutine maybe_write_bench(which_iter)
             integer, intent(in) :: which_iter

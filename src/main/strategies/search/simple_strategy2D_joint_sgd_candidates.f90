@@ -51,6 +51,7 @@ contains
     procedure :: build_from_loc_tab
     procedure :: set_base_shifts
     procedure :: optimize_logits
+    procedure :: apply_shift_refinement
     procedure :: apply_reliability
     procedure :: write_hard_assignments
     procedure :: write_table
@@ -149,6 +150,70 @@ contains
             endif
         end do
     end subroutine optimize_logits
+
+    subroutine apply_shift_refinement( self, iptcl, irank, opt_shift, refined_dist, eta_shift, tau, tau_min,&
+            &old_shift, new_shift, step_norm, updated )
+        class(joint2D_candidate_table), intent(inout)        :: self
+        integer,                        intent(in)           :: iptcl
+        integer,                        intent(in)           :: irank
+        real,                           intent(in)           :: opt_shift(2)
+        real,                           intent(in)           :: refined_dist
+        real,                           intent(in)           :: eta_shift
+        real,                           intent(in)           :: tau
+        real,                           intent(in)           :: tau_min
+        real,                 optional, intent(out)          :: old_shift(2)
+        real,                 optional, intent(out)          :: new_shift(2)
+        real,                 optional, intent(out)          :: step_norm
+        logical,              optional, intent(out)          :: updated
+        real :: cur_shift(2), damped_shift(2), step_vec(2), tau_eff
+        integer :: nc
+
+        call require_allocated(self, 'shift refinement requested before build/read')
+        if( present(updated)  ) updated  = .false.
+        if( present(old_shift) ) old_shift = 0.
+        if( present(new_shift) ) new_shift = 0.
+        if( present(step_norm) ) step_norm = 0.
+        if( iptcl < 1 .or. iptcl > size(self%ncand) )then
+            THROW_HARD('joint2D_candidate_table: shift refinement particle index out of range')
+        endif
+        nc = self%ncand(iptcl)
+        if( irank < 1 .or. irank > nc )then
+            THROW_HARD('joint2D_candidate_table: shift refinement candidate rank out of range')
+        endif
+        if( eta_shift <= 0. ) THROW_HARD('joint2D_candidate_table: eta_shift must be > 0')
+        tau_eff = max(tau, tau_min)
+        if( tau_eff <= 0. ) THROW_HARD('joint2D_candidate_table: tau_eff must be > 0')
+        if( .not. finite_real(opt_shift(1)) .or. .not. finite_real(opt_shift(2)) .or.&
+            &.not. finite_real(refined_dist) )then
+            THROW_HARD('joint2D_candidate_table: nonfinite shift-refinement result')
+        endif
+
+        cur_shift = 0.
+        if( self%cand(irank,iptcl)%has_sh )then
+            cur_shift = [self%cand(irank,iptcl)%x, self%cand(irank,iptcl)%y]
+        endif
+        if( .not. finite_real(cur_shift(1)) .or. .not. finite_real(cur_shift(2)) )then
+            THROW_HARD('joint2D_candidate_table: nonfinite candidate shift before refinement')
+        endif
+        damped_shift = cur_shift + eta_shift * (opt_shift - cur_shift)
+        if( .not. finite_real(damped_shift(1)) .or. .not. finite_real(damped_shift(2)) )then
+            THROW_HARD('joint2D_candidate_table: nonfinite damped candidate shift')
+        endif
+        step_vec = damped_shift - cur_shift
+
+        self%cand(irank,iptcl)%x      = damped_shift(1)
+        self%cand(irank,iptcl)%y      = damped_shift(2)
+        self%cand(irank,iptcl)%has_sh = .true.
+        self%cand(irank,iptcl)%dist   = refined_dist
+        self%cand(irank,iptcl)%logit  = -refined_dist
+        call refresh_particle(self, iptcl, tau_eff)
+        self%loss_delta(iptcl) = self%initial_expected_loss(iptcl) - self%expected_loss(iptcl)
+
+        if( present(old_shift) ) old_shift = cur_shift
+        if( present(new_shift) ) new_shift = damped_shift
+        if( present(step_norm) ) step_norm = sqrt(sum(step_vec * step_vec))
+        if( present(updated)   ) updated   = .true.
+    end subroutine apply_shift_refinement
 
     subroutine apply_reliability( self, min_cands, max_entropy )
         class(joint2D_candidate_table), intent(inout) :: self
@@ -429,9 +494,14 @@ contains
         type(ptcl_ref), intent(in) :: ref
         is_valid = ref%pind > 0 .and. ref%icls > 0 .and. ref%inpl > 0
         if( is_valid )then
-            is_valid = (ref%dist == ref%dist) .and. (abs(ref%dist) < huge(ref%dist) / 2.0)
+            is_valid = finite_real(ref%dist)
         endif
     end function valid_ref
+
+    logical function finite_real( val ) result( is_finite )
+        real, intent(in) :: val
+        is_finite = (val == val) .and. (abs(val) < huge(val) / 2.0)
+    end function finite_real
 
     subroutine insert_candidate( self, iptcl, topk, ref )
         class(joint2D_candidate_table), intent(inout) :: self
