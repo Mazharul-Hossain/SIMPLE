@@ -8,7 +8,11 @@ use simple_image_bin,          only: image_bin
 use simple_oris,               only: oris
 use simple_segmentation,       only: otsu_img
 use simple_stat,               only: median, mad_gau
-use simple_cavg_quality_types, only: CAVG_QUALITY_NFEATS, EPS, CLIP_Z, cavg_quality_feature_def
+use simple_cavg_quality_types, only: CAVG_QUALITY_NFEATS, EPS, CLIP_Z, CAVG_QUALITY_CONTEXT_CHUNK, &
+    CAVG_QUALITY_CONTEXT_POOL, CAVG_QUALITY_CONTEXT_SIEVE, cavg_quality_feature_def, &
+    cavg_quality_result, CAVG_REJECT_REASON_NONE, CAVG_REJECT_REASON_POP_NONPOS, &
+    CAVG_REJECT_REASON_POP_LOWFRAC, CAVG_REJECT_REASON_BAD_PIXELS, CAVG_REJECT_REASON_NO_COMPONENT, &
+    CAVG_REJECT_REASON_MASK_GEOMETRY, CAVG_REJECT_REASON_BP_CENTER_EDGE_LOW
 implicit none
 private
 
@@ -38,21 +42,7 @@ public :: extract_cavg_quality_features
 public :: normalize_cavg_quality_features
 public :: CAVG_RES_HARD_REJECT_A
 public :: POP_FRACTION_HARD_REJECT
-public :: CAVG_OVERFIT_LOWVAR_FG_Z_MIN
-public :: CAVG_OVERFIT_SUPPORT_Z_MAX
-public :: CAVG_CHUNK_V3_NEG_LOG_RES_Z_MAX
-public :: CAVG_CHUNK_V3_FUZZY_SIGNAL_Z_MAX
-public :: CAVG_CHUNK_V3_FUZZY_SIGNAL_STRICT_Z_MAX
-public :: CAVG_CHUNK_V3_LOCVAR_FG_LOW_Z_MAX
-public :: CAVG_CHUNK_V3_LOCVAR_FG_HIGH_Z_MIN
-public :: CAVG_CHUNK_V3_LOCVAR_BG_HIGH_Z_MIN
-public :: CAVG_CHUNK_V3_CENTERED_Z_MIN
-public :: CAVG_CHUNK_V3_LOCVAR_BG_LOW_Z_MAX
-public :: CAVG_CHUNK_V3_BP_CENTER_EDGE_Z_MAX
-public :: CAVG_CHUNK_V3_CC_AREA_FRAC_Z_MAX
-public :: cavg_overfit_hard_reject
-public :: cavg_chunk_hard_reject
-
+public :: CHUNK_LOCVAR_FG_HARD_REJECT_MAX
 #include "simple_local_flags.inc"
 
 real,    parameter :: LOG_EPS                   = 1.0e-12
@@ -60,64 +50,33 @@ real,    parameter :: LOG_EPS                   = 1.0e-12
 ! doc/microchunk_and_rejection/model_cavgs_rejection.md.
 real,    parameter :: FOREGROUND_SEG_LP         = 30.0
 real,    parameter :: SIGNAL_METRIC_LP          = 10.0
-real,    parameter :: OVERFIT_SIGNAL_BP_HP      = 100.0  
+real,    parameter :: OVERFIT_SIGNAL_BP_HP      = 100.0
 real,    parameter :: OVERFIT_SIGNAL_BP_LP      = 40.0
 real,    parameter :: CAVG_RES_HARD_REJECT_A    = 40.0
 real,    parameter :: POP_FRACTION_HARD_REJECT  = 0.0035
-real,    parameter :: BP_CENTER_EDGE_VAR_HARD_REJECT_MIN = 4.0
+real,    parameter :: BP_CENTER_EDGE_VAR_HARD_REJECT_MIN = 1.5
+real,    parameter :: CHUNK_LOCVAR_FG_HARD_REJECT_MAX = exp(-4.5)
+real,    parameter :: POOL_RES_HARD_REJECT_A    = 25.0
+real,    parameter :: POOL_POP_FRACTION_HARD_REJECT = 5.0e-4
+real,    parameter :: POOL_BP_CENTER_EDGE_VAR_HARD_REJECT_MIN = 10.0
 integer, parameter :: LOCVAR_WINDOW             = 10
 integer, parameter :: MASK_HARD_OUTSIDE_PIXELS  = 10
 integer, parameter :: ANALYSIS_BOXSIZE          = 128
-integer, parameter :: ANALYSIS_MORPH_SIZE       = 5
 
-integer, parameter :: I_LOG_POP                 = 1
-integer, parameter :: I_NEG_LOG_RES             = 2
-integer, parameter :: I_CENTERED                = 3
-integer, parameter :: I_LOCVAR_FG               = 4
-integer, parameter :: I_LOCVAR_BG               = 5
-integer, parameter :: I_CORR_FRC                = 6
-integer, parameter :: I_CENTER_EDGE_SNR         = 7
-integer, parameter :: I_CC_AREA_FRAC            = 8
-integer, parameter :: I_PRESENCE                = 9
-integer, parameter :: I_NEG_LOCVAR_FG           = 10
-integer, parameter :: I_NEG_LOCVAR_BG           = 11
-integer, parameter :: I_LOG_LOCVAR_FG_BG_RATIO  = 12
+integer, parameter :: I_LOG_POP                  = 1
+integer, parameter :: I_NEG_LOG_RES              = 2
+integer, parameter :: I_CENTERED                 = 3
+integer, parameter :: I_LOCVAR_FG                = 4
+integer, parameter :: I_LOCVAR_BG                = 5
+integer, parameter :: I_CORR_FRC                 = 6
+integer, parameter :: I_CENTER_EDGE_SNR          = 7
+integer, parameter :: I_CC_AREA_FRAC             = 8
+integer, parameter :: I_PRESENCE                 = 9
+integer, parameter :: I_NEG_LOCVAR_FG            = 10
+integer, parameter :: I_NEG_LOCVAR_BG            = 11
+integer, parameter :: I_LOG_LOCVAR_FG_BG_RATIO   = 12
 integer, parameter :: I_BP40_100_CENTER_EDGE_VAR = 13
-integer, parameter :: I_FUZZY_BALL_SIGNAL       = 14
-
-! Optional hard rule for rejecting overfitted fuzzy-ball class averages.
-! This is deliberately not a learned model at application time. The rule is
-! evaluated on dataset-normalized z-features produced after the standard
-! quality hard gates:
-!
-!   z_neg_log_locvar_fg > 0.0  and  z_cc_area_frac < 0.5
-!
-! This says the class has lower-than-dataset-median foreground local variance
-! and weak foreground support. Joe/microchunking can reuse
-! cavg_overfit_hard_reject directly.
-real, parameter :: CAVG_OVERFIT_LOWVAR_FG_Z_MIN = 0.0
-real, parameter :: CAVG_OVERFIT_SUPPORT_Z_MAX   = 0.5
-
-! Optional hard rule for chunk-style class-average rejection. This is a
-! conservative, dataset-normalized hard-gate surrogate of the promoted v3
-! chunk100mics logistic model. It is not model-equivalent: it is intended as a
-! compact set of interpretable two-feature gates for no-model operation and for
-! reasoning about which evidence patterns drive rejection. A class average is
-! rejected when any one of the paired gates in cavg_chunk_hard_reject fires
-! after the standard hard validity gates. The surrogate was fit on
-! /Users/elmlundho/cavgs_quality/chunk100mic_training_data_v3 to protect good
-! classes more strongly than the older hard gate, while accepting that it leaks
-! more bad classes than the full logistic model.
-real, parameter :: CAVG_CHUNK_V3_NEG_LOG_RES_Z_MAX            = -0.789
-real, parameter :: CAVG_CHUNK_V3_FUZZY_SIGNAL_Z_MAX           = -0.364
-real, parameter :: CAVG_CHUNK_V3_FUZZY_SIGNAL_STRICT_Z_MAX    = -0.965
-real, parameter :: CAVG_CHUNK_V3_LOCVAR_FG_LOW_Z_MAX          = -0.285
-real, parameter :: CAVG_CHUNK_V3_LOCVAR_FG_HIGH_Z_MIN         =  2.000
-real, parameter :: CAVG_CHUNK_V3_LOCVAR_BG_HIGH_Z_MIN         =  1.500
-real, parameter :: CAVG_CHUNK_V3_CENTERED_Z_MIN               =  1.000
-real, parameter :: CAVG_CHUNK_V3_LOCVAR_BG_LOW_Z_MAX          = -1.225
-real, parameter :: CAVG_CHUNK_V3_BP_CENTER_EDGE_Z_MAX         = -0.750
-real, parameter :: CAVG_CHUNK_V3_CC_AREA_FRAC_Z_MAX           = -1.386
+integer, parameter :: I_FUZZY_BALL_SIGNAL        = 14
 
 type(cavg_quality_feature_def), parameter :: FEATURE_DEFS(CAVG_QUALITY_NFEATS) = [ &
     cavg_quality_feature_def('log_pop', 'higher_is_better', &
@@ -190,47 +149,19 @@ contains
         end do
     end subroutine write_cavg_quality_feature_inventory
 
-    function cavg_overfit_hard_reject( z_features ) result( reject )
-        real, intent(in) :: z_features(:)
-        logical          :: reject
-        if( size(z_features) /= CAVG_QUALITY_NFEATS ) THROW_HARD('cavg_overfit_hard_reject: invalid feature count')
-        reject = z_features(I_NEG_LOCVAR_FG) > CAVG_OVERFIT_LOWVAR_FG_Z_MIN .and. &
-                 z_features(I_CC_AREA_FRAC)  < CAVG_OVERFIT_SUPPORT_Z_MAX
-    end function cavg_overfit_hard_reject
-
-    function cavg_chunk_hard_reject( z_features ) result( reject )
-        real, intent(in) :: z_features(:)
-        logical          :: reject
-        logical          :: low_res_fuzzy, low_texture_fuzzy, global_high_texture
-        logical          :: too_centered_fuzzy, quiet_bg_bad_bandpass
-        logical          :: low_res_weak_support
-        if( size(z_features) /= CAVG_QUALITY_NFEATS ) THROW_HARD('cavg_chunk_hard_reject: invalid feature count')
-        low_res_fuzzy       = z_features(I_NEG_LOG_RES)     < CAVG_CHUNK_V3_NEG_LOG_RES_Z_MAX .and. &
-                              z_features(I_FUZZY_BALL_SIGNAL) < CAVG_CHUNK_V3_FUZZY_SIGNAL_Z_MAX
-        low_texture_fuzzy   = z_features(I_FUZZY_BALL_SIGNAL) < CAVG_CHUNK_V3_FUZZY_SIGNAL_STRICT_Z_MAX .and. &
-                              z_features(I_LOCVAR_FG)      < CAVG_CHUNK_V3_LOCVAR_FG_LOW_Z_MAX
-        global_high_texture = z_features(I_LOCVAR_FG)       > CAVG_CHUNK_V3_LOCVAR_FG_HIGH_Z_MIN .and. &
-                              z_features(I_LOCVAR_BG)      > CAVG_CHUNK_V3_LOCVAR_BG_HIGH_Z_MIN
-        too_centered_fuzzy  = z_features(I_CENTERED)        > CAVG_CHUNK_V3_CENTERED_Z_MIN .and. &
-                              z_features(I_FUZZY_BALL_SIGNAL) < CAVG_CHUNK_V3_FUZZY_SIGNAL_Z_MAX
-        quiet_bg_bad_bandpass = z_features(I_LOCVAR_BG)     < CAVG_CHUNK_V3_LOCVAR_BG_LOW_Z_MAX .and. &
-                              z_features(I_BP40_100_CENTER_EDGE_VAR) < CAVG_CHUNK_V3_BP_CENTER_EDGE_Z_MAX
-        low_res_weak_support = z_features(I_NEG_LOG_RES)    < CAVG_CHUNK_V3_NEG_LOG_RES_Z_MAX .and. &
-                              z_features(I_CC_AREA_FRAC)   < CAVG_CHUNK_V3_CC_AREA_FRAC_Z_MAX
-        reject = low_res_fuzzy .or. low_texture_fuzzy .or. global_high_texture .or. &
-                 too_centered_fuzzy .or. quiet_bg_bad_bandpass .or. low_res_weak_support
-    end function cavg_chunk_hard_reject
-
-    subroutine extract_cavg_quality_features( imgs, cls_oris, mskdiam, raw, hard_reject )
-        class(image),         intent(inout) :: imgs(:)
-        type(oris),           intent(in)    :: cls_oris
+    subroutine extract_cavg_quality_features( imgs, cls_oris, mskdiam, quality, quality_context )
+        class(image),              intent(inout) :: imgs(:)
+        type(oris),                intent(in)    :: cls_oris
+        type(cavg_quality_result), intent(inout) :: quality
         real,                 intent(in)    :: mskdiam
-        real,    allocatable, intent(inout) :: raw(:,:)
-        logical, allocatable, intent(inout) :: hard_reject(:)
+        ! real,    allocatable, intent(inout) :: raw(:,:)
+        ! logical, allocatable, intent(inout) :: hard_reject(:)
+        character(len=*), optional, intent(in) :: quality_context
         integer, allocatable :: pop(:), disc_area(:)
         real,    allocatable :: res(:), corr(:), corr_in(:)
-        integer              :: ncls, i, ldim(3), pop_hard_threshold
+        integer              :: ncls, i, ldim(3), pop_hard_threshold, pool_pop_hard_threshold
         real                 :: smpd, rad_px
+        character(len=32)    :: context
         type(image_bin), allocatable :: bin_img(:), cc_img(:), disc_img(:)
         real, allocatable    :: rmat_cc(:,:,:,:), rmat_disc(:,:,:,:)
         real                 :: centroid_norm, locvar_fg, locvar_bg
@@ -242,15 +173,21 @@ contains
         if( ncls == 0 ) THROW_HARD('extract_cavg_quality_features: no class averages')
         if( cls_oris%get_noris() /= ncls ) THROW_HARD('extract_cavg_quality_features: # cls oris /= # cavgs')
         if( mskdiam <= 0.0 ) THROW_HARD('extract_cavg_quality_features: mskdiam must be positive')
-        if( allocated(raw)         ) deallocate(raw)
-        if( allocated(hard_reject) ) deallocate(hard_reject)
-        allocate(raw(ncls, CAVG_QUALITY_NFEATS), source=0.0)
-        allocate(hard_reject(ncls),              source=.false.)
+        context = CAVG_QUALITY_CONTEXT_CHUNK
+        if( present(quality_context) ) context = trim(quality_context)
+        call validate_quality_context(context)
+        if( allocated(quality%raw)         ) deallocate(quality%raw)
+        if( allocated(quality%hard_reject) ) deallocate(quality%hard_reject)
+        if( allocated(quality%reasons)     ) deallocate(quality%reasons)
+        allocate(quality%raw(ncls, CAVG_QUALITY_NFEATS), source=0.0)
+        allocate(quality%hard_reject(ncls),              source=.false.)
+        allocate(quality%reasons(ncls),                  source=CAVG_REJECT_REASON_NONE)
         pop  = cls_oris%get_all_asint('pop')
         res  = cls_oris%get_all('res')
         if( size(pop) /= ncls ) THROW_HARD('extract_cavg_quality_features: invalid pop size')
         if( size(res) /= ncls ) THROW_HARD('extract_cavg_quality_features: invalid res size')
-        pop_hard_threshold = ceiling(real(sum(pop)) * POP_FRACTION_HARD_REJECT)
+        pop_hard_threshold      = ceiling(real(sum(pop)) * POP_FRACTION_HARD_REJECT)
+        pool_pop_hard_threshold = ceiling(real(sum(pop)) * POOL_POP_FRACTION_HARD_REJECT)
         allocate(corr(ncls), source=0.0)
         if( cls_oris%isthere('corr') )then
             corr_in = cls_oris%get_all('corr')
@@ -298,31 +235,24 @@ contains
                 call measure_cavg_image_metrics(imgs(i), rad_px, locvar_fg, locvar_bg, center_edge_snr, &
                                                 presence_score, bp_center_edge_var)
             endif
-            raw(i, I_LOG_POP)                 = log(real(max(pop(i), 0)) + 1.0)
-            raw(i, I_NEG_LOG_RES)             = resolution_feature(res(i))
-            raw(i, I_CENTERED)                = -centroid_norm
-            raw(i, I_LOCVAR_FG)               = log(max(locvar_fg, LOG_EPS))
-            raw(i, I_LOCVAR_BG)               = log(max(locvar_bg, LOG_EPS))
-            raw(i, I_CORR_FRC)                = corr(i)
-            raw(i, I_CENTER_EDGE_SNR)         = log(max(center_edge_snr, LOG_EPS))
-            raw(i, I_CC_AREA_FRAC)            = cc_area_frac
-            raw(i, I_PRESENCE)                = presence_score
-            raw(i, I_NEG_LOCVAR_FG)          = -log(max(locvar_fg, LOG_EPS))
-            raw(i, I_NEG_LOCVAR_BG)          = -log(max(locvar_bg, LOG_EPS))
-            raw(i, I_LOG_LOCVAR_FG_BG_RATIO) = log(max(locvar_fg, LOG_EPS)) - log(max(locvar_bg, LOG_EPS))
-            raw(i, I_BP40_100_CENTER_EDGE_VAR) = log(max(bp_center_edge_var, LOG_EPS))
-            raw(i, I_FUZZY_BALL_SIGNAL) = raw(i, I_LOCVAR_FG) + raw(i, I_PRESENCE) + &
-                                           raw(i, I_BP40_100_CENTER_EDGE_VAR)
-            ! Catastrophic population, resolution, and foreground-geometry
-            ! failures are hard validity rejects. The population fraction and
-            ! connected-component pruning mirror the microchunk rejector, while
-            ! ordinary variation remains active scalar evidence for the model.
-            write(*,*) 'Processing image ', i, "bp_center_edge_var=", bp_center_edge_var, "pop_hard_threshold=", pop_hard_threshold
-            hard_reject(i) = pop(i) <= 0 .or. pop(i) < pop_hard_threshold .or. &
-                                             ! res(i) > CAVG_RES_HARD_REJECT_A !.or. &
-                                              bad_pixels .or. no_component .or. mask_hard_reject .or. &
-                                              !(locvar_fg <= EPS .and. locvar_bg <= EPS)
-                                              bp_center_edge_var < BP_CENTER_EDGE_VAR_HARD_REJECT_MIN
+            quality%raw(i, I_LOG_POP)                  = log(real(max(pop(i), 0)) + 1.0)
+            quality%raw(i, I_NEG_LOG_RES)              = resolution_feature(res(i))
+            quality%raw(i, I_CENTERED)                 = -centroid_norm
+            quality%raw(i, I_LOCVAR_FG)                = log(max(locvar_fg, LOG_EPS))
+            quality%raw(i, I_LOCVAR_BG)                = log(max(locvar_bg, LOG_EPS))
+            quality%raw(i, I_CORR_FRC)                 = corr(i)
+            quality%raw(i, I_CENTER_EDGE_SNR)          = log(max(center_edge_snr, LOG_EPS))
+            quality%raw(i, I_CC_AREA_FRAC)             = cc_area_frac
+            quality%raw(i, I_PRESENCE)                 = presence_score
+            quality%raw(i, I_NEG_LOCVAR_FG)            = -log(max(locvar_fg, LOG_EPS))
+            quality%raw(i, I_NEG_LOCVAR_BG)            = -log(max(locvar_bg, LOG_EPS))
+            quality%raw(i, I_LOG_LOCVAR_FG_BG_RATIO)   = log(max(locvar_fg, LOG_EPS)) - log(max(locvar_bg, LOG_EPS))
+            quality%raw(i, I_BP40_100_CENTER_EDGE_VAR) = log(max(bp_center_edge_var, LOG_EPS))
+            quality%raw(i, I_FUZZY_BALL_SIGNAL)        = quality%raw(i, I_LOCVAR_FG) + quality%raw(i, I_PRESENCE) + &
+                                                         quality%raw(i, I_BP40_100_CENTER_EDGE_VAR)
+            quality%hard_reject(i) = cavg_hard_reject_for_context(context, pop(i), pop_hard_threshold, &
+                pool_pop_hard_threshold, res(i), bad_pixels, no_component, mask_hard_reject, &
+                locvar_fg, locvar_bg, bp_center_edge_var, quality%reasons(i))
         end do
         !$omp end parallel do
         do ithr = 1, nthr_glob
@@ -332,6 +262,64 @@ contains
         end do
         deallocate(bin_img, cc_img, disc_img, rmat_cc, rmat_disc, disc_area, pop, res, corr)
     end subroutine extract_cavg_quality_features
+
+    subroutine validate_quality_context( quality_context )
+        character(len=*), intent(in) :: quality_context
+        select case(trim(quality_context))
+            case(CAVG_QUALITY_CONTEXT_CHUNK, CAVG_QUALITY_CONTEXT_POOL, CAVG_QUALITY_CONTEXT_SIEVE)
+                ! valid contexts
+            case DEFAULT
+                THROW_HARD('extract_cavg_quality_features: quality_context must be chunk, pool, or sieve')
+        end select
+    end subroutine validate_quality_context
+
+    logical function cavg_hard_reject_for_context( quality_context, pop, pop_hard_threshold, pool_pop_hard_threshold, &
+                                                   res, bad_pixels, no_component, mask_hard_reject, locvar_fg, locvar_bg, &
+                                                   bp_center_edge_var, reason )
+        character(len=*), intent(in)  :: quality_context
+        integer,          intent(in)  :: pop, pop_hard_threshold, pool_pop_hard_threshold
+        real,             intent(in)  :: res, locvar_fg, locvar_bg, bp_center_edge_var
+        logical,          intent(in)  :: bad_pixels, no_component, mask_hard_reject
+        integer,          intent(out) :: reason
+        reason = CAVG_REJECT_REASON_NONE
+        cavg_hard_reject_for_context = pop <= 0 .or. &
+                                       res > CAVG_RES_HARD_REJECT_A .or. &
+                                       bad_pixels .or. no_component .or. mask_hard_reject .or. &
+                                       (locvar_fg <= EPS .and. locvar_bg <= EPS)
+        select case(trim(quality_context))
+            case(CAVG_QUALITY_CONTEXT_CHUNK)
+                ! Chunk is the first learned-model stage: sieve-cleaned particles are
+                ! reclassified in larger 10-30k-particle chunks, then logistic
+                ! rejection handles the trainable cases. These gates only remove
+                ! obvious non-trainable failures before the model stage.
+                cavg_hard_reject_for_context = cavg_hard_reject_for_context .or. &
+                    pop < pop_hard_threshold .or. &
+                    bp_center_edge_var < BP_CENTER_EDGE_VAR_HARD_REJECT_MIN .or. &
+                    locvar_fg < CHUNK_LOCVAR_FG_HARD_REJECT_MAX
+            case(CAVG_QUALITY_CONTEXT_SIEVE)
+                ! Sieve is the small-chunk screening route. It intentionally uses
+                ! conservative hard gates only and does not inherit the shared
+                ! chunk/pool validity gates, because no learned model is meant to
+                ! rescue or reinterpret these very small 2D runs.
+                cavg_hard_reject_for_context = .false.
+                if( pop < pop_hard_threshold ) then
+                    cavg_hard_reject_for_context = .true.
+                    reason = CAVG_REJECT_REASON_POP_LOWFRAC
+                else if( bp_center_edge_var < BP_CENTER_EDGE_VAR_HARD_REJECT_MIN ) then
+                    cavg_hard_reject_for_context = .true.
+                    reason = CAVG_REJECT_REASON_BP_CENTER_EDGE_LOW
+                end if
+            case(CAVG_QUALITY_CONTEXT_POOL)
+                ! Pool is the final pre-3D 2D selection stage after highly cleaned
+                ! chunk outputs are merged. These pool-specific gates remove
+                ! obvious low-population, weak-localization, or low-resolution
+                ! failures before the pool model; subtler cases remain learned.
+                cavg_hard_reject_for_context = cavg_hard_reject_for_context .or. &
+                    pop < pool_pop_hard_threshold .or. &
+                    res > POOL_RES_HARD_REJECT_A .or. &
+                    bp_center_edge_var < POOL_BP_CENTER_EDGE_VAR_HARD_REJECT_MIN
+        end select
+    end function cavg_hard_reject_for_context
 
     subroutine normalize_cavg_quality_features( raw, hard_reject, features )
         real,                 intent(in)    :: raw(:,:)
@@ -375,7 +363,7 @@ contains
         real,             intent(out)   :: centroid_norm, cc_area_frac
         logical,          intent(out)   :: no_component, mask_hard_reject
         real, allocatable :: ccsizes(:)
-        integer           :: j, loc, nccs, nccs_valid, area, outside, imorph
+        integer           :: j, loc, nccs, nccs_valid, area, outside
         real              :: cc_diam, xy(2)
         centroid_norm = 2.0
         cc_area_frac  = 0.0
@@ -386,12 +374,6 @@ contains
         call bin_img%zero_edgeavg()
         call bin_img%bp(0.0, FOREGROUND_SEG_LP)
         call otsu_img(bin_img)
-        do imorph = 1, ANALYSIS_MORPH_SIZE
-            call bin_img%dilate()
-        end do
-        do imorph = 1, ANALYSIS_MORPH_SIZE
-            call bin_img%erode()
-        end do
         call bin_img%set_imat()
         call bin_img%find_ccs(cc_img)
         call cc_img%get_nccs(nccs)

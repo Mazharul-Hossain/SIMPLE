@@ -7,7 +7,8 @@ use simple_string_utils,       only: str_is_true, lowercase, uppercase, &
 use simple_clustering_utils,   only: cluster_dmat
 use simple_srch_sort_loc,      only: hpsort
 use simple_cavg_quality_types, only: CAVG_QUALITY_NFEATS, CAVG_QUALITY_MAX_INTERACTIONS, EPS, CLIP_Z, &
-    CAVG_MODEL_FAMILY_LINEAR, CAVG_MODEL_FAMILY_PAIRWISE_LOGISTIC, cavg_quality_model_spec, cavg_quality_result
+    CAVG_MODEL_FAMILY_LINEAR, CAVG_MODEL_FAMILY_PAIRWISE_LOGISTIC, CAVG_QUALITY_CONTEXT_CHUNK, &
+    CAVG_QUALITY_CONTEXT_POOL, cavg_quality_model_spec, cavg_quality_result
 use simple_cavg_quality_feats, only: cavg_quality_feature_name
 use simple_cavg_quality_stats, only: normalize_quality_dmat
 implicit none
@@ -89,13 +90,13 @@ real, parameter :: CLUSTER_RESCUE_MARGIN = 0.20
 
 ! Default chunk class-average quality model, promoted from the pairwise
 ! logistic artifact learned from
-! /Users/elmlundho/cavgs_quality/chunk100mic_training_data_v3.
-character(len=*), parameter :: CHUNK100MICS_FEATURE_POLICY = 'microchunk_plus_signal'
+! /Users/elmlundho/cavgs_quality/chunk100mic_training_data_v4.
+character(len=*), parameter :: CHUNK100MICS_FEATURE_POLICY = 'microchunk_plus_score_signal'
 real, parameter :: CAVG_QUALITY_LOGISTIC_WEIGHTS(CAVG_QUALITY_NFEATS) = [ &
-    7.692308E-02, 7.692308E-02, 7.692308E-02, 7.692308E-02, &
-    7.692308E-02, 0.000000E+00, 7.692308E-02, 7.692308E-02, &
-    7.692308E-02, 7.692308E-02, 7.692308E-02, 7.692308E-02, &
-    7.692308E-02, 7.692308E-02 ]
+    7.142857E-02, 7.142857E-02, 7.142857E-02, 7.142857E-02, &
+    7.142857E-02, 7.142857E-02, 7.142857E-02, 7.142857E-02, &
+    7.142857E-02, 7.142857E-02, 7.142857E-02, 7.142857E-02, &
+    7.142857E-02, 7.142857E-02 ]
 character(len=*), parameter :: CHUNK100MICS_LINEAR_FEATURE_POLICY = 'microchunk_plus_score_signal'
 real, parameter :: CAVG_QUALITY_CHUNK100MICS_LINEAR_WEIGHTS(CAVG_QUALITY_NFEATS) = [ &
     9.978756E-02, 1.167914E-01, 3.642511E-02, 1.329548E-01, &
@@ -192,8 +193,7 @@ contains
         class(cavg_quality_model),     intent(inout) :: self
         type(cavg_quality_model_spec), intent(in)    :: spec
         self%name                    = trim(spec%name)
-        ! Context is legacy metadata only; model behavior is name/spec driven.
-        self%context                 = ''
+        self%context                 = trim(spec%context)
         self%feature_policy          = trim(spec%feature_policy)
         self%model_family            = trim(spec%model_family)
         self%weights                 = spec%weights
@@ -222,7 +222,7 @@ contains
         class(cavg_quality_model), intent(in) :: self
         type(cavg_quality_model_spec) :: spec
         spec%name                    = self%name
-        spec%context                 = ''
+        spec%context                 = self%context
         spec%feature_policy          = self%feature_policy
         spec%model_family            = self%model_family
         spec%weights                 = self%weights
@@ -253,34 +253,37 @@ contains
         spec%feature_policy          = CHUNK100MICS_FEATURE_POLICY
         spec%model_family            = CAVG_MODEL_FAMILY_PAIRWISE_LOGISTIC
         spec%weights                 = CAVG_QUALITY_LOGISTIC_WEIGHTS
-        spec%intercept               = 1.799114E+00
+        spec%intercept               = 2.681497E+00
         spec%linear_coefficients     = [ &
-            6.802843E-01,  6.128433E-01, -2.501230E-01,  6.517312E-01, &
-           -1.626719E-01,  0.000000E+00, -8.575440E-02,  1.300446E+00, &
-           -2.487067E-01, -1.889265E+00,  5.885081E-01, -1.243061E-01, &
-            9.793385E-01, -5.729020E-02 ]
-        call set_pairwise_interactions_for_feature_indices(spec, [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14], [ &
-            2.360030E-03, -6.263957E-02,  4.821143E-01, -3.121943E-01, &
-           -3.289542E-02,  2.055763E-01, -3.291644E-01, -5.655561E-01, &
-            4.530455E-01, -2.044310E-01,  5.971544E-01,  2.643677E-01, &
-            4.185527E-02,  7.557562E-04,  2.117884E-01,  1.968304E-02, &
-           -1.283057E-01,  6.671613E-03, -3.022597E-01, -1.376580E-01, &
-            1.005488E-02, -1.731239E-02, -3.937151E-01, -2.716357E-01, &
-            2.664569E-01,  2.462925E-01,  2.924888E-01, -8.409232E-01, &
-           -1.194365E-01, -9.441161E-02,  1.718410E-01,  6.162158E-03, &
-            4.196871E-01,  6.496040E-01, -2.233421E-01, -7.474085E-01, &
-            4.017707E-01, -3.855067E-02, -7.281386E-01,  4.634536E-01, &
-            6.549260E-01, -5.058915E-01,  2.447556E-01,  6.894841E-01, &
-           -2.733067E-01,  3.750035E-01,  6.765434E-01,  1.527498E-01, &
-           -1.470978E-01,  2.947312E-02,  1.150736E-01,  5.732577E-02, &
-            7.062555E-02,  5.917469E-02,  3.061580E-02, -6.114318E-01, &
-            1.924328E-01, -1.156941E+00,  5.590926E-01, -8.128747E-01, &
-            5.724564E-01, -7.771953E-01,  7.623075E-01, -1.270047E-01, &
-            1.892797E-01,  1.669685E-01,  1.100845E+00,  1.643094E-01, &
-           -2.835444E-01,  1.956896E-01, -8.888062E-02,  8.211127E-01, &
-           -2.504349E-01,  1.032503E-01, -1.164710E-01, -4.617103E-01, &
-           -6.409482E-01, -7.320803E-01 ])
-        spec%prob_threshold          = 4.500000E-01
+           -6.286113E-01,  6.247919E-01, -2.818124E-01,  1.076405E+00, &
+           -7.464533E-01,  6.145704E-01, -6.273948E-02,  1.407827E-01, &
+            2.027739E-01, -4.221159E-01,  7.574302E-01, -2.793084E-01, &
+            2.794536E+00,  7.073164E-01 ]
+        call set_pairwise_interactions_for_feature_count(spec, 14, [ &
+           -5.405482E-01,  2.232487E-02,  6.679537E-01, -9.844879E-01, &
+            4.016007E-01,  8.536045E-01,  6.862369E-01, -3.145630E-01, &
+           -6.455917E-01,  8.791583E-01, -4.676543E-01,  4.777114E-01, &
+            5.521021E-01,  1.271381E-02, -1.254850E-01,  6.664535E-02, &
+           -2.221981E-01, -6.056051E-02, -4.815833E-01,  1.268961E-01, &
+           -1.271788E-01,  2.494773E-01, -1.269121E-01,  1.350642E+00, &
+           -1.692577E-01, -9.738522E-02,  1.265601E-01, -5.409655E-01, &
+            2.652861E-01,  4.474671E-01, -2.019620E-01, -4.014040E-01, &
+           -3.299867E-01,  3.392396E-01, -2.475521E-01, -2.321465E-01, &
+           -2.825888E-01, -3.237399E-01,  8.590719E-01, -1.205967E-01, &
+           -2.884976E-01, -4.536750E-01,  2.778712E-01, -7.639435E-01, &
+           -2.127371E-01, -4.576955E-01,  2.047243E-01,  7.392398E-02, &
+            6.617538E-01, -2.564861E-01, -2.180120E-02,  1.481527E-02, &
+            2.854128E-01, -1.482570E-01,  3.309094E-01, -8.375521E-01, &
+           -6.958253E-01, -1.989315E-02, -1.469698E-01,  8.772197E-02, &
+            2.987876E-02, -4.436344E-01,  2.778504E-01,  1.992271E-01, &
+           -5.480839E-01, -5.014452E-01, -1.514034E-01, -7.361591E-01, &
+           -6.602764E-01, -1.696232E-01, -1.325360E-01,  9.232772E-02, &
+           -5.104917E-01, -3.444873E-01, -8.808707E-01,  7.508239E-02, &
+            3.759776E-02,  3.667796E-01,  6.808946E-01,  7.423107E-01, &
+           -3.577121E-01, -6.254713E-03,  9.768074E-02, -5.226645E-01, &
+            1.452297E-01, -6.939387E-01,  1.408253E-01, -3.367719E-01, &
+           -1.496779E-01,  2.686394E-01,  2.973516E-02 ])
+        spec%prob_threshold          = 3.500000E-01
         spec%regularization_lambda   = 1.000000E-03
         spec%calibration_temperature = 1.000000E+00
         spec%boundary_margin         = CHUNK100MICS_BOUNDARY_MARGIN
@@ -321,38 +324,38 @@ contains
         spec%feature_policy          = POOL_FEATURE_POLICY
         spec%model_family            = CAVG_MODEL_FAMILY_PAIRWISE_LOGISTIC
         spec%weights                 = CAVG_QUALITY_POOL_WEIGHTS
-        spec%intercept               = 8.780015E+00
+        spec%intercept               = 3.302627E+00
         spec%linear_coefficients     = [ &
-            2.248335E+00,  4.090925E+00, -4.688193E-01,  1.386014E+00, &
-           -1.349914E+00,  3.088611E+00,  3.358182E+00,  1.907580E+00, &
-            7.832584E-01, -3.922361E-01,  1.050795E+00, -6.106704E-01, &
-           -9.998595E-01, -1.180953E+00 ]
+            1.457785E+00,  2.083228E+00, -1.779927E-01,  3.308496E-02, &
+           -9.849168E-02,  1.311319E+00,  1.514745E-01,  4.598770E-01, &
+           -6.881561E-01, -3.308496E-02,  9.849168E-02, -2.065004E-01, &
+           -1.338662E-01,  5.186735E-01 ]
         call set_pairwise_interactions_for_feature_count(spec, 14, [ &
-            1.118982E+00, -2.196083E+00, -1.126922E+00, -3.566800E-01, &
-            1.312161E+00,  1.438541E+00,  1.092018E+00,  5.131066E-01, &
-            1.959632E-01,  9.256136E-01, -1.472204E+00, -1.068832E+00, &
-            1.248143E+00, -1.616573E-01,  3.163564E-01,  2.032396E-01, &
-            5.412375E-01, -9.390153E-01, -1.337439E+00, -1.725934E+00, &
-           -1.689352E+00,  7.514896E-01, -9.046491E-01,  4.660570E-02, &
-            7.293179E-01, -8.899439E-01, -4.959857E-01,  2.551120E+00, &
-            5.475994E-01,  2.581464E-01, -7.580181E-01,  2.868629E-01, &
-            5.102360E-01,  3.506657E-01,  2.838056E-01,  2.591469E+00, &
-           -2.005312E+00,  1.047474E+00, -4.435355E-01, -2.096366E+00, &
-           -4.830979E-01, -4.591764E+00,  2.323999E+00, -7.434576E-01, &
-           -6.721614E-02, -1.554288E+00, -1.170976E+00,  4.157160E-01, &
-            3.668592E-01, -2.417129E-01,  9.695674E-01, -2.507213E+00, &
-           -7.390667E-02,  4.186517E-01,  7.421987E-02, -2.941727E+00, &
-            7.315267E-01,  2.001157E+00, -1.975129E+00,  1.804611E+00, &
-            2.335455E+00, -1.363007E+00,  2.417728E+00,  7.097042E-02, &
-            5.636784E-01, -5.477334E-01,  1.443019E-01, -6.141093E-01, &
-            1.873040E-02,  8.677381E-01, -6.211888E-01,  2.112968E+00, &
-           -1.054468E+00,  1.899438E+00,  9.344425E-01,  1.997792E+00, &
-           -1.338792E-01,  6.367649E-02,  2.021643E+00,  6.506174E-04, &
-            5.933430E-01, -1.288353E+00,  1.243920E+00,  3.825321E-02, &
-            8.375651E-01, -1.793612E-01, -7.737147E-01, -1.708476E-01, &
-            1.979746E+00, -3.581599E-01,  9.855651E-01 ])
-        spec%prob_threshold          = 4.500000E-01
-        spec%regularization_lambda   = 1.000000E-04
+            6.954172E-01, -5.307960E-01,  2.061510E-01, -6.098551E-01, &
+            1.889445E-01, -4.136376E-01,  5.357782E-01,  4.701747E-01, &
+           -2.061510E-01,  6.098551E-01,  1.090188E-01,  9.251722E-01, &
+           -8.608490E-01,  3.162600E-01,  2.262834E-01, -1.696829E-01, &
+            7.583498E-01, -2.511738E-01, -2.732666E-01,  8.374227E-01, &
+           -2.262834E-01,  1.696829E-01, -1.480847E-01, -3.605259E-01, &
+           -3.708822E-01, -2.105392E-02,  1.701431E-01, -6.071209E-01, &
+            2.473268E-01,  2.273452E-01,  3.260449E-01,  2.105392E-02, &
+           -1.701431E-01,  3.927754E-01,  1.540926E-03, -8.932643E-02, &
+           -2.367378E-01,  3.682229E-01, -1.811340E-01, -4.314373E-01, &
+            6.509529E-01, -2.231827E-01,  2.367378E-01, -5.980958E-02, &
+           -1.635537E-02, -6.193442E-01, -2.091170E-01,  6.586643E-01, &
+            2.609537E-01,  3.249094E-01,  2.367378E-01, -2.900076E-01, &
+           -9.298594E-02,  3.262570E-01, -6.431300E-01, -1.203962E+00, &
+           -1.081853E-01,  1.529070E+00, -3.682229E-01,  2.091170E-01, &
+           -3.872637E-02, -5.370206E-01, -1.435633E-01, -3.003846E-01, &
+            4.238025E-01,  1.811340E-01, -6.586643E-01,  3.628843E-02, &
+           -3.011271E-01, -3.980673E-02, -2.518643E-01,  4.314373E-01, &
+           -2.609537E-01,  7.494593E-01, -3.240528E-01,  5.038900E-01, &
+           -6.509529E-01, -3.249094E-01, -2.127325E-01,  9.175149E-01, &
+            1.446752E-01, -2.367378E-01,  5.980958E-02,  1.635537E-02, &
+            6.193442E-01,  9.298594E-02, -3.262570E-01,  6.431300E-01, &
+            3.098715E-01,  6.991316E-02, -1.453894E+00 ])
+        spec%prob_threshold          = 3.500000E-01
+        spec%regularization_lambda   = 3.000000E-04
         spec%calibration_temperature = 1.000000E+00
         spec%boundary_margin         = 0.0
         spec%min_score_separation    = CHUNK100MICS_MIN_SCORE_SEPARATION
@@ -467,6 +470,7 @@ contains
         endif
         write(funit,'(A,A)') 'name=', trim(self%name)
         write(funit,'(A,A)') 'model_family=', trim(self%model_family)
+        write(funit,'(A,A)') 'context=', trim(self%context)
         write(funit,'(A,A)') 'feature_policy=', trim(self%feature_policy)
         write(funit,'(A)', advance='no') 'feature_weights='
         do i = 1, CAVG_QUALITY_NFEATS
@@ -539,6 +543,7 @@ contains
         write(funit,'(A,A,A)') '    function ', trim(func_name), '() result( spec )'
         write(funit,'(A)') '        type(cavg_quality_model_spec) :: spec'
         write(funit,'(A,A)') '        spec%name                    = ', trim(const_name)
+        write(funit,'(A,A)') '        spec%context                 = ', trim(fortran_quote(model%context))
         write(funit,'(A,A)') '        spec%feature_policy          = ', trim(fortran_quote(model%feature_policy))
         write(funit,'(A,A)') '        spec%model_family            = ', trim(fortran_quote(model%model_family))
         call write_weights_assignment(funit, model%weights)
@@ -711,8 +716,12 @@ contains
                 case('model_family')
                     self%model_family = trim(val)
                 case('context')
-                    ! Legacy key for backward compatibility with older model files.
-                    cycle
+                    select case(trim(val))
+                        case(CAVG_QUALITY_CONTEXT_CHUNK, CAVG_QUALITY_CONTEXT_POOL)
+                            self%context = trim(val)
+                        case DEFAULT
+                            THROW_HARD('read_model: context must be chunk or pool; sieve is hard-gates-only')
+                    end select
                 case('feature_policy', 'feature_family_set')
                     self%feature_policy = trim(val)
                 case('feature_weights')
