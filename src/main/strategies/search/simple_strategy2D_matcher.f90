@@ -862,18 +862,6 @@ contains
                 endif
                 call cavger_kill
             else
-                converged = conv%check_conv2D(p_ptr, cline, b_ptr%spproj_field, b_ptr%spproj_field%get_n('class'), p_ptr%msk)
-                converged = converged .and. (p_ptr%which_iter >= p_ptr%minits)
-                converged = converged .or.  (p_ptr%which_iter >= p_ptr%maxits)
-                if( ctrl%l_require_full_assignment )then
-                    l_full_assignment = all_active_ptcls_2D_assigned(b_ptr%spproj_field, [p_ptr%fromp,p_ptr%top], n_unassigned)
-                    if( .not. l_full_assignment )then
-                        write(logfhandle,'(A,I8)') &
-                            '>>> CLUSTER2D FULL-ASSIGNMENT COVERAGE: UNASSIGNED ACTIVE PARTICLES =', n_unassigned
-                    endif
-                    converged = converged .and. l_full_assignment
-                endif
-                if(.not. ctrl%l_stream) call progressfile_update(conv%get('progress'))
                 if( ctrl%l_restore_cavgs )then
                     if( cline%defined('which_iter') )then
                         if( ctrl%l_joint_topk )then
@@ -906,6 +894,18 @@ contains
                     call b_ptr%spproj%write_segment_inside('cls3D', p_ptr%projfile)
                     deallocate(states)
                 endif
+                converged = conv%check_conv2D(p_ptr, cline, b_ptr%spproj_field, b_ptr%spproj_field%get_n('class'), p_ptr%msk)
+                converged = converged .and. (p_ptr%which_iter >= p_ptr%minits)
+                converged = converged .or.  (p_ptr%which_iter >= p_ptr%maxits)
+                if( ctrl%l_require_full_assignment )then
+                    l_full_assignment = all_active_ptcls_2D_assigned(b_ptr%spproj_field, [p_ptr%fromp,p_ptr%top], n_unassigned)
+                    if( .not. l_full_assignment )then
+                        write(logfhandle,'(A,I8)') &
+                            '>>> CLUSTER2D FULL-ASSIGNMENT COVERAGE: UNASSIGNED ACTIVE PARTICLES =', n_unassigned
+                    endif
+                    converged = converged .and. l_full_assignment
+                endif
+                if(.not. ctrl%l_stream) call progressfile_update(conv%get('progress'))
             endif
         end subroutine finalize_restoration_and_convergence
 
