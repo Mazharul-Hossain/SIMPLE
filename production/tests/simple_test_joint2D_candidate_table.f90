@@ -27,18 +27,18 @@ call init_loc_tab(loc_tab)
 call init_balance_loc_tab(balance_loc_tab)
 call init_base_shifts(base_shifts)
 
-call tab%build_from_loc_tab(loc_tab, 3, 1.0, 0.1)
+call tab%build_from_loc_tab(loc_tab, 3)
 call tab%set_base_shifts(base_shifts)
 expected_weight = exp(-4.0) / (exp(-4.0) + exp(-5.0))
 call require_close(tab%cand(1,4)%weight, expected_weight, 1.0e-6,&
-    &'initial weights match softmax(-dist/tau)')
+    &'initial weights match likelihood exp(-(dist-best_dist))')
 call require_close(tab%cand(1,4)%logit, -4.0, 1.0e-6, 'initial logit is raw negative distance')
 call require_close(tab%cand(1,1)%weight, tab%cand(2,1)%weight, 1.0e-6,&
     &'equal-distance candidates start tied')
 p4_initial_weight = tab%cand(1,4)%weight
 p4_initial_loss = tab%expected_loss(4)
 p4_initial_entropy = tab%entropy(4)
-call tab%optimize_logits(8, 1.0, 1.0, 0.1)
+call tab%optimize_logits(8, 1.0)
 call require_true(tab%cand(1,4)%weight > p4_initial_weight,&
     &'latent optimization increases weight on lower-distance candidate')
 call require_true(tab%expected_loss(4) < p4_initial_loss,&
@@ -108,7 +108,7 @@ call require_close(sum(batch_weights(1:batch_ncands(4),4)), 1.0, 1.0e-6, 'two-ca
 call require_true(all(batch_weights(1:batch_ncands(4),4) > 0.0), 'two-candidate weights are positive')
 call require_true(all(batch_weights(1:batch_ncands(4),4) < 1.0), 'two-candidate weights remain fractional')
 
-call tab%apply_inpl_refinement(1, 3, 4, 0.5, 1.0, 0.1, old_inpl=old_inpl, updated=updated)
+call tab%apply_inpl_refinement(1, 3, 4, 0.5, old_inpl=old_inpl, updated=updated)
 call require_true(updated, 'in-plane refinement reports update')
 call require_true(old_inpl == 15, 'in-plane refinement reports old in-plane index')
 call require_true(tab%cand(3,1)%inpl == 4, 'in-plane refinement updates in-plane index')
@@ -120,24 +120,24 @@ call require_true(tab%cand(3,1)%weight > tab%cand(1,1)%weight,&
 call tab%apply_reliability(2, 1.0)
 call require_true(tab%accepted(1), 'in-plane-refined particle remains accepted after reliability gates')
 
-call tab_inpl%build_from_loc_tab(loc_tab, 3, 1.0, 0.1)
+call tab_inpl%build_from_loc_tab(loc_tab, 3)
 call tab_inpl%set_base_shifts(base_shifts)
-call tab_inpl%apply_inpl_refinement(4, 1, 23, 0.1, 1.0, 0.1, old_inpl=old_inpl, updated=updated)
+call tab_inpl%apply_inpl_refinement(4, 1, 23, 0.1, old_inpl=old_inpl, updated=updated)
 call require_true(updated, 'two-candidate in-plane refinement reports update')
 call require_true(old_inpl == 22, 'two-candidate in-plane refinement reports old in-plane index')
 call require_true(tab_inpl%hard_rank(4) == 1, 'two-candidate in-plane refinement keeps best hard rank')
 call require_true(tab_inpl%cand(1,4)%weight > 0.95, 'two-candidate in-plane refinement sharpens weight')
 call tab_inpl%apply_reliability(2, 0.50)
 call require_true(tab_inpl%accepted(4), 'reliability gates use post-in-plane-refinement entropy')
-call tab_inpl%apply_inpl_refinement(1, 1, 20, 1.0, 1.0, 0.1, old_inpl=old_inpl, updated=updated)
+call tab_inpl%apply_inpl_refinement(1, 1, 20, 1.0, old_inpl=old_inpl, updated=updated)
 call require_true(tab_inpl%hard_rank(1) == 1, 'equal-distance in-plane refinement remains deterministic')
 call tab_inpl%kill
 
-call tab_balance_zero%build_from_loc_tab(balance_loc_tab, 2, 1.0, 0.1)
+call tab_balance_zero%build_from_loc_tab(balance_loc_tab, 2)
 call tab_balance_zero%apply_reliability(2, 1.0)
 zero_logit = tab_balance_zero%cand(1,1)%logit
 zero_weight = tab_balance_zero%cand(1,1)%weight
-call tab_balance_zero%apply_balance_prior(4, 0.0, 1.0, 0.1, zero_diag)
+call tab_balance_zero%apply_balance_prior(4, 0.0, zero_diag)
 call require_close(tab_balance_zero%cand(1,1)%logit, zero_logit, 1.0e-6,&
     &'zero balance weight leaves logits unchanged')
 call require_close(tab_balance_zero%cand(1,1)%weight, zero_weight, 1.0e-6,&
@@ -147,10 +147,10 @@ call require_close(zero_diag%prior_min, 0.0, 1.0e-6, 'zero balance prior minimum
 call require_close(zero_diag%prior_max, 0.0, 1.0e-6, 'zero balance prior maximum is zero')
 call tab_balance_zero%kill
 
-call tab_balance%build_from_loc_tab(balance_loc_tab, 2, 1.0, 0.1)
+call tab_balance%build_from_loc_tab(balance_loc_tab, 2)
 call tab_balance%apply_reliability(2, 1.0)
 balance_range_before = accepted_support_range(tab_balance, 4)
-call tab_balance%apply_balance_prior(4, 1.0, 1.0, 0.1, balance_diag)
+call tab_balance%apply_balance_prior(4, 1.0, balance_diag)
 call tab_balance%apply_reliability(2, 1.0)
 balance_range_after = accepted_support_range(tab_balance, 4)
 call require_true(balance_diag%active_classes == 3, 'balance prior counts active retained classes')
@@ -202,9 +202,9 @@ call require_close(tab_roundtrip%cand(3,1)%weight, tab%cand(3,1)%weight, 1.0e-6,
 call tab_roundtrip%kill
 call del_file(ROUNDTRIP_FNAME)
 
-call tab_shift%build_from_loc_tab(loc_tab, 3, 1.0, 0.1)
+call tab_shift%build_from_loc_tab(loc_tab, 3)
 call tab_shift%set_base_shifts(base_shifts)
-call tab_shift%apply_shift_refinement(1, 3, [5.5, 2.0], 0.5, 0.25, 1.0, 0.1,&
+call tab_shift%apply_shift_refinement(1, 3, [5.5, 2.0], 0.5, 0.25,&
     &old_shift=old_shift, new_shift=new_shift, step_norm=step_norm, updated=updated)
 call require_true(updated, 'shift refinement reports an updated candidate')
 call require_close(old_shift(1), 1.5, 1.0e-6, 'shift refinement reports old x')
@@ -223,7 +223,7 @@ call require_true(tab_shift%accepted(1), 'shift-refined particle remains accepte
 call tab_shift%export_batch(1, 1, batch_refs, batch_weights, batch_ncands)
 call require_close(batch_refs(3,1)%x, 12.5, 1.0e-6, 'shift-refined export adds damped x to base shift')
 call require_close(batch_refs(3,1)%y, 19.0, 1.0e-6, 'shift-refined export adds damped y to base shift')
-call tab_shift%apply_shift_refinement(4, 2, [2.0, 3.0], 3.0, 1.0, 1.0, 0.1,&
+call tab_shift%apply_shift_refinement(4, 2, [2.0, 3.0], 3.0, 1.0,&
     &old_shift=old_shift, new_shift=new_shift, step_norm=step_norm, updated=updated)
 call require_true(updated, 'full-eta shift refinement reports update')
 call require_close(new_shift(1), 2.0, 1.0e-6, 'full-eta shift refinement uses optimizer x')
@@ -232,11 +232,11 @@ call require_true(tab_shift%hard_rank(4) == 2, 'full-eta shift refinement can ch
 call tab_shift%kill
 
 call tab%kill
-call tab%build_from_loc_tab(loc_tab, 1, 1.0, 0.1)
+call tab%build_from_loc_tab(loc_tab, 1)
 call tab%set_base_shifts(base_shifts)
-call tab%optimize_logits(8, 1.0, 1.0, 0.1)
+call tab%optimize_logits(8, 1.0)
 call tab%apply_reliability(2, 0.0)
-call tab%apply_balance_prior(5, 2.0, 1.0, 0.1, balance_diag)
+call tab%apply_balance_prior(5, 2.0, balance_diag)
 call tab%apply_reliability(2, 0.0)
 call require_true(tab%ncand(1) == 1, 'topk=1 keeps one candidate')
 call require_close(tab%cand(1,1)%weight, 1.0, 1.0e-6, 'topk=1 candidate weight is one')
@@ -249,14 +249,14 @@ call tab%export_batch(1, 4, batch_refs, batch_weights, batch_ncands)
 call require_true(batch_refs(1,1)%icls == assgn_map(1)%icls, 'topk=1 export class equals hard assignment')
 call require_true(batch_refs(1,1)%inpl == assgn_map(1)%inpl, 'topk=1 export in-plane equals hard assignment')
 call require_close(batch_weights(1,1), 1.0, 1.0e-6, 'topk=1 export weight is one')
-call tab%apply_shift_refinement(1, 1, [4.0, -4.0], 0.25, 0.5, 1.0, 0.1,&
+call tab%apply_shift_refinement(1, 1, [4.0, -4.0], 0.25, 0.5,&
     &old_shift=old_shift, new_shift=new_shift, step_norm=step_norm, updated=updated)
 call require_true(updated, 'topk=1 shift refinement reports update')
 call require_close(new_shift(1), 2.0, 1.0e-6, 'topk=1 shift refinement damps x')
 call require_close(new_shift(2), -2.0, 1.0e-6, 'topk=1 shift refinement damps y')
 call require_close(tab%cand(1,1)%weight, 1.0, 1.0e-6, 'topk=1 shift refinement keeps unit weight')
 call require_true(tab%hard_rank(1) == 1, 'topk=1 shift refinement keeps hard rank one')
-call tab%apply_inpl_refinement(1, 1, 7, 0.125, 1.0, 0.1, old_inpl=old_inpl, updated=updated)
+call tab%apply_inpl_refinement(1, 1, 7, 0.125, old_inpl=old_inpl, updated=updated)
 call require_true(updated, 'topk=1 in-plane refinement reports update')
 call require_true(old_inpl == 20, 'topk=1 in-plane refinement reports old in-plane index')
 call require_true(tab%cand(1,1)%inpl == 7, 'topk=1 in-plane refinement updates in-plane index')

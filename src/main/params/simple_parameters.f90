@@ -560,8 +560,6 @@ type :: parameters
     real    :: sgd_eta_latent=0.5  !< joint-SGD latent-logit learning rate
     real    :: sgd_eta_shift=0.25  !< joint-SGD shift learning rate
     real    :: sgd_eta=0.2         !< stochastic class-average learning rate
-    real    :: sgd_tau=1.0         !< joint-SGD softmax temperature
-    real    :: sgd_tau_min=0.1     !< joint-SGD minimum softmax temperature
     real    :: sherr=0.            !< shift error(in pixels){2}
     real    :: sigma=1.0           !< for gaussian function generation {1.}
     real    :: smpd=1.3            !< sampling distance; same as EMANs apix(in A)

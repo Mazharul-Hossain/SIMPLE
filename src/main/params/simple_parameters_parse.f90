@@ -507,8 +507,6 @@ contains
         call reg%add_real('sgd_eta', self%sgd_eta)
         call reg%add_real('sgd_eta_latent', self%sgd_eta_latent)
         call reg%add_real('sgd_eta_shift', self%sgd_eta_shift)
-        call reg%add_real('sgd_tau', self%sgd_tau)
-        call reg%add_real('sgd_tau_min', self%sgd_tau_min)
         call reg%add_real('sherr', self%sherr)
         call reg%add_real('smpd', self%smpd)
         call reg%add_real('smpd_crop', self%smpd_crop)

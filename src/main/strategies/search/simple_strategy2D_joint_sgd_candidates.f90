@@ -112,19 +112,14 @@ contains
         endif
     end function joint2D_candidate_part_fname
 
-    subroutine build_from_loc_tab( self, loc_tab, topk, tau, tau_min, pinds )
+    subroutine build_from_loc_tab( self, loc_tab, topk, pinds )
         class(joint2D_candidate_table), intent(inout) :: self
         type(ptcl_ref),                 intent(in)    :: loc_tab(:,:)
         integer,                        intent(in)    :: topk
-        real,                           intent(in)    :: tau
-        real,                           intent(in)    :: tau_min
         integer, optional,              intent(in)    :: pinds(:)
         integer :: icls, iptcl, nclasses, nptcls
-        real    :: tau_eff
 
         if( topk < 1 ) THROW_HARD('joint2D_candidate_table: topk must be >= 1')
-        tau_eff = max(tau, tau_min)
-        if( tau_eff <= 0. ) THROW_HARD('joint2D_candidate_table: tau_eff must be > 0')
 
         nclasses = size(loc_tab, 1)
         nptcls   = size(loc_tab, 2)
@@ -139,7 +134,7 @@ contains
                 if( .not. valid_ref(loc_tab(icls,iptcl)) ) cycle
                 call insert_candidate(self, iptcl, topk, loc_tab(icls,iptcl))
             end do
-            call finalize_particle(self, iptcl, tau_eff)
+            call finalize_particle(self, iptcl)
         end do
         call recover_column_pinds(self)
         call self%apply_reliability(1, 1.0)
@@ -158,25 +153,20 @@ contains
         self%base_shift = base_shift
     end subroutine set_base_shifts
 
-    subroutine optimize_logits( self, inner_its, eta_latent, tau, tau_min )
+    subroutine optimize_logits( self, inner_its, eta_latent )
         class(joint2D_candidate_table), intent(inout) :: self
         integer,                        intent(in)    :: inner_its
         real,                           intent(in)    :: eta_latent
-        real,                           intent(in)    :: tau
-        real,                           intent(in)    :: tau_min
         integer :: iter, iptcl
-        real    :: tau_eff
 
         call require_allocated(self, 'latent-logit optimization requested before build/read')
         if( inner_its < 1 ) THROW_HARD('joint2D_candidate_table: inner_its must be >= 1')
         if( eta_latent <= 0. ) THROW_HARD('joint2D_candidate_table: eta_latent must be > 0')
-        tau_eff = max(tau, tau_min)
-        if( tau_eff <= 0. ) THROW_HARD('joint2D_candidate_table: tau_eff must be > 0')
 
         do iter = 1, inner_its
             do iptcl = 1, size(self%ncand)
-                call optimize_particle_logits(self, iptcl, eta_latent, tau_eff)
-                call refresh_particle(self, iptcl, tau_eff)
+                call optimize_particle_logits(self, iptcl, eta_latent)
+                call refresh_particle(self, iptcl)
             end do
         end do
         do iptcl = 1, size(self%ncand)
@@ -186,25 +176,21 @@ contains
         end do
     end subroutine optimize_logits
 
-    subroutine apply_balance_prior( self, nclasses, balance_weight, tau, tau_min, diag, first_ptcl, last_ptcl )
+    subroutine apply_balance_prior( self, nclasses, balance_weight, diag, first_ptcl, last_ptcl )
         class(joint2D_candidate_table),      intent(inout) :: self
         integer,                             intent(in)    :: nclasses
         real,                                intent(in)    :: balance_weight
-        real,                                intent(in)    :: tau
-        real,                                intent(in)    :: tau_min
         type(joint2D_balance_diag), optional,intent(out)   :: diag
         integer, optional,                   intent(in)    :: first_ptcl
         integer, optional,                   intent(in)    :: last_ptcl
         type(joint2D_balance_diag) :: local_diag
         real, allocatable :: support(:), prior(:)
         integer :: first, last, iptcl, irank, icls, nc, hard_before, k
-        real    :: support_total, tau_eff
+        real    :: support_total
 
         call require_allocated(self, 'class-balance prior requested before build/read')
         if( nclasses < 1 ) THROW_HARD('joint2D_candidate_table: nclasses must be >= 1')
         if( balance_weight < 0. ) THROW_HARD('joint2D_candidate_table: balance_weight must be >= 0')
-        tau_eff = max(tau, tau_min)
-        if( tau_eff <= 0. ) THROW_HARD('joint2D_candidate_table: tau_eff must be > 0')
 
         first = 1
         last  = size(self%ncand)
@@ -284,7 +270,7 @@ contains
                         THROW_HARD('joint2D_candidate_table: nonfinite class-balance logit')
                     endif
                 end do
-                call refresh_particle(self, iptcl, tau_eff)
+                call refresh_particle(self, iptcl)
                 call require_finite_particle(self, iptcl, 'class-balance prior')
                 if( hard_before > 0 .and. self%hard_rank(iptcl) > 0 .and.&
                     &hard_before /= self%hard_rank(iptcl) )then
@@ -310,18 +296,15 @@ contains
         deallocate(support, prior)
     end subroutine apply_balance_prior
 
-    subroutine apply_inpl_refinement( self, iptcl, irank, new_inpl, refined_dist, tau, tau_min, old_inpl, updated )
+    subroutine apply_inpl_refinement( self, iptcl, irank, new_inpl, refined_dist, old_inpl, updated )
         class(joint2D_candidate_table), intent(inout)        :: self
         integer,                        intent(in)           :: iptcl
         integer,                        intent(in)           :: irank
         integer,                        intent(in)           :: new_inpl
         real,                           intent(in)           :: refined_dist
-        real,                           intent(in)           :: tau
-        real,                           intent(in)           :: tau_min
         integer,              optional, intent(out)          :: old_inpl
         logical,              optional, intent(out)          :: updated
         integer :: nc, prev_inpl
-        real    :: tau_eff
 
         call require_allocated(self, 'in-plane refinement requested before build/read')
         if( present(old_inpl) ) old_inpl = 0
@@ -334,8 +317,6 @@ contains
             THROW_HARD('joint2D_candidate_table: in-plane refinement candidate rank out of range')
         endif
         if( new_inpl < 1 ) THROW_HARD('joint2D_candidate_table: refined in-plane index must be > 0')
-        tau_eff = max(tau, tau_min)
-        if( tau_eff <= 0. ) THROW_HARD('joint2D_candidate_table: tau_eff must be > 0')
         if( .not. finite_real(refined_dist) )then
             THROW_HARD('joint2D_candidate_table: nonfinite in-plane-refinement distance')
         endif
@@ -344,14 +325,14 @@ contains
         self%cand(irank,iptcl)%inpl  = new_inpl
         self%cand(irank,iptcl)%dist  = refined_dist
         self%cand(irank,iptcl)%logit = -refined_dist
-        call refresh_particle(self, iptcl, tau_eff)
+        call refresh_particle(self, iptcl)
         self%loss_delta(iptcl) = self%initial_expected_loss(iptcl) - self%expected_loss(iptcl)
 
         if( present(old_inpl) ) old_inpl = prev_inpl
         if( present(updated)  ) updated  = .true.
     end subroutine apply_inpl_refinement
 
-    subroutine apply_shift_refinement( self, iptcl, irank, opt_shift, refined_dist, eta_shift, tau, tau_min,&
+    subroutine apply_shift_refinement( self, iptcl, irank, opt_shift, refined_dist, eta_shift,&
             &old_shift, new_shift, step_norm, updated )
         class(joint2D_candidate_table), intent(inout)        :: self
         integer,                        intent(in)           :: iptcl
@@ -359,13 +340,11 @@ contains
         real,                           intent(in)           :: opt_shift(2)
         real,                           intent(in)           :: refined_dist
         real,                           intent(in)           :: eta_shift
-        real,                           intent(in)           :: tau
-        real,                           intent(in)           :: tau_min
         real,                 optional, intent(out)          :: old_shift(2)
         real,                 optional, intent(out)          :: new_shift(2)
         real,                 optional, intent(out)          :: step_norm
         logical,              optional, intent(out)          :: updated
-        real :: cur_shift(2), damped_shift(2), step_vec(2), tau_eff
+        real :: cur_shift(2), damped_shift(2), step_vec(2)
         integer :: nc
 
         call require_allocated(self, 'shift refinement requested before build/read')
@@ -381,8 +360,6 @@ contains
             THROW_HARD('joint2D_candidate_table: shift refinement candidate rank out of range')
         endif
         if( eta_shift <= 0. ) THROW_HARD('joint2D_candidate_table: eta_shift must be > 0')
-        tau_eff = max(tau, tau_min)
-        if( tau_eff <= 0. ) THROW_HARD('joint2D_candidate_table: tau_eff must be > 0')
         if( .not. finite_real(opt_shift(1)) .or. .not. finite_real(opt_shift(2)) .or.&
             &.not. finite_real(refined_dist) )then
             THROW_HARD('joint2D_candidate_table: nonfinite shift-refinement result')
@@ -406,7 +383,7 @@ contains
         self%cand(irank,iptcl)%has_sh = .true.
         self%cand(irank,iptcl)%dist   = refined_dist
         self%cand(irank,iptcl)%logit  = -refined_dist
-        call refresh_particle(self, iptcl, tau_eff)
+        call refresh_particle(self, iptcl)
         self%loss_delta(iptcl) = self%initial_expected_loss(iptcl) - self%expected_loss(iptcl)
 
         if( present(old_shift) ) old_shift = cur_shift
@@ -960,29 +937,29 @@ contains
         endif
     end function candidate_less
 
-    subroutine finalize_particle( self, iptcl, tau_eff )
+    subroutine finalize_particle( self, iptcl )
         class(joint2D_candidate_table), intent(inout) :: self
         integer,                        intent(in)    :: iptcl
-        real,                           intent(in)    :: tau_eff
         integer :: irank, nc
 
         nc = self%ncand(iptcl)
         if( nc < 1 ) return
 
         do irank = 1, nc
+            ! Noise-normalized Euclidean distances are negative log-likelihoods.
             self%cand(irank,iptcl)%logit = -self%cand(irank,iptcl)%dist
         end do
-        call refresh_particle(self, iptcl, tau_eff)
+        call refresh_particle(self, iptcl)
         self%initial_hard_rank(iptcl)     = self%hard_rank(iptcl)
         self%initial_entropy(iptcl)       = self%entropy(iptcl)
         self%initial_expected_loss(iptcl) = self%expected_loss(iptcl)
         self%loss_delta(iptcl)            = 0.
     end subroutine finalize_particle
 
-    subroutine optimize_particle_logits( self, iptcl, eta_latent, tau_eff )
+    subroutine optimize_particle_logits( self, iptcl, eta_latent )
         class(joint2D_candidate_table), intent(inout) :: self
         integer,                        intent(in)    :: iptcl
-        real,                           intent(in)    :: eta_latent, tau_eff
+        real,                           intent(in)    :: eta_latent
         integer :: irank, nc
         real    :: grad, loss
 
@@ -990,15 +967,14 @@ contains
         if( nc < 1 ) return
         loss = self%expected_loss(iptcl)
         do irank = 1, nc
-            grad = (self%cand(irank,iptcl)%weight / tau_eff) * (self%cand(irank,iptcl)%dist - loss)
+            grad = self%cand(irank,iptcl)%weight * (self%cand(irank,iptcl)%dist - loss)
             self%cand(irank,iptcl)%logit = self%cand(irank,iptcl)%logit - eta_latent * grad
         end do
     end subroutine optimize_particle_logits
 
-    subroutine refresh_particle( self, iptcl, tau_eff )
+    subroutine refresh_particle( self, iptcl )
         class(joint2D_candidate_table), intent(inout) :: self
         integer,                        intent(in)    :: iptcl
-        real,                           intent(in)    :: tau_eff
         integer :: irank, nc
         real    :: max_score, denom, score, w, best_weight
 
@@ -1018,13 +994,13 @@ contains
         max_score = -huge(1.0)
         do irank = 1, nc
             self%cand(irank,iptcl)%rank = irank
-            score = self%cand(irank,iptcl)%logit / tau_eff
+            score = self%cand(irank,iptcl)%logit
             max_score = max(max_score, score)
         end do
 
         denom = 0.
         do irank = 1, nc
-            score = self%cand(irank,iptcl)%logit / tau_eff
+            score = self%cand(irank,iptcl)%logit
             denom = denom + exp(score - max_score)
         end do
         if( denom <= 0. .or. denom /= denom )then
@@ -1040,7 +1016,7 @@ contains
         best_weight = -1.
         self%hard_rank(iptcl) = 1
         do irank = 1, nc
-            score = self%cand(irank,iptcl)%logit / tau_eff
+            score = self%cand(irank,iptcl)%logit
             w = exp(score - max_score) / denom
             self%cand(irank,iptcl)%weight = w
             self%cand(irank,iptcl)%eff_weight = w

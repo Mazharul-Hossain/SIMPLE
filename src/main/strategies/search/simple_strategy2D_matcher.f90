@@ -466,7 +466,7 @@ contains
                     angle_delta  = inpl_angle_delta(old_inpl, new_inpl)
                     loss_delta   = old_dist - refined_dist
                     call joint_topk_candidates%apply_inpl_refinement(iptcl_map, irank, new_inpl, refined_dist,&
-                        &p_ptr%sgd_tau, p_ptr%sgd_tau_min, old_inpl=old_inpl, updated=updated)
+                        &old_inpl=old_inpl, updated=updated)
                     if( updated )then
                         if( new_inpl /= old_inpl ) changed_t(ithr) = changed_t(ithr) + 1
                         if( loss_delta < 0. ) negative_delta_t(ithr) = negative_delta_t(ithr) + 1
@@ -624,7 +624,7 @@ contains
                         cycle
                     endif
                     call joint_topk_candidates%apply_shift_refinement(iptcl_map, irank, opt_shift, refined_dist,&
-                        &p_ptr%sgd_eta_shift, p_ptr%sgd_tau, p_ptr%sgd_tau_min, old_shift=old_shift,&
+                        &p_ptr%sgd_eta_shift, old_shift=old_shift,&
                         &new_shift=damped_shift, step_norm=step, updated=updated)
                     if( updated )then
                         refined_t(ithr) = refined_t(ithr) + 1
@@ -696,7 +696,7 @@ contains
                 THROW_HARD('joint 2D class-balance prior requested before top-K table was read')
             endif
             call joint_topk_candidates%apply_balance_prior(p_ptr%ncls, p_ptr%sgd_balance_weight,&
-                &p_ptr%sgd_tau, p_ptr%sgd_tau_min, balance_diag, first_ptcl=batch_start, last_ptcl=batch_end)
+                &balance_diag, first_ptcl=batch_start, last_ptcl=batch_end)
             call joint_topk_candidates%apply_reliability(p_ptr%sgd_cavg_min_cands, p_ptr%sgd_cavg_max_entropy)
             if( count(joint_topk_candidates%accepted) == 0 )then
                 THROW_HARD('joint 2D class-balance prior left zero accepted top-K particles')

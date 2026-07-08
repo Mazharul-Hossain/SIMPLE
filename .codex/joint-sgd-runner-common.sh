@@ -277,10 +277,34 @@ infer_workflow_root() {
 prepare_build_copy() {
   mkdir -p "$projects_home"
   if [[ -e "$build_copy" ]]; then
-    fail "build copy already exists: $build_copy; move it aside or set JOINT_SGD_BUILD_COPY"
+    [[ -d "$build_copy" ]] || fail "build copy path exists but is not a directory: $build_copy"
+    if [[ "${JOINT_SGD_REWRITE_BUILD:-}" == "yes" ]]; then
+      echo "Refreshing existing build copy: $build_copy"
+    else
+      local answer=""
+      if [[ ! -t 0 ]]; then
+        fail "build copy already exists: $build_copy; set JOINT_SGD_REWRITE_BUILD=yes to refresh it in noninteractive mode"
+      fi
+      echo "Build copy already exists: $build_copy"
+      printf 'Rewrite source files in this build copy and rebuild? Type yes to continue: '
+      read -r answer
+      [[ "$answer" == "yes" ]] || fail "leaving existing build copy unchanged"
+    fi
+    command -v rsync >/dev/null 2>&1 || fail "rsync is required to refresh an existing build copy"
+    rsync -a --delete \
+      --exclude '/.git/' \
+      --exclude '/build/' \
+      --exclude '/build-debug/' \
+      --exclude '/build-release/' \
+      --exclude '/CMakeFiles/' \
+      --exclude '/bin/' \
+      --exclude '/lib/' \
+      --exclude '/obj/' \
+      "$simple_home/" "$build_copy/"
+  else
+    git clone "$simple_home" "$build_copy"
   fi
 
-  git clone "$simple_home" "$build_copy"
   (
     cd "$build_copy"
     mkdir -p build-debug

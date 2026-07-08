@@ -18,7 +18,7 @@ part1_pinds = [11, 13, 15]
 part2_pinds = [12, 14]
 call init_loc_tab(loc_tab)
 
-call global_tab%build_from_loc_tab(loc_tab, 2, 1.0, 0.1, pinds=pinds)
+call global_tab%build_from_loc_tab(loc_tab, 2, pinds=pinds)
 call global_tab%apply_reliability(2, 1.0)
 call require_true(all(global_tab%pinds == pinds), 'global table records exact particle order')
 call require_true(global_tab%ncand(3) == 0, 'empty particle remains empty in global table')
@@ -56,7 +56,7 @@ call accumulate_support(global_tab, rejected_support)
 call require_close(sum(rejected_support), 0.0, 1.0e-6, 'rejected candidates contribute zero support')
 call global_tab%apply_reliability(2, 1.0)
 
-call hard_global%build_from_loc_tab(loc_tab, 1, 1.0, 0.1, pinds=pinds)
+call hard_global%build_from_loc_tab(loc_tab, 1, pinds=pinds)
 call hard_global%extract_by_pinds(part1_pinds, hard_part)
 call require_true(hard_part%ncand(1) == 1, 'topk=1 part keeps one candidate')
 call require_close(hard_part%cand(1,1)%weight, 1.0, 1.0e-6, 'topk=1 part candidate weight is one')

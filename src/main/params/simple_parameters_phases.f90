@@ -736,14 +736,12 @@ contains
             if( self%sgd_balance_weight < 0.0 )then
                 THROW_HARD('sgd_balance_weight must be >= 0')
             endif
-            if( self%sgd_tau <= 0.0 )then
-                THROW_HARD('sgd_tau must be > 0')
-            endif
-            if( self%sgd_tau_min <= 0.0 )then
-                THROW_HARD('sgd_tau_min must be > 0')
-            endif
             select case(trim(self%sgd_mode))
                 case('joint')
+                    if( trim(self%prob_assign) /= 'likelihood' )then
+                        self%prob_assign = 'likelihood'
+                        write(logfhandle,'(A)') '>>> JOINT 2D SGD: forcing prob_assign=likelihood'
+                    endif
                     if( trim(self%sgd_latent) /= 'st_topk' )then
                         THROW_HARD('joint SGD scaffold currently implements only sgd_latent=st_topk')
                     endif

@@ -448,18 +448,15 @@ contains
         endif
         call flush(logfhandle)
         if( params%l_sgd .and. trim(params%sgd_mode) == 'joint' )then
-            call joint_candidates%build_from_loc_tab(eulprob_obj_glob%loc_tab, params%sgd_topk,&
-                &params%sgd_tau, params%sgd_tau_min, pinds=pinds)
+            call joint_candidates%build_from_loc_tab(eulprob_obj_glob%loc_tab, params%sgd_topk, pinds=pinds)
             allocate(base_shifts(2,eulprob_obj_glob%nptcls), source=0.)
             do iptcl = 1, eulprob_obj_glob%nptcls
                 if( pinds(iptcl) > 0 ) base_shifts(:,iptcl) = build%spproj_field%get_2Dshift(pinds(iptcl))
             end do
             call joint_candidates%set_base_shifts(base_shifts)
-            call joint_candidates%optimize_logits(params%sgd_inner_its, params%sgd_eta_latent,&
-                &params%sgd_tau, params%sgd_tau_min)
+            call joint_candidates%optimize_logits(params%sgd_inner_its, params%sgd_eta_latent)
             call joint_candidates%apply_reliability(params%sgd_cavg_min_cands, params%sgd_cavg_max_entropy)
-            call joint_candidates%apply_balance_prior(params%ncls, params%sgd_balance_weight,&
-                &params%sgd_tau, params%sgd_tau_min, balance_diag)
+            call joint_candidates%apply_balance_prior(params%ncls, params%sgd_balance_weight, balance_diag)
             call joint_candidates%apply_reliability(params%sgd_cavg_min_cands, params%sgd_cavg_max_entropy)
             if( count(joint_candidates%accepted) == 0 )then
                 THROW_HARD('joint 2D top-K reliability rejected all particles')
