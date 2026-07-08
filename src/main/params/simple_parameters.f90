@@ -65,6 +65,7 @@ type :: parameters
     character(len=3)          :: chunk='no'           !< indicates whether we are within a chunk(yes|no){no}
     character(len=3)          :: classtats='no'       !< calculate class population statistics(yes|no){no}
     character(len=3)          :: clear='no'           !< clear exising processing upon start (stream)
+    character(len=3)          :: cluster_only='no'    !< perform clustering only (id junk but no rejection)in cluster_cavgs(yes|no){no}
     character(len=3)          :: combine_eo='no'      !< Whether combined e/o volumes have been used for alignment(yes|no){no}
     character(len=3)          :: continue='no'        !< continue previous refinement(yes|no){no}
     character(len=3)          :: ctfstats='no'        !< calculate ctf statistics(yes|no){no}
@@ -296,12 +297,14 @@ type :: parameters
     character(len=STDLEN)     :: picker='new'         !< which picker to use (old|new|segdiam){new}
     character(len=STDLEN)     :: plot_key=''          !< plot using plot_key on y axis, sort on x
     character(len=STDLEN)     :: protocol=''          !< generic option
+    character(len=STDLEN)     :: prob_assign='legacy' !< probabilistic assignment weighting(legacy|likelihood){legacy}
     character(len=STDLEN)     :: prob_neigh_mode='state' !< prob_neigh neighborhood mode(state|geom|sum|shc|snhc){state}
     character(len=STDLEN)     :: ptcl_src='raw' !< particle source for matching and 3D rec(raw|den){raw}
     character(len=STDLEN)     :: qsys_name='local'    !< name of queue system (local|coarray|slurm|pbs|lsf|sge)
     character(len=STDLEN)     :: qsys_partition2D=''  !< partition name for streaming 2D analysis
     character(len=STDLEN)     :: quality_mode='apply' !< class-average quality mode(apply|analyze|learn|evaluate|promote){apply}
-    character(len=STDLEN)     :: quality_context='chunk' !< class-average quality hard-gate context(chunk|pool){chunk}
+    ! class-average quality context: sieve=small hard-gate-only chunks, chunk=larger learned chunks, pool=pre-3D pooled classes
+    character(len=STDLEN)     :: quality_context='chunk' !< class-average quality hard-gate context(chunk|pool|sieve){chunk}
     ! class-average quality model preset(chunk100mics|chunk100mics_linear|pool){chunk100mics}
     character(len=STDLEN)     :: quality_model='chunk100mics'
     character(len=STDLEN)     :: real_filter=''

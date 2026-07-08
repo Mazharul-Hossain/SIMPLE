@@ -1,12 +1,13 @@
 !@descr: analysis of class averages
 module simple_commanders_cavgs
 use simple_commanders_api
-use simple_cavg_quality_analysis, only: evaluate_cavg_quality, write_cavg_quality_analysis, &
-    write_cavg_quality_feature_table
+use simple_cavg_quality_analysis, only: evaluate_cavg_quality, evaluate_cavg_quality_hard_reject, &
+    write_cavg_quality_analysis, write_cavg_quality_feature_table
 use simple_cavg_quality_learn,    only: evaluate_cavg_quality_model, evaluate_cavg_quality_result, learn_cavg_quality_model
 use simple_cavg_quality_model,    only: CAVG_QUALITY_MODEL_CHUNK_DEFAULT, cavg_quality_model, &
     write_cavg_quality_model_builtin_code
-use simple_cavg_quality_types,    only: CAVG_QUALITY_CONTEXT_CHUNK, CAVG_QUALITY_CONTEXT_POOL, cavg_quality_result
+use simple_cavg_quality_types,    only: CAVG_QUALITY_CONTEXT_CHUNK, CAVG_QUALITY_CONTEXT_POOL, &
+    CAVG_QUALITY_CONTEXT_SIEVE, cavg_quality_result
 use simple_string_utils,          only: lowercase
 use simple_strategy2D_utils
 use simple_imgarr_utils, only: read_cavgs_into_imgarr, dealloc_imgarr, write_imgarr, extract_imgarr, write_selected_cavgs, join_imgarrs, read_stk_into_imgarr
@@ -158,18 +159,17 @@ contains
         integer,          parameter   :: NCLUST_MAX = 65
         type(image),      allocatable :: cavg_imgs(:)
         real,             allocatable :: mm(:,:), dmat(:,:), resvals_tmp(:), resvals(:)
-        logical,          allocatable :: l_non_junk(:)
-        integer,          allocatable :: labels(:), clsinds(:), i_medoids(:), inds(:)
+        logical,          allocatable :: l_non_junk(:), l_states(:)
+        integer,          allocatable :: labels(:), clsinds(:), i_medoids(:), inds(:), tmp(:)
         integer,          allocatable :: clspops(:), states(:), labels4write(:), inds_glob(:)
         type(clust_info), allocatable :: clust_info_arr(:)
+        type(clust_info)              :: clust_info_junk
         type(parameters)              :: params
         type(sp_project)              :: spproj
-        integer                       :: ncls, ncls_sel, icls, cnt, nptcls
+        real                          :: frac_good, oa_min, oa_max, smpd
+        integer                       :: ldim(3), pop, ncls, ncls_sel, icls, cnt, nptcls
         integer                       :: i, nclust, iclust, nptcls_good
-        integer                       :: ldim(3), pop
-        logical                       :: l_skip_junk_rejection
-        real                          :: frac_good
-        real                          :: oa_min, oa_max, smpd
+        logical                       :: l_skip_junk_rejection, l_cluster_only
         ! defaults
         call cline%set('oritype', 'cls2D')
         call cline%set('ctf',        'no')
@@ -181,6 +181,16 @@ contains
         ! master parameters
         call params%new(cline)
         l_skip_junk_rejection = trim(params%skip_rejection) == 'yes'
+        l_cluster_only        = trim(params%cluster_only)   == 'yes'
+        ! Clustering only presets
+        if( l_cluster_only ) then
+            ! no particle pruning, junk is identified but not rejected
+            call cline%set('prune', 'no')
+            params%prune = 'no'
+            call cline%set('skip_rejection', 'no')
+            params%skip_rejection = 'no'
+            l_skip_junk_rejection = .false.
+        endif
         ! read project file
         call spproj%read(params%projfile)
         ncls = spproj%os_cls2D%get_noris()
@@ -221,6 +231,7 @@ contains
             endif
         endif
         clust_info_arr = align_and_score_cavg_clusters( params, dmat, cavg_imgs, clspops, i_medoids, labels )
+        call dealloc_imgarr(cavg_imgs)
         ! communicate medoid indices to cls2D field of project (this have to be after scoring & ranking)
         call spproj%os_cls2D%set_all2single('medoid_ind',  0)
         do iclust = 1, nclust
@@ -228,83 +239,105 @@ contains
                 call spproj%os_cls2D%set(clsinds(i_medoids(iclust)), 'medoid_ind', iclust)
             endif
         end do
-        ! re-create cavg_imgs
-        call dealloc_imgarr(cavg_imgs)
-        cavg_imgs = read_cavgs_into_imgarr(spproj, mask=l_non_junk)
-        ! write aligned clusters
-        call write_aligned_cavgs(labels, cavg_imgs, clust_info_arr, 'cluster_aligned', params%ext%to_char())
-        ! write un-aligned clusters
-        call write_imgarr(ncls_sel, cavg_imgs, labels, 'cluster', params%ext%to_char() )
-        ! update project
-        call spproj%os_ptcl2D%transfer_class_assignment(spproj%os_ptcl3D)
-        call spproj%os_cls2D%set_all2single('cluster',  0)
-        call spproj%os_cls3D%set_all2single('cluster',  0)
-        call spproj%os_cls2D%set_all2single('accept',   0)
-        call spproj%os_cls3D%set_all2single('accept',   0)
-        call spproj%os_ptcl2D%set_all2single('cluster', 0)
-        call spproj%os_ptcl3D%set_all2single('cluster', 0)
-        do iclust = 1, nclust
-            do icls = 1, ncls_sel 
-                if( labels(icls) == iclust )then
-                    call spproj%os_cls2D%set(clsinds(icls),'cluster', iclust)                              ! 2D class field
-                    call spproj%os_cls3D%set(clsinds(icls),'cluster', iclust)                              ! 3D class field
-                    call spproj%os_cls2D%set(clsinds(icls),'jointscore', clust_info_arr(iclust)%jointscore)! 2D joint score field  
-                    call spproj%os_cls2D%set(clsinds(icls), 'pop', clust_info_arr(iclust)%pop)             ! 2D individual pop field 
-                    call spproj%os_cls2D%set(clsinds(icls),'accept', clust_info_arr(iclust)%good_bad)      ! 2D class accepted field
-                    call spproj%os_cls3D%set(clsinds(icls),'accept', clust_info_arr(iclust)%good_bad)      ! 3D class accepted field
-                    call spproj%os_ptcl2D%set_field2single('class', clsinds(icls), 'cluster', iclust)      ! 2D particle field
-                    call spproj%os_ptcl3D%set_field2single('class', clsinds(icls), 'cluster', iclust)      ! 3D particle field
-                endif
+        ! Generate output stacks and cluster info
+        if( l_cluster_only )then
+            ! Simplified output
+            states    = spproj%os_cls2D%get_all_asint('state')
+            cavg_imgs = read_cavgs_into_imgarr(spproj, mask=(states>0))
+            if( count(states==1) > count(l_non_junk) ) then
+                ! add junk back into a distinct cluster
+                nclust = nclust + 1
+                clust_info_junk%res         = maxval(clust_info_arr(:)%res)
+                clust_info_junk%resscore    = 0.
+                clust_info_junk%homogeneity = 0.
+                clust_info_junk%clustscore  = 0.
+                clust_info_junk%jointscore  = 0.
+                clust_info_junk%pop         = 0
+                allocate(tmp(count(states>0)), source=0)
+                tmp(1:ncls_sel) = clsinds(:)
+                cnt = ncls_sel
+                do icls = 1,ncls
+                    if( (states(icls) == 1) .and. (.not.l_non_junk(icls)) ) then
+                        cnt      = cnt + 1
+                        tmp(cnt) = icls         ! update clsinds to include junk
+                    end if
+                enddo
+                clust_info_junk%pop = cnt - ncls_sel
+                call move_alloc(tmp, clsinds)
+                allocate(tmp(cnt), source=0)
+                tmp(1:ncls_sel)     = labels(:)
+                tmp(ncls_sel+1:cnt) = nclust    ! update labels to include junk
+                call move_alloc(tmp, labels)
+                clust_info_arr = [clust_info_arr, clust_info_junk]
+                clust_info_arr(:)%good_bad  = 1 ! no rejection
+                ncls_sel = cnt
+            endif
+            do iclust = 1, nclust
+                write(logfhandle,'(A,A,f5.1,A,f5.1,A,I5)') 'Cluster '//int2str_pad(iclust,2),&
+                &' resolution(A) ',  clust_info_arr(iclust)%res,&
+                &' homogeneity(%) ', clust_info_arr(iclust)%homogeneity,&
+                &' population ',     clust_info_arr(iclust)%pop
+            end do
+            ! update project
+            call update_project
+        else
+            ! re-create cavg_imgs
+            cavg_imgs = read_cavgs_into_imgarr(spproj, mask=l_non_junk)
+            ! write aligned clusters
+            call write_aligned_cavgs(labels, cavg_imgs, clust_info_arr, 'cluster_aligned', params%ext%to_char())
+            ! write un-aligned clusters
+            call write_imgarr(ncls_sel, cavg_imgs, labels, 'cluster', params%ext%to_char() )
+            ! update project
+            call update_project
+            ! generate ranked class averages by ordering according to class resolution within clusters
+            allocate(inds_glob(ncls_sel), source=0)
+            cnt = 0
+            do iclust = 1, nclust
+                pop         = count(labels == iclust)
+                inds        = mask2inds(labels == iclust)
+                resvals_tmp = pack(resvals, mask=labels == iclust)
+                call hpsort(resvals_tmp, inds)
+                do i = 1, pop
+                    cnt = cnt + 1
+                    inds_glob(cnt) = inds(i)
+                enddo
+                deallocate(inds, resvals_tmp)
             enddo
-        enddo
-        ! generate ranked class averages by ordering according to class resolution within clusters
-        allocate(inds_glob(ncls_sel), source=0)
-        cnt = 0
-        do iclust = 1, nclust
-            pop         = count(labels == iclust)
-            inds        = mask2inds(labels == iclust) 
-            resvals_tmp = pack(resvals, mask=labels == iclust)
-            call hpsort(resvals_tmp, inds)
-            do i = 1, pop
-                cnt = cnt + 1
-                inds_glob(cnt) = inds(i)
-            enddo
-            deallocate(inds, resvals_tmp)
-        enddo
-        ! write ranked_cavgs
-        call write_imgarr(cavg_imgs, string('ranked_cavgs')//params%ext%to_char(), inds_glob)
-        deallocate(inds_glob)
-        ! report cluster info
-        do iclust = 1, nclust
-            write(logfhandle,'(A,A,f5.1,A,f5.1,A,f5.1,A,f5.1,A,f5.1,A,I3)') 'cluster_ranked'//int2str_pad(iclust,2)//'.mrc',&
-            &' resolution(A) ',   clust_info_arr(iclust)%res,& 
-            &' resscore(%) ',     clust_info_arr(iclust)%resscore,& 
-            &' homogeneity(%) ',  clust_info_arr(iclust)%homogeneity,&
-            &' clustscore(%) ',   clust_info_arr(iclust)%clustscore,&
-            &' jointscore(%) ',   clust_info_arr(iclust)%jointscore,&
-            &' good_bad_assign ', clust_info_arr(iclust)%good_bad
-        end do
-        ! check number of particles selected
-        nptcls      = sum(clust_info_arr(:)%nptcls)
-        nptcls_good = sum(clust_info_arr(:)%nptcls, mask=clust_info_arr(:)%good_bad == 1)
-        frac_good   = real(nptcls_good)  / real(nptcls)
-        write(logfhandle,'(a,1x,f8.2)') '% PARTICLES CLASSIFIED AS 1ST RATE: ', frac_good  * 100.
-        ! translate to state array
-        allocate(states(ncls), source=0)
-        do icls = 1, ncls_sel
-            if( clust_info_arr(labels(icls))%good_bad == 1 ) states(clsinds(icls)) = 1
-        end do
-        ! write selection
-        allocate(labels4write(ncls_sel), source=0)
-        do icls = 1, ncls_sel
-            labels4write(icls) = clust_info_arr(labels(icls))%good_bad
-        end do
-        ! write selection
-        call write_selected_cavgs(ncls_sel, cavg_imgs, labels4write, params%ext%to_char())
-        ! map selection to project
-        call spproj%map_cavgs_selection(states)
-        ! optional pruning
-        if( trim(params%prune).eq.'yes') call spproj%prune_particles
+            ! write ranked_cavgs
+            call write_imgarr(cavg_imgs, string('ranked_cavgs')//params%ext%to_char(), inds_glob)
+            deallocate(inds_glob)
+            ! report cluster info
+            do iclust = 1, nclust
+                write(logfhandle,'(A,A,f5.1,A,f5.1,A,f5.1,A,f5.1,A,f5.1,A,I3)') 'cluster_ranked'//int2str_pad(iclust,2)//'.mrc',&
+                &' resolution(A) ',   clust_info_arr(iclust)%res,&
+                &' resscore(%) ',     clust_info_arr(iclust)%resscore,&
+                &' homogeneity(%) ',  clust_info_arr(iclust)%homogeneity,&
+                &' clustscore(%) ',   clust_info_arr(iclust)%clustscore,&
+                &' jointscore(%) ',   clust_info_arr(iclust)%jointscore,&
+                &' good_bad_assign ', clust_info_arr(iclust)%good_bad
+            end do
+            ! check number of particles selected
+            nptcls      = sum(clust_info_arr(:)%nptcls)
+            nptcls_good = sum(clust_info_arr(:)%nptcls, mask=clust_info_arr(:)%good_bad == 1)
+            frac_good   = real(nptcls_good)  / real(nptcls)
+            write(logfhandle,'(a,1x,f8.2)') '% PARTICLES CLASSIFIED AS 1ST RATE: ', frac_good  * 100.
+            ! translate to state array
+            allocate(states(ncls), source=0)
+            do icls = 1, ncls_sel
+                if( clust_info_arr(labels(icls))%good_bad == 1 ) states(clsinds(icls)) = 1
+            end do
+            ! write selection
+            allocate(labels4write(ncls_sel), source=0)
+            do icls = 1, ncls_sel
+                labels4write(icls) = clust_info_arr(labels(icls))%good_bad
+            end do
+            ! write selection
+            call write_selected_cavgs(ncls_sel, cavg_imgs, labels4write, params%ext%to_char())
+            ! map selection to project
+            call spproj%map_cavgs_selection(states)
+            ! optional pruning
+            if( trim(params%prune).eq.'yes') call spproj%prune_particles
+        endif
         ! this needs to be a full write as many segments are updated
         call spproj%write(params%projfile)
         ! destruct
@@ -314,6 +347,34 @@ contains
         deallocate(clust_info_arr, l_non_junk, labels, clsinds, i_medoids)
         ! end gracefully
         call simple_end('**** SIMPLE_CLUSTER_CAVGS NORMAL STOP ****', verbose_exit=trim(params%verbose_exit).eq.'yes', verbose_exit_fname=params%verbose_exit_fname)
+
+      contains
+
+        subroutine update_project
+            integer :: icls, iclust
+            call spproj%os_ptcl2D%transfer_class_assignment(spproj%os_ptcl3D)
+            call spproj%os_cls2D%set_all2single('cluster',  0)
+            call spproj%os_cls3D%set_all2single('cluster',  0)
+            call spproj%os_cls2D%set_all2single('accept',   0)
+            call spproj%os_cls3D%set_all2single('accept',   0)
+            call spproj%os_ptcl2D%set_all2single('cluster', 0)
+            call spproj%os_ptcl3D%set_all2single('cluster', 0)
+            do iclust = 1, nclust
+                do icls = 1, ncls_sel
+                    if( labels(icls) == iclust )then
+                        call spproj%os_cls2D%set(clsinds(icls),'cluster',    iclust)                           ! 2D class field
+                        call spproj%os_cls3D%set(clsinds(icls),'cluster',    iclust)                           ! 3D class field
+                        call spproj%os_cls2D%set(clsinds(icls),'jointscore', clust_info_arr(iclust)%jointscore)! 2D joint score field
+                        call spproj%os_cls2D%set(clsinds(icls), 'pop',       clust_info_arr(iclust)%pop)       ! 2D individual pop field
+                        call spproj%os_cls2D%set(clsinds(icls),'accept',     clust_info_arr(iclust)%good_bad)  ! 2D class accepted field
+                        call spproj%os_cls3D%set(clsinds(icls),'accept',     clust_info_arr(iclust)%good_bad)  ! 3D class accepted field
+                        call spproj%os_ptcl2D%set_field2single('class',      clsinds(icls), 'cluster', iclust) ! 2D particle field
+                        call spproj%os_ptcl3D%set_field2single('class',      clsinds(icls), 'cluster', iclust) ! 3D particle field
+                    endif
+                enddo
+            enddo
+        end subroutine update_project
+
     end subroutine exec_cluster_cavgs
 
     subroutine exec_model_cavgs_rejection( self, cline )
@@ -357,6 +418,8 @@ contains
                 THROW_HARD('model_cavgs_rejection: quality_mode must be apply, analyze, learn, evaluate or promote')
         end select
         if( quality_mode == QUALITY_MODE_LEARN )then
+            if( trim(params%quality_context) == CAVG_QUALITY_CONTEXT_SIEVE ) &
+                THROW_HARD('model_cavgs_rejection quality_mode=learn does not support sieve; sieve is hard-gates-only')
             if( .not. cline%defined('filetab') ) THROW_HARD('model_cavgs_rejection quality_mode=learn requires filetab')
             if( cline%defined('infile') ) &
                 THROW_HARD('model_cavgs_rejection quality_mode=learn is ab initio and does not accept infile')
@@ -418,7 +481,18 @@ contains
         cavg_imgs = read_cavgs_into_imgarr(spproj)
         if( size(cavg_imgs) /= ncls ) THROW_HARD('model_cavgs_rejection: # cavgs /= # cls2D entries')
         reference_states = spproj%os_cls2D%get_all_asint('state')
-        call evaluate_cavg_quality(cavg_imgs, spproj%os_cls2D, params%mskdiam, quality, model, trim(quality_context))
+        if( trim(quality_context) == CAVG_QUALITY_CONTEXT_SIEVE )then
+            ! Sieve is an explicit no-model route: apply/analyze/evaluate use
+            ! only the conservative sieve hard gates and skip model scoring.
+            model%name = 'sieve_hard_gates'
+            model%context = CAVG_QUALITY_CONTEXT_SIEVE
+            model%model_family = 'hard_gates_only'
+            model%feature_policy = 'sieve_hard_gates'
+            model%weights = 0.0
+            call evaluate_cavg_quality_hard_reject(cavg_imgs, spproj%os_cls2D, params%mskdiam, quality, trim(quality_context))
+        else
+            call evaluate_cavg_quality(cavg_imgs, spproj%os_cls2D, params%mskdiam, quality, model, trim(quality_context))
+        endif
         nsel = count(quality%states > 0)
         nrej = ncls - nsel
         write(logfhandle,'(A,A)') '>>> CAVG QUALITY MODEL          : ', trim(model%name)
@@ -449,6 +523,7 @@ contains
         call write_quality_stack(string('quality_selected_cavgs'//MRC_EXT),  selected=.true.)
         call write_quality_stack(string('quality_rejected_cavgs'//MRC_EXT), selected=.false.)
         call write_hard_gate_stack(string('hard_gate_rejections'//MRC_EXT))
+        call write_ranked_quality_stack(string('quality_ranked_cavgs'//MRC_EXT), 'quality_ranked_cavgs.txt')
         if( quality_mode == QUALITY_MODE_ANALYZE .or. quality_mode == QUALITY_MODE_EVALUATE )then
             if( quality_mode == QUALITY_MODE_EVALUATE )then
                 write(logfhandle,'(A)') '>>> QUALITY EVALUATE MODE: project selection left unchanged'
@@ -517,22 +592,63 @@ contains
             write(logfhandle,'(A,A,A,I6)') '>>> WROTE ', fname%to_char(), ' #CAVGS: ', istk
         end subroutine write_hard_gate_stack
 
+        subroutine write_ranked_quality_stack( fname, rank_fname )
+            type(string),     intent(in) :: fname
+            character(len=*), intent(in) :: rank_fname
+            real,    allocatable :: sorted_scores(:)
+            integer, allocatable :: order(:)
+            integer :: i, icls, istk, funit
+            if( .not. allocated(quality%scores)      ) THROW_HARD('write_ranked_quality_stack: missing quality scores')
+            if( .not. allocated(quality%states)      ) THROW_HARD('write_ranked_quality_stack: missing quality states')
+            if( .not. allocated(quality%labels)      ) THROW_HARD('write_ranked_quality_stack: missing quality labels')
+            if( .not. allocated(quality%hard_reject) ) THROW_HARD('write_ranked_quality_stack: missing hard-reject mask')
+            if( size(quality%scores) /= ncls ) THROW_HARD('write_ranked_quality_stack: score size mismatch')
+            if( size(quality%states) /= ncls ) THROW_HARD('write_ranked_quality_stack: state size mismatch')
+            if( size(quality%labels) /= ncls ) THROW_HARD('write_ranked_quality_stack: label size mismatch')
+            if( size(quality%hard_reject) /= ncls ) THROW_HARD('write_ranked_quality_stack: hard-reject size mismatch')
+            allocate(sorted_scores(ncls), source=quality%scores)
+            allocate(order(ncls))
+            do i = 1, ncls
+                order(i) = i
+            enddo
+            call hpsort(sorted_scores, order)
+            if( file_exists(fname) ) call del_file(fname)
+            open(newunit=funit, file=trim(rank_fname), status='replace', action='write')
+            write(funit,'(A)') 'rank,class,quality_score,state,hard_reject,quality_cluster'
+            istk = 0
+            do i = ncls, 1, -1
+                icls = order(i)
+                istk = istk + 1
+                call cavg_imgs(icls)%write(fname, istk)
+                write(funit,'(I0,A,I0,A,ES14.6,A,I0,A,L1,A,I0)') istk, ',', icls, ',', quality%scores(icls), ',', &
+                    quality%states(icls), ',', quality%hard_reject(icls), ',', quality%labels(icls)
+            enddo
+            close(funit)
+            deallocate(sorted_scores, order)
+            write(logfhandle,'(A,A,A,I6)') '>>> WROTE ', fname%to_char(), ' #CAVGS: ', istk
+            write(logfhandle,'(A,A)') '>>> WROTE ', trim(rank_fname)
+        end subroutine write_ranked_quality_stack
+
         function resolve_quality_context() result( context )
             character(len=32) :: context
             character(len=64) :: model_name
             if( cline%defined('quality_context') )then
                 context = trim(params%quality_context)
             else
+                ! Context controls the hard-gate policy: sieve is hard-gate-only
+                ! small-chunk screening, chunk is learned rejection on larger
+                ! pre-cleaned chunks, and pool is learned rejection before 3D.
                 context = trim(model%context)
                 model_name = lowercase(trim(model%name))
                 if( index(model_name, CAVG_QUALITY_CONTEXT_POOL) > 0 ) context = CAVG_QUALITY_CONTEXT_POOL
+                if( index(model_name, CAVG_QUALITY_CONTEXT_SIEVE) > 0 ) context = CAVG_QUALITY_CONTEXT_SIEVE
                 if( index(model_name, CAVG_QUALITY_CONTEXT_CHUNK) > 0 ) context = CAVG_QUALITY_CONTEXT_CHUNK
                 if( trim(context) == '' ) context = CAVG_QUALITY_CONTEXT_CHUNK
             endif
             select case(trim(context))
-                case(CAVG_QUALITY_CONTEXT_CHUNK, CAVG_QUALITY_CONTEXT_POOL)
+                case(CAVG_QUALITY_CONTEXT_CHUNK, CAVG_QUALITY_CONTEXT_POOL, CAVG_QUALITY_CONTEXT_SIEVE)
                 case DEFAULT
-                    THROW_HARD('model_cavgs_rejection: quality_context must be chunk or pool')
+                    THROW_HARD('model_cavgs_rejection: quality_context must be chunk, pool, or sieve')
             end select
         end function resolve_quality_context
 

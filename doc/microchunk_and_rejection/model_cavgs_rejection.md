@@ -38,7 +38,7 @@ The model feature bank keeps the microchunk-style image-processing evidence, opt
 
 | Evidence | Microchunk rule engine | `model_cavgs_rejection` feature-vector model | Current chunk role |
 | --- | --- | --- | --- |
-| Class population | Hard rule: reject below a tier-specific fraction of total population. | `log_pop` feature plus hard reject below `0.0035` of total population. | Active feature and hard gate. |
+| Class population | Hard rule: reject below a tier-specific fraction of total population. | `log_pop` feature plus context-specific population hard gates. | Active feature and hard gate. |
 | Resolution | Hard rule: reject when `res > 40.0`. | `neg_log_res` feature plus hard reject when `res > 40.0`. | Active feature and hard gate. |
 | Foreground centering | Otsu foreground connected components; reject if any centroid lies outside the mask radius. | `centered` feature is negative normalized centroid displacement; centroid outside the mask is a hard reject. | Active feature and hard gate. |
 | Foreground outside mask | Reject when the largest valid foreground component has more than 10 pixels outside the mask disc. | `cc_area_frac` measures largest component area relative to the mask disc; outside-mask excess is a hard reject. | Active feature and hard gate. |
@@ -49,18 +49,26 @@ The model feature bank keeps the microchunk-style image-processing evidence, opt
 | Center/edge signal | Not used by the rule engine. | `log_center_edge_snr` feature in the `signal` family. | Active feature. |
 | Presence | Not used by the rule engine. | `presence` feature in the `signal` family. | Active feature. |
 | Overfit local variance | Not used by the rule engine. | `neg_log_locvar_fg`, `neg_log_locvar_bg`, and `log_locvar_fg_bg_ratio` provide low/localized variance evidence. | Active features in learned policies. |
-| Overfit band-pass localization | Not used by the rule engine. | `log_bp40_100_center_edge_var` measures center/edge variance after 100 to 40 A band-pass; raw variance below `1.5` is a conservative hard floor, while ordinary low values remain learned evidence. | Active feature in learned policies plus conservative hard floor. |
+| Overfit band-pass localization | Not used by the rule engine. | `log_bp40_100_center_edge_var` measures center/edge variance after 100 to 40 A band-pass; low raw values can be context-specific hard gates, while ordinary low values remain learned evidence. | Active feature in learned policies plus context-specific hard floors. |
 | Fuzzy-ball signal | Not used by the rule engine. | `fuzzy_ball_signal` combines foreground texture, central presence, and 100 to 40 A center/edge localization. Low values mark the fuzzy-ball pattern as continuous learned evidence, not as an apply-time hard gate. | Active feature in learned policies. |
 | Invalid pixels | Not a named microchunk rule. | Image values containing invalid pixels are hard rejected. | Hard gate. |
 
 ## Hard-Reject Comparison
 
-Hard rejects in `model_cavgs_rejection` are selected by `quality_context=chunk|pool`, with `chunk` as the default. The shared gates cover non-negotiable validity failures. Chunk adds early-streaming cleanup gates for undersupported and fuzzy-ball-like class averages. Pool stays more conservative because low population and weak band-pass localization can still occur in manually useful late pooled-refinement classes.
+Hard rejects in `model_cavgs_rejection` are selected by `quality_context=chunk|pool|sieve`, with `chunk` as the default.
+
+The contexts represent three workflow phases:
+
+- `sieve`: very small 2D runs on small particle chunks. This phase uses conservative hard gates only and deliberately avoids learned rejection.
+- `chunk`: the next 2D stage, where sieve-cleaned particles are processed in larger chunks, typically 10-30k particles. This phase uses hard gates plus the chunk logistic model.
+- `pool`: the final 2D phase before 3D analysis, where highly clean particle sets from chunk modeling have been merged. This phase uses its own pool model.
+
+Chunk and pool share non-negotiable validity gates. Chunk adds early-streaming cleanup gates for undersupported and fuzzy-ball-like class averages. Pool adds its own final pre-3D cleanup gates for low population, low band-pass localization, and poor nominal resolution. Sieve is a separate compatibility-analysis route with its own hard-gate policy and deliberately does not inherit the shared chunk/pool validity gates.
 
 | Criterion | Microchunk rule engine | `model_cavgs_rejection` |
 | --- | --- | --- |
-| Population | Rejects `pop < ceiling(sum(pop) * fraction)`. Fractions are tier-specific. | Shared: reject `pop <= 0`. Chunk only: reject `pop < ceiling(sum(pop) * 0.0035)`. Pool does not apply the fractional population gate. |
-| Resolution | Rejects `res > 40.0`. | Rejects `res > 40.0`. |
+| Population | Rejects `pop < ceiling(sum(pop) * fraction)`. Fractions are tier-specific. | Shared: reject `pop <= 0`. Chunk/sieve: reject `pop < ceiling(sum(pop) * 0.0035)`. Pool: reject `pop < ceiling(sum(pop) * 5.0e-4)`. |
+| Resolution | Rejects `res > 40.0`. | Chunk/pool shared validity rejects `res > 40.0`; pool additionally rejects `res > 25.0`. |
 | Empty or mismatched class-average stack | Stream chunk is marked `REJECTION_FAILED` and `COMPLETE`. | Apply/analyze require a valid project, `cls2D` entries, matching class-average stack, and `mskdiam`; invalid inputs stop the command. |
 | Invalid pixels | No separate named rule. | Hard rejected. |
 | No valid foreground component | Rejected after full-image connected components are pruned. | Hard rejected after the same style of foreground-component pruning. |
@@ -68,7 +76,7 @@ Hard rejects in `model_cavgs_rejection` are selected by `quality_context=chunk|p
 | Largest foreground component outside mask | Rejected when outside pixels exceed 10. | Hard rejected when outside pixels exceed 10. |
 | Local variance exactly degenerate | Rejected when both inside/outside scores are near zero. | Hard rejected when both foreground/background local variances are non-positive. |
 | Local variance low but not degenerate | Rejected by fixed robust-z thresholds. | Chunk only: reject an extreme absolute foreground local-variance floor; otherwise encoded as learned evidence. Pool does not apply this extra gate. |
-| Band-pass center/edge variance extremely low | Not used by the rule engine. | Chunk only: hard reject when raw `bp_center_edge_var < 1.5`; less extreme values remain learned evidence. Pool does not apply this extra gate. |
+| Band-pass center/edge variance extremely low | Not used by the rule engine. | Chunk/sieve hard reject when raw `bp_center_edge_var < 1.5`; pool hard rejects when raw `bp_center_edge_var < 10.0`; less extreme values remain learned evidence. |
 
 Microchunk tier thresholds:
 
@@ -79,7 +87,7 @@ Microchunk tier thresholds:
 | Reference chunk | `0.0025` | `-2.0` | `-2.0` |
 | Match chunk | `0.0025` | `-2.0` | `-2.0` |
 
-`model_cavgs_rejection` uses a fixed population hard-reject fraction of `0.0035` for the current feature extractor, independent of the selected model preset.
+`model_cavgs_rejection` uses context-specific population hard-reject fractions: `0.0035` for chunk/sieve and `5.0e-4` for pool.
 
 ## Learning Model
 
@@ -120,11 +128,11 @@ Learn mode reports feature signal, feature-drop diagnostics, and leave-one-datas
 
 ## Command Modes
 
-`quality_mode=apply` computes quality features, applies the selected model, writes `cavgs_quality_features.txt`, writes `quality_selected_cavgs.mrc`, `quality_rejected_cavgs.mrc`, and `hard_gate_rejections.mrc`, maps the selected class averages into particle states, annotates `cls2D` with `quality`, `quality_cluster`, and `accept`, annotates `cls3D` when its class count matches `cls2D`, optionally prunes particles with `prune=yes`, and writes the project.
+`quality_mode=apply` computes quality features, applies the selected model, writes `cavgs_quality_features.txt`, writes `quality_selected_cavgs.mrc`, `quality_rejected_cavgs.mrc`, `hard_gate_rejections.mrc`, `quality_ranked_cavgs.mrc`, and `quality_ranked_cavgs.txt`, maps the selected class averages into particle states, annotates `cls2D` with `quality`, `quality_cluster`, and `accept`, annotates `cls3D` when its class count matches `cls2D`, optionally prunes particles with `prune=yes`, and writes the project.
 
-`quality_mode=analyze` computes the same model output but treats the existing `cls2D` state as the manual reference. It writes `cavgs_quality_analysis.txt`, the selected/rejected stacks, and `hard_gate_rejections.mrc`. The project selection is left unchanged.
+`quality_mode=analyze` computes the same model output but treats the existing `cls2D` state as the manual reference. It writes `cavgs_quality_analysis.txt`, the selected/rejected stacks, `hard_gate_rejections.mrc`, and the score-ranked class-average stack plus rank table. The project selection is left unchanged.
 
-`quality_mode=learn` reads a training file table of `cavgs_quality_analysis.txt` files from `filetab=` and searches for a model specification from a neutral `abinitio_learn_base` foundation. `model_family=linear|logistic` selects the model family to train; if omitted, learn mode uses `logistic`. `quality_context=chunk|pool` labels the learned model context written to the model file; saved analysis tables already contain the hard-gate mask used when they were generated. Resolution is part of the standard feature space through the normalized `neg_log_res` feature, and the learned model determines how much to use it. Learn mode does not accept `quality_model` or `infile` as a seed. It writes a learned model file controlled by `fname=` and writes `cavgs_quality_learn_report.txt`.
+`quality_mode=learn` reads a training file table of `cavgs_quality_analysis.txt` files from `filetab=` and searches for a model specification from a neutral `abinitio_learn_base` foundation. `model_family=linear|logistic` selects the model family to train; if omitted, learn mode uses `logistic`. `quality_context=chunk|pool` labels the learned model context written to the model file; saved analysis tables already contain the hard-gate mask used when they were generated. `quality_context=sieve` is intentionally rejected in learn mode because sieve is a hard-gates-only screening phase. Resolution is part of the standard feature space through the normalized `neg_log_res` feature, and the learned model determines how much to use it. Learn mode does not accept `quality_model` or `infile` as a seed. It writes a learned model file controlled by `fname=` and writes `cavgs_quality_learn_report.txt`.
 
 `quality_mode=evaluate` applies the selected fixed model without refitting. With `filetab=`, it evaluates one or more saved `cavgs_quality_analysis.txt` files. Without `filetab=`, it evaluates a single project directly using the existing `cls2D` state as the manual reference, like analyze mode. It writes `cavgs_quality_evaluate_report.txt`, or the report path controlled by `fname=`.
 
@@ -132,7 +140,7 @@ Learn mode reports feature signal, feature-drop diagnostics, and leave-one-datas
 
 `apply` and `analyze` require `projfile` and `mskdiam`. `learn` requires `filetab`. `evaluate` requires either `filetab` or `projfile` plus `mskdiam`. `promote` requires `infile`. The commander sets `oritype=cls2D`, defaults `mkdir=yes`, and defaults `prune=no`.
 
-For `apply`, `analyze`, and project-backed `evaluate`, the command uses `chunk100mics` unless `quality_model` or `infile` is supplied. If `quality_context` is omitted, the command uses the loaded model context and also falls back to model-name inference from `pool` or `chunk` substrings. Saved-analysis `evaluate filetab=...` runs do not write image stacks because they do not load a project or class-average stack.
+For `apply`, `analyze`, and project-backed `evaluate`, the command uses `chunk100mics` unless `quality_model` or `infile` is supplied. If `quality_context` is omitted, the command uses the loaded model context and also falls back to model-name inference from `pool`, `sieve`, or `chunk` substrings. Project-backed runs with `quality_context=sieve` use the hard-gates-only evaluator and skip learned model scoring. Saved-analysis `evaluate filetab=...` runs do not write image stacks because they do not load a project or class-average stack.
 
 ## Model Selection
 
@@ -140,7 +148,7 @@ For `apply`, `analyze`, and project-backed `evaluate`, the command uses `chunk10
 
 - `chunk100mics`: default chunk/stream-style pairwise logistic model trained from `/Users/elmlundho/cavgs_quality/chunk100mic_training_data_v4`.
 - `chunk100mics_linear`: interpretable linear chunk/stream-style model trained from `/Users/elmlundho/cavgs_quality/chunk100mic_training_data`.
-- `pool`: late pooled-refinement pairwise logistic model trained from `/Users/elmlundho/cavgs_quality/pool_training2`.
+- `pool`: late pooled-refinement pairwise logistic model trained from `/Users/elmlundho/cavgs_quality/pool_training3` with the current pool hard-gate policy applied.
 
 When `infile` is supplied, the model file is treated as a complete model and wins over the built-in preset.
 
@@ -205,6 +213,9 @@ Features outside the selected policy are encoded by zero weights.
 - `POP_FRACTION_HARD_REJECT = 0.0035`
 - `BP_CENTER_EDGE_VAR_HARD_REJECT_MIN = 1.5`
 - `CHUNK_LOCVAR_FG_HARD_REJECT_MAX = exp(-4.5)`
+- `POOL_RES_HARD_REJECT_A = 25.0`
+- `POOL_POP_FRACTION_HARD_REJECT = 5.0e-4`
+- `POOL_BP_CENTER_EDGE_VAR_HARD_REJECT_MIN = 10.0`
 - `LOCVAR_WINDOW = 10`
 - `MASK_HARD_OUTSIDE_PIXELS = 10`
 - `LOG_EPS = 1.0e-12`
@@ -212,9 +223,9 @@ Features outside the selected policy are encoded by zero weights.
 
 ## Hard Rejects
 
-Hard rejects are context-sensitive validity gates applied before model fitting, clustering, and training-score calculation.
+Hard rejects are context-sensitive gates. For `chunk` and `pool`, they run before model fitting, clustering, and training-score calculation. For `sieve`, they are the whole rejection policy.
 
-A class average is hard rejected in every context when any of these conditions hold:
+A class average is hard rejected in `chunk` and `pool` when any shared validity condition holds:
 
 - `pop <= 0`;
 - `res > 40.0`;
@@ -230,13 +241,22 @@ For `quality_context=chunk`, these additional early-streaming gates also apply:
 - raw foreground local variance is below `exp(-4.5)`;
 - raw 100 to 40 A band-pass center/edge variance is below `1.5`.
 
-For `quality_context=pool`, these additional chunk gates are not applied.
+For `quality_context=pool`, the chunk local-variance floor is not applied. Pool instead adds stricter final pre-3D cleanup gates learned from the current pool training set:
+
+- `res > 25.0`;
+- `pop < ceiling(sum(pop) * 5.0e-4)`;
+- raw 100 to 40 A band-pass center/edge variance is below `10.0`.
+
+For `quality_context=sieve`, the route intentionally uses a separate hard-gate policy for compatibility analysis. It does not inherit the shared chunk/pool validity gates, and it does not run a learned model. The sieve-specific gates are:
+
+- `pop < ceiling(sum(pop) * 0.0035)`;
+- raw 100 to 40 A band-pass center/edge variance is below `1.5`.
 
 Hard-rejected classes receive rejected state directly. Their normalized features are set to `-CLIP_Z`, their model scores are set to `-CLIP_Z`, and they remain visible in analysis and learning reports.
 
 The band-pass center/edge floor is deliberately conservative. In the v4 chunk training tables, `bp_center_edge_var < 1.5` preserved all manually selected classes while still removing additional manually rejected classes beyond population and resolution. More aggressive fuzzy-ball evidence should remain in the normalized feature vector and learned model, not in the default pre-training hard rejects.
 
-Project-backed `apply`, `analyze`, and `evaluate` runs also write `hard_gate_rejections.mrc`, containing the class averages rejected by the standard hard gates before the model stage. This is a bookkeeping/inspection stack only; it does not introduce a separate no-model decision path.
+Project-backed `apply`, `analyze`, and `evaluate` runs also write `hard_gate_rejections.mrc`. For `chunk` and `pool`, this is a bookkeeping stack containing classes removed before the model stage. For `sieve`, it is the rejection decision stack because the context is hard-gates-only.
 
 ## Normalization
 
@@ -268,16 +288,16 @@ enforce_min_accept_frac false
 
 On the refreshed v4 chunk-training table, this promoted preset scored `macro_evaluate_score=0.50847`, improving over the previous built-in chunk preset (`-0.80859`). The main gain was selected-class protection: soft-classification totals moved from `tp=297, fp=95, tn=151, fn=33` to `tp=324, fp=83, tn=163, fn=6`.
 
-`pool` uses feature policy `microchunk_plus_score_signal` and the pairwise logistic family, but is tuned for late pooled-refinement data from `/Users/elmlundho/cavgs_quality/pool_training2`.
+`pool` uses feature policy `microchunk_plus_score_signal` and the pairwise logistic family, but is tuned for late pooled-refinement data from `/Users/elmlundho/cavgs_quality/pool_training3` after applying the current pool hard gates.
 
 ```text
 model_family        pairwise_logistic
-prob_threshold      4.500000E-01
-regularization      1.000000E-04
+prob_threshold      3.500000E-01
+regularization      3.000000E-04
 feature_weights     uniform over all 14 microchunk_plus_score_signal features
 ```
 
-On the refreshed pool-training table, this promoted preset scored `macro_evaluate_score=0.91875`, improving over the previous built-in pool preset (`0.74351`) while reducing total soft-classification errors from `fp=15, fn=35` to `fp=3, fn=11`.
+On the refreshed pool3 evaluation table with those current gates applied, this promoted preset scored `macro_evaluate_score=0.49028`, with trainable soft-classification totals `tp=1173, fp=78, tn=253, fn=33`.
 
 `chunk100mics_linear` preserves the previous linear score-and-threshold model as an interpretability tool. Its feature weights can be read directly as non-negative contributions to the normalized scalar quality score.
 
