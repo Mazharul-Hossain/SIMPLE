@@ -706,9 +706,9 @@ contains
         end select
         if( self%l_sgd )then
             select case(trim(self%prg%to_char()))
-                case('abinitio2D','cluster2D')
+                case('abinitio2D','cluster2D','prob_align2D')
                 case DEFAULT
-                    THROW_HARD('sgd=yes is currently supported only for abinitio2D/cluster2D')
+                    THROW_HARD('sgd=yes is currently supported only for abinitio2D/cluster2D/prob_align2D')
             end select
             select case(trim(self%sgd_eta_decay))
                 case('const')

@@ -423,6 +423,7 @@ contains
         ! generate partition-wise dist tables
         cline_prob_tab = cline
         call cline_prob_tab%set('prg', 'prob_tab2D')
+        call cline_prob_tab%set('sgd', 'no')
         if( .not. cline_prob_tab%defined('nparts') )then
             call xprob_tab2D%execute(cline_prob_tab)
         else
