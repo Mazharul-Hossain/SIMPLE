@@ -41,6 +41,16 @@ resolve_simple_install_root() {
 
   probe="$(cd -- "$probe" && pwd -P)" || return 1
   for depth in 0 1 2 3 4; do
+    if [[ -x "$probe/bin/simple_exec" || -x "$probe/bin/simple_exec.exe" ]] &&
+       [[ -x "$probe/bin/simple_private_exec" || -x "$probe/bin/simple_private_exec.exe" ]]; then
+      echo "$probe"
+      return 0
+    fi
+    probe="$(cd -- "$probe/.." && pwd -P)" || return 1
+  done
+
+  probe="$(cd -- "$1" && pwd -P)" || return 1
+  for depth in 0 1 2 3 4; do
     if [[ -d "$probe/scripts" ]]; then
       echo "$probe"
       return 0
@@ -392,9 +402,11 @@ copy_case_root() {
 print_common_check() {
   local root_line="$1"
   local simple_exec_path
+  local simple_private_exec_path
   local filetab_movs_path
   local filetab_mrc_path
   simple_exec_path="$(command -v simple_exec 2>/dev/null || true)"
+  simple_private_exec_path="$(command -v simple_private_exec 2>/dev/null || command -v simple_private_exec.exe 2>/dev/null || true)"
   filetab_movs_path="$(find_simple_script filetab_movs.pl 2>/dev/null || true)"
   filetab_mrc_path="$(find_simple_script filetab_mrc.pl 2>/dev/null || true)"
 
@@ -422,6 +434,7 @@ print_common_check() {
     echo "Discovered simple_exec dir: $simple_exec_dir"
   fi
   echo "simple_exec: ${simple_exec_path:-not found}"
+  echo "simple_private_exec: ${simple_private_exec_path:-not found}"
   if [[ -z "$simple_exec_path" ]]; then
     echo "simple_exec hint: run --prepare-build, or set SIMPLE_EXEC_DIR to the directory containing simple_exec"
   fi
