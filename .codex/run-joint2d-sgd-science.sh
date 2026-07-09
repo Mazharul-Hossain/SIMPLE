@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
+trap 'status=$?; echo "joint2D-SGD science runner failed at line ${LINENO}: ${BASH_COMMAND} (exit ${status})" >&2' ERR
 
 usage() {
   cat <<'EOF'
