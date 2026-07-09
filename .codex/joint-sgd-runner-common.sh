@@ -20,6 +20,20 @@ prepend_path() {
   esac
 }
 
+simple_path_has_runtime_bin() {
+  local root="$1"
+  [[ -n "$root" ]] || return 1
+  [[ -x "$root/bin/simple_exec" || -x "$root/bin/simple_exec.exe" ]] &&
+    [[ -x "$root/bin/simple_private_exec" || -x "$root/bin/simple_private_exec.exe" ]]
+}
+
+simple_exec_dir_has_runtime_pair() {
+  local dir="$1"
+  [[ -n "$dir" ]] || return 1
+  [[ -x "$dir/simple_exec" || -x "$dir/simple_exec.exe" ]] &&
+    [[ -x "$dir/simple_private_exec" || -x "$dir/simple_private_exec.exe" ]]
+}
+
 joint_sgd_common_init() {
   script_dir="${script_dir:-$joint_sgd_common_dir}"
   simple_home="${simple_home:-$joint_sgd_default_simple_home}"
@@ -41,8 +55,7 @@ resolve_simple_install_root() {
 
   probe="$(cd -- "$probe" && pwd -P)" || return 1
   for depth in 0 1 2 3 4; do
-    if [[ -x "$probe/bin/simple_exec" || -x "$probe/bin/simple_exec.exe" ]] &&
-       [[ -x "$probe/bin/simple_private_exec" || -x "$probe/bin/simple_private_exec.exe" ]]; then
+    if simple_path_has_runtime_bin "$probe"; then
       echo "$probe"
       return 0
     fi
@@ -58,6 +71,49 @@ resolve_simple_install_root() {
     probe="$(cd -- "$probe/.." && pwd -P)" || return 1
   done
   return 1
+}
+
+link_runtime_file() {
+  local src="$1"
+  local dest="$2"
+  rm -f "$dest"
+  if ! ln -s "$src" "$dest" 2>/dev/null; then
+    cp -f "$src" "$dest"
+  fi
+  chmod +x "$dest"
+}
+
+create_simple_runtime_shim() {
+  local shim_root="$projects_home/.joint_sgd_simple_runtime"
+  local script_root=""
+  mkdir -p "$shim_root/bin"
+
+  if [[ -x "$simple_exec_dir/simple_exec" ]]; then
+    link_runtime_file "$simple_exec_dir/simple_exec" "$shim_root/bin/simple_exec"
+  else
+    link_runtime_file "$simple_exec_dir/simple_exec.exe" "$shim_root/bin/simple_exec.exe"
+  fi
+
+  if [[ -x "$simple_exec_dir/simple_private_exec" ]]; then
+    link_runtime_file "$simple_exec_dir/simple_private_exec" "$shim_root/bin/simple_private_exec"
+  else
+    link_runtime_file "$simple_exec_dir/simple_private_exec.exe" "$shim_root/bin/simple_private_exec.exe"
+  fi
+
+  for script_root in \
+    "${simple_install_root:-}/scripts" \
+    "$build_copy/scripts" \
+    "$simple_home/scripts" \
+    "$projects_home/SIMPLE/scripts"
+  do
+    if [[ -d "$script_root" ]]; then
+      rm -f "$shim_root/scripts"
+      ln -s "$script_root" "$shim_root/scripts" 2>/dev/null || true
+      break
+    fi
+  done
+
+  simple_runtime_shim="$shim_root"
 }
 
 find_simple_exec_dir() {
@@ -215,8 +271,12 @@ setup_simple_path() {
   fi
 
   if [[ -n "$simple_install_root" ]]; then
-    if [[ -z "${SIMPLE_PATH:-}" || ! -d "$SIMPLE_PATH/scripts" ]]; then
+    if [[ -z "${SIMPLE_PATH:-}" ]] || ! simple_path_has_runtime_bin "$SIMPLE_PATH"; then
       export SIMPLE_PATH="$simple_install_root"
+    fi
+    if ! simple_path_has_runtime_bin "$SIMPLE_PATH" && simple_exec_dir_has_runtime_pair "$simple_exec_dir"; then
+      create_simple_runtime_shim
+      export SIMPLE_PATH="$simple_runtime_shim"
     fi
     prepend_path "$simple_exec_dir"
     prepend_path "$simple_install_root/bin"
@@ -337,6 +397,7 @@ prepare_betagal_extract() {
 
   [[ -d "$betagal_data" ]] || fail "betagal NAS data not reachable: $betagal_data"
   command -v simple_exec >/dev/null 2>&1 || fail "simple_exec is not on PATH; run --prepare-build or set SIMPLE_EXEC_DIR"
+  simple_path_has_runtime_bin "${SIMPLE_PATH:-}" || fail "SIMPLE_PATH must contain bin/simple_exec and bin/simple_private_exec for distributed SIMPLE jobs; run --check and verify Effective SIMPLE_PATH"
   filetab_movs_pl="$(find_simple_script filetab_movs.pl)" || fail "filetab_movs.pl not found; set SIMPLE_PATH to a SIMPLE source/build root with scripts/"
   filetab_mrc_pl="$(find_simple_script filetab_mrc.pl)" || fail "filetab_mrc.pl not found; set SIMPLE_PATH to a SIMPLE source/build root with scripts/"
 
