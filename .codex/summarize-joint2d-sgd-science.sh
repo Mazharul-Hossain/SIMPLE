@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  .codex/summarize-joint-sgd-science.sh <SCIENCE_ROOT>
+  .codex/summarize-joint2d-sgd-science.sh <SCIENCE_ROOT>
 
 Reads SCIENCE_ROOT/science_runs.tsv and writes:
   SCIENCE_ROOT/science_metrics.csv
@@ -16,7 +16,7 @@ EOF
 }
 
 fail() {
-  echo "joint-SGD science summarizer failed: $*" >&2
+  echo "joint2D-SGD science summarizer failed: $*" >&2
   exit 1
 }
 
@@ -238,7 +238,7 @@ done
   echo
   echo "## Notes"
   echo
-  echo "- Baseline runs intentionally have joint-SGD metric fields as \`NA\`."
+  echo "- Baseline runs intentionally have joint2D-SGD metric fields as \`NA\`."
   echo "- Population metrics are extracted from text STAR-like exports when available; otherwise they are \`NA\`."
   echo "- FRC peak metrics come from joint restoration diagnostics. If a baseline text FRC export is unavailable, baseline FRC fields remain \`NA\`."
   echo "- This report flags evidence for review; it does not claim scientific superiority automatically."

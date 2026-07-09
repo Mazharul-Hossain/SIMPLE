@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 
-# Shared helpers for the joint-SGD smoke and science runners. This file is
+# Shared helpers for the joint2D-SGD smoke and science runners. This file is
 # sourced by wrapper scripts; keep user-facing entrypoints in those wrappers.
 
-joint_sgd_common_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-joint_sgd_default_simple_home="$(cd -- "$joint_sgd_common_dir/.." && pwd -P)"
+joint2d_sgd_common_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+joint2d_sgd_default_simple_home="$(cd -- "$joint2d_sgd_common_dir/.." && pwd -P)"
 
 fail() {
-  echo "${joint_sgd_runner_label:-joint-SGD runner} failed: $*" >&2
+  echo "${joint2d_sgd_runner_label:-joint2D-SGD runner} failed: $*" >&2
   exit 1
 }
 
@@ -34,19 +34,33 @@ simple_exec_dir_has_runtime_pair() {
     [[ -x "$dir/simple_private_exec" || -x "$dir/simple_private_exec.exe" ]]
 }
 
-joint_sgd_common_init() {
-  script_dir="${script_dir:-$joint_sgd_common_dir}"
-  simple_home="${simple_home:-$joint_sgd_default_simple_home}"
+env_or_legacy() {
+  local primary="$1"
+  local legacy="${2:-}"
+  local default="${3:-}"
+  local value="${!primary:-}"
+  if [[ -z "$value" && -n "$legacy" ]]; then
+    value="${!legacy:-}"
+  fi
+  if [[ -z "$value" ]]; then
+    value="$default"
+  fi
+  printf '%s\n' "$value"
+}
+
+joint2d_sgd_common_init() {
+  script_dir="${script_dir:-$joint2d_sgd_common_dir}"
+  simple_home="${simple_home:-$joint2d_sgd_default_simple_home}"
   inherited_simple_path="${SIMPLE_PATH:-}"
   testing_home="${SIMPLE_DATA_TESTING_HOME:-${simple_home}_data_testing}"
-  projects_home="${JOINT_SGD_PROJECTS_HOME:-$HOME/Projects}"
-  build_copy="${JOINT_SGD_BUILD_COPY:-$projects_home/SIMPLE_joint_sgd_build}"
-  build_jobs="${JOINT_SGD_BUILD_JOBS:-4}"
-  cmake_build_type="${JOINT_SGD_CMAKE_BUILD_TYPE:-Debug}"
-  betagal_data="${JOINT_SGD_BETAGAL_DATA:-/mnt/beegfs/elmlund/testing-datasets/betagal}"
-  betagal_sample_count="${JOINT_SGD_BETAGAL_SAMPLE_COUNT:-}"
-  prep_nparts="${JOINT_SGD_PREP_NPARTS:-5}"
-  prep_nthr="${JOINT_SGD_PREP_NTHR:-8}"
+  projects_home="$(env_or_legacy JOINT2D_SGD_PROJECTS_HOME JOINT_SGD_PROJECTS_HOME "$HOME/Projects")"
+  build_copy="$(env_or_legacy JOINT2D_SGD_BUILD_COPY JOINT_SGD_BUILD_COPY "$projects_home/SIMPLE_joint2d_sgd_build")"
+  build_jobs="$(env_or_legacy JOINT2D_SGD_BUILD_JOBS JOINT_SGD_BUILD_JOBS 4)"
+  cmake_build_type="$(env_or_legacy JOINT2D_SGD_CMAKE_BUILD_TYPE JOINT_SGD_CMAKE_BUILD_TYPE Debug)"
+  betagal_data="$(env_or_legacy JOINT2D_SGD_BETAGAL_DATA JOINT_SGD_BETAGAL_DATA /mnt/beegfs/elmlund/testing-datasets/betagal)"
+  betagal_sample_count="$(env_or_legacy JOINT2D_SGD_BETAGAL_SAMPLE_COUNT JOINT_SGD_BETAGAL_SAMPLE_COUNT "")"
+  prep_nparts="$(env_or_legacy JOINT2D_SGD_PREP_NPARTS JOINT_SGD_PREP_NPARTS 5)"
+  prep_nthr="$(env_or_legacy JOINT2D_SGD_PREP_NTHR JOINT_SGD_PREP_NTHR 8)"
 }
 
 resolve_simple_install_root() {
@@ -84,7 +98,7 @@ link_runtime_file() {
 }
 
 create_simple_runtime_shim() {
-  local shim_root="$projects_home/.joint_sgd_simple_runtime"
+  local shim_root="$projects_home/.joint2d_sgd_simple_runtime"
   local script_root=""
   mkdir -p "$shim_root/bin"
 
@@ -292,8 +306,13 @@ setup_simple_path() {
 
 discover_project_from_env() {
   local project_env_var="$1"
+  local legacy_project_env_var="${2:-}"
   local explicit_project="${!project_env_var:-}"
   local -a search_roots=()
+
+  if [[ -z "$explicit_project" && -n "$legacy_project_env_var" ]]; then
+    explicit_project="${!legacy_project_env_var:-}"
+  fi
 
   if [[ -n "$explicit_project" ]]; then
     [[ -f "$explicit_project" ]] || fail "$project_env_var does not exist: $explicit_project"
@@ -310,12 +329,12 @@ discover_project_from_env() {
   project_path="$(cd -- "$(dirname -- "$project_path")" && pwd -P)/$(basename -- "$project_path")"
   return 0
 }
-
 common_project_probe() {
   local project_env_var="$1"
+  local legacy_project_env_var="${2:-}"
   project_path=""
   project_found="yes"
-  if ! discover_project_from_env "$project_env_var"; then
+  if ! discover_project_from_env "$project_env_var" "$legacy_project_env_var"; then
     project_found="no"
   fi
 
@@ -348,12 +367,12 @@ prepare_build_copy() {
   mkdir -p "$projects_home"
   if [[ -e "$build_copy" ]]; then
     [[ -d "$build_copy" ]] || fail "build copy path exists but is not a directory: $build_copy"
-    if [[ "${JOINT_SGD_REWRITE_BUILD:-}" == "yes" ]]; then
+    if [[ "$(env_or_legacy JOINT2D_SGD_REWRITE_BUILD JOINT_SGD_REWRITE_BUILD "")" == "yes" ]]; then
       echo "Refreshing existing build copy: $build_copy"
     else
       local answer=""
       if [[ ! -t 0 ]]; then
-        fail "build copy already exists: $build_copy; set JOINT_SGD_REWRITE_BUILD=yes to refresh it in noninteractive mode"
+        fail "build copy already exists: $build_copy; set JOINT2D_SGD_REWRITE_BUILD=yes to refresh it in noninteractive mode"
       fi
       echo "Build copy already exists: $build_copy"
       printf 'Rewrite source files in this build copy and rebuild? Type yes to continue: '
@@ -390,7 +409,9 @@ prepare_betagal_extract() {
   local prep_root_env_var="$1"
   local project_env_var="$2"
   local runner_script="$3"
-  local prep_root="${!prep_root_env_var:-$projects_home/simple_joint_sgd_betagal_extract_$(date +%Y%m%d_%H%M%S)}"
+  local legacy_prep_root_env_var="${4:-}"
+  local prep_root
+  prep_root="$(env_or_legacy "$prep_root_env_var" "$legacy_prep_root_env_var" "$projects_home/simple_joint2d_sgd_betagal_extract_$(date +%Y%m%d_%H%M%S)")"
   local filetab_movs_pl=""
   local filetab_mrc_pl=""
   local simple_log=""
@@ -401,10 +422,10 @@ prepare_betagal_extract() {
   filetab_movs_pl="$(find_simple_script filetab_movs.pl)" || fail "filetab_movs.pl not found; set SIMPLE_PATH to a SIMPLE source/build root with scripts/"
   filetab_mrc_pl="$(find_simple_script filetab_mrc.pl)" || fail "filetab_mrc.pl not found; set SIMPLE_PATH to a SIMPLE source/build root with scripts/"
 
-  [[ "$prep_nparts" =~ ^[0-9]+$ && "$prep_nparts" -ge 1 ]] || fail "JOINT_SGD_PREP_NPARTS must be a positive integer"
-  [[ "$prep_nthr" =~ ^[0-9]+$ && "$prep_nthr" -ge 1 ]] || fail "JOINT_SGD_PREP_NTHR must be a positive integer"
+  [[ "$prep_nparts" =~ ^[0-9]+$ && "$prep_nparts" -ge 1 ]] || fail "JOINT2D_SGD_PREP_NPARTS must be a positive integer"
+  [[ "$prep_nthr" =~ ^[0-9]+$ && "$prep_nthr" -ge 1 ]] || fail "JOINT2D_SGD_PREP_NTHR must be a positive integer"
   if [[ -n "$betagal_sample_count" ]]; then
-    [[ "$betagal_sample_count" =~ ^[0-9]+$ && "$betagal_sample_count" -ge 1 ]] || fail "JOINT_SGD_BETAGAL_SAMPLE_COUNT must be a positive integer when set"
+    [[ "$betagal_sample_count" =~ ^[0-9]+$ && "$betagal_sample_count" -ge 1 ]] || fail "JOINT2D_SGD_BETAGAL_SAMPLE_COUNT must be a positive integer when set"
   fi
 
   mkdir -p "$prep_root"

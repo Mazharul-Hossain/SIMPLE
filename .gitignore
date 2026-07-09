@@ -49,10 +49,10 @@ __pycache__
 # Docs
 docs/
 /.codex/*
-!/.codex/check-joint-sgd-smoke-log.sh
-!/.codex/run-joint-sgd-smoke.sh
-!/.codex/check-joint-sgd-science-log.sh
-!/.codex/run-joint-sgd-science.sh
-!/.codex/summarize-joint-sgd-science.sh
-!/.codex/joint-sgd-runner-common.sh
+!/.codex/check-joint2d-sgd-smoke-log.sh
+!/.codex/run-joint2d-sgd-smoke.sh
+!/.codex/check-joint2d-sgd-science-log.sh
+!/.codex/run-joint2d-sgd-science.sh
+!/.codex/summarize-joint2d-sgd-science.sh
+!/.codex/joint2d-sgd-runner-common.sh
 /.vscode

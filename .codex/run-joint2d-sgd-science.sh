@@ -4,30 +4,32 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  .codex/run-joint-sgd-science.sh --check
-  .codex/run-joint-sgd-science.sh --prepare-build
-  .codex/run-joint-sgd-science.sh --prepare-betagal-extract
-  .codex/run-joint-sgd-science.sh
+  .codex/run-joint2d-sgd-science.sh --check
+  .codex/run-joint2d-sgd-science.sh --prepare-build
+  .codex/run-joint2d-sgd-science.sh --prepare-betagal-extract
+  .codex/run-joint2d-sgd-science.sh
 
 Workstation layout:
-  Build copy:  ~/Projects/SIMPLE_joint_sgd_build
-  Test runs:   ~/Projects/simple_joint_sgd_science_<timestamp>
+  Build copy:  ~/Projects/SIMPLE_joint2d_sgd_build
+  Test runs:   ~/Projects/simple_joint2d_sgd_science_<timestamp>
 
 Environment overrides:
-  JOINT_SGD_PROJECTS_HOME        Defaults to ~/Projects.
-  JOINT_SGD_BUILD_COPY           Defaults to ~/Projects/SIMPLE_joint_sgd_build.
-  JOINT_SGD_SCIENCE_ROOT         Defaults to ~/Projects/simple_joint_sgd_science_<timestamp>.
-  JOINT_SGD_SCIENCE_PROJECT      Existing extracted .simple project for validation.
-  JOINT_SGD_SCIENCE_REPS         Number of replicates. Defaults to 1; recommended 3.
-  JOINT_SGD_SCIENCE_NCLS         abinitio2D ncls. Defaults to 100.
-  JOINT_SGD_SCIENCE_MSKDIAM      abinitio2D mskdiam. Defaults to 190.
-  JOINT_SGD_SCIENCE_NTHR         abinitio2D nthr. Defaults to 32.
-  JOINT_SGD_BUILD_JOBS           Build jobs for --prepare-build. Defaults to 4.
-  JOINT_SGD_CMAKE_BUILD_TYPE     CMake build type. Defaults to Debug.
-  JOINT_SGD_REWRITE_BUILD        Use yes to refresh an existing build copy without prompting.
-  JOINT_SGD_PREP_NPARTS          Betagal prep parts. Defaults to 5.
-  JOINT_SGD_PREP_NTHR            Betagal prep threads. Defaults to 8.
-  JOINT_SGD_BETAGAL_SAMPLE_COUNT Optional movie sample count for prep.
+  JOINT2D_SGD_PROJECTS_HOME        Defaults to ~/Projects.
+  JOINT2D_SGD_BUILD_COPY           Defaults to ~/Projects/SIMPLE_joint2d_sgd_build.
+  JOINT2D_SGD_SCIENCE_ROOT         Defaults to ~/Projects/simple_joint2d_sgd_science_<timestamp>.
+  JOINT2D_SGD_SCIENCE_PROJECT      Existing extracted .simple project for validation.
+  JOINT2D_SGD_SCIENCE_REPS         Number of replicates. Defaults to 1; recommended 3.
+  JOINT2D_SGD_SCIENCE_NCLS         abinitio2D ncls. Defaults to 100.
+  JOINT2D_SGD_SCIENCE_MSKDIAM      abinitio2D mskdiam. Defaults to 190.
+  JOINT2D_SGD_SCIENCE_NTHR         abinitio2D nthr. Defaults to 32.
+  JOINT2D_SGD_BUILD_JOBS           Build jobs for --prepare-build. Defaults to 4.
+  JOINT2D_SGD_CMAKE_BUILD_TYPE     CMake build type. Defaults to Debug.
+  JOINT2D_SGD_REWRITE_BUILD        Use yes to refresh an existing build copy without prompting.
+  JOINT2D_SGD_PREP_NPARTS          Betagal prep parts. Defaults to 5.
+  JOINT2D_SGD_PREP_NTHR            Betagal prep threads. Defaults to 8.
+  JOINT2D_SGD_BETAGAL_SAMPLE_COUNT Optional movie sample count for prep.
+
+Legacy compatibility: old JOINT_SGD_* variable names are still accepted as aliases.
   SIMPLE_DATA_TESTING_HOME       Sibling SIMPLE_data_testing repository.
   SIMPLE_EXEC_DIR                Directory containing simple_exec or simple_exec.exe.
 
@@ -102,15 +104,15 @@ run_case() {
   echo "Log: $log_file"
 }
 
-joint_sgd_runner_label="joint-SGD science runner"
+joint2d_sgd_runner_label="joint2D-SGD science runner"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 simple_home="$(cd -- "$script_dir/.." && pwd -P)"
-# shellcheck source=.codex/joint-sgd-runner-common.sh
-. "$script_dir/joint-sgd-runner-common.sh"
-joint_sgd_common_init
+# shellcheck source=.codex/joint2d-sgd-runner-common.sh
+. "$script_dir/joint2d-sgd-runner-common.sh"
+joint2d_sgd_common_init
 
-checker="$script_dir/check-joint-sgd-science-log.sh"
-summarizer="$script_dir/summarize-joint-sgd-science.sh"
+checker="$script_dir/check-joint2d-sgd-science-log.sh"
+summarizer="$script_dir/summarize-joint2d-sgd-science.sh"
 
 case "${1:-}" in
   -h|--help)
@@ -126,33 +128,33 @@ esac
 setup_simple_path
 
 if [[ "${1:-}" == "--prepare-betagal-extract" ]]; then
-  prepare_betagal_extract JOINT_SGD_SCIENCE_ROOT JOINT_SGD_SCIENCE_PROJECT .codex/run-joint-sgd-science.sh
+  prepare_betagal_extract JOINT2D_SGD_SCIENCE_ROOT JOINT2D_SGD_SCIENCE_PROJECT .codex/run-joint2d-sgd-science.sh JOINT_SGD_SCIENCE_ROOT
   exit 0
 fi
 
-common_project_probe JOINT_SGD_SCIENCE_PROJECT
+common_project_probe JOINT2D_SGD_SCIENCE_PROJECT JOINT_SGD_SCIENCE_PROJECT
 
 if [[ "${1:-}" == "--check" ]]; then
-  print_common_check "Default science root: $projects_home/simple_joint_sgd_science_<timestamp>"
-  echo "Replicates: ${JOINT_SGD_SCIENCE_REPS:-1}"
+  print_common_check "Default science root: $projects_home/simple_joint2d_sgd_science_<timestamp>"
+  echo "Replicates: $(env_or_legacy JOINT2D_SGD_SCIENCE_REPS JOINT_SGD_SCIENCE_REPS 1)"
   exit 0
 fi
 
 require_common_inputs "$checker"
 [[ -f "$summarizer" ]] || fail "summarizer script not found: $summarizer"
 command -v simple_exec >/dev/null 2>&1 || fail "simple_exec is not on PATH; run --prepare-build or set SIMPLE_EXEC_DIR"
-require_project_or_explain "science" JOINT_SGD_SCIENCE_PROJECT
+require_project_or_explain "science" JOINT2D_SGD_SCIENCE_PROJECT
 infer_workflow_root "$project_path"
 
 timestamp="$(date +%Y%m%d_%H%M%S)"
-scratch_root="${JOINT_SGD_SCIENCE_ROOT:-$projects_home/simple_joint_sgd_science_${timestamp}}"
-reps="${JOINT_SGD_SCIENCE_REPS:-1}"
-ncls="${JOINT_SGD_SCIENCE_NCLS:-100}"
-mskdiam="${JOINT_SGD_SCIENCE_MSKDIAM:-190}"
-nthr="${JOINT_SGD_SCIENCE_NTHR:-32}"
+scratch_root="$(env_or_legacy JOINT2D_SGD_SCIENCE_ROOT JOINT_SGD_SCIENCE_ROOT "$projects_home/simple_joint2d_sgd_science_${timestamp}")"
+reps="$(env_or_legacy JOINT2D_SGD_SCIENCE_REPS JOINT_SGD_SCIENCE_REPS 1)"
+ncls="$(env_or_legacy JOINT2D_SGD_SCIENCE_NCLS JOINT_SGD_SCIENCE_NCLS 100)"
+mskdiam="$(env_or_legacy JOINT2D_SGD_SCIENCE_MSKDIAM JOINT_SGD_SCIENCE_MSKDIAM 190)"
+nthr="$(env_or_legacy JOINT2D_SGD_SCIENCE_NTHR JOINT_SGD_SCIENCE_NTHR 32)"
 manifest="$scratch_root/science_runs.tsv"
 
-[[ "$reps" =~ ^[0-9]+$ && "$reps" -ge 1 ]] || fail "JOINT_SGD_SCIENCE_REPS must be a positive integer"
+[[ "$reps" =~ ^[0-9]+$ && "$reps" -ge 1 ]] || fail "JOINT2D_SGD_SCIENCE_REPS must be a positive integer"
 
 mkdir -p "$scratch_root"
 write_manifest_header
@@ -182,4 +184,4 @@ for rep in $(seq 1 "$reps"); do
 done
 
 "$summarizer" "$scratch_root"
-echo "joint-SGD scientific validation complete: $scratch_root"
+echo "joint2D-SGD scientific validation complete: $scratch_root"
