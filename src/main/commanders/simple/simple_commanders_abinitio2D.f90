@@ -106,6 +106,10 @@ contains
             endif
             ! parameters update
             call set_cline_cluster2D_stage(cline_cluster2D, cline, params, stage_parms, maxits, istage)
+            if( params%l_sgd .and. trim(params%sgd_mode) == 'joint' )then
+                call cline_cluster2D%set('refine',      'prob')
+                call cline_cluster2D%set('prob_assign', 'likelihood')
+            endif
             ! classify
             call execute_cluster2D
         enddo
