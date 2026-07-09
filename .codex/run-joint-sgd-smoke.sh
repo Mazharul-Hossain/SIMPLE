@@ -24,8 +24,8 @@ Environment overrides:
   JOINT_SGD_BUILD_JOBS          Build jobs for --prepare-build. Defaults to 4.
   JOINT_SGD_CMAKE_BUILD_TYPE    CMake build type. Defaults to Debug.
   JOINT_SGD_REWRITE_BUILD       Use yes to refresh an existing build copy without prompting.
-  JOINT_SGD_PREP_NPARTS         Betagal prep parts. Defaults to 1 for NAS-friendly reads.
-  JOINT_SGD_PREP_NTHR           Betagal prep threads. Defaults to 4.
+  JOINT_SGD_PREP_NPARTS         Betagal prep parts. Defaults to 5.
+  JOINT_SGD_PREP_NTHR           Betagal prep threads. Defaults to 8.
   JOINT_SGD_BETAGAL_SAMPLE_COUNT Optional movie sample count for prep.
   SIMPLE_DATA_TESTING_HOME      Sibling SIMPLE_data_testing repository.
   SIMPLE_EXEC_DIR               Directory containing simple_exec or simple_exec.exe.

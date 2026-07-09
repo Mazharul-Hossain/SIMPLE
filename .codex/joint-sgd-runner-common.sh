@@ -31,8 +31,8 @@ joint_sgd_common_init() {
   cmake_build_type="${JOINT_SGD_CMAKE_BUILD_TYPE:-Debug}"
   betagal_data="${JOINT_SGD_BETAGAL_DATA:-/mnt/beegfs/elmlund/testing-datasets/betagal}"
   betagal_sample_count="${JOINT_SGD_BETAGAL_SAMPLE_COUNT:-}"
-  prep_nparts="${JOINT_SGD_PREP_NPARTS:-1}"
-  prep_nthr="${JOINT_SGD_PREP_NTHR:-4}"
+  prep_nparts="${JOINT_SGD_PREP_NPARTS:-5}"
+  prep_nthr="${JOINT_SGD_PREP_NTHR:-8}"
 }
 
 resolve_simple_install_root() {
