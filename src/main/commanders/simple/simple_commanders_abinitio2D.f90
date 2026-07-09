@@ -285,6 +285,7 @@ contains
             call cline_calc_pspec%delete('ptcl_src')
             ! initial sigma2
             call cline_calc_pspec%set('prg',      'calc_pspec')
+            call cline_calc_pspec%set('sgd',      'no')
             ! cluster2D
             call cline_cluster2D%set('prg',       'cluster2D')
             call cline_cluster2D%set('cenlp',     params%cenlp)
@@ -370,6 +371,7 @@ contains
             call cline_make_cavgs%delete('smpd_crop')
             call cline_make_cavgs%delete('box_crop')
             call cline_make_cavgs%set('prg',        'make_cavgs')
+            call cline_make_cavgs%set('sgd',        'no')
             call cline_make_cavgs%set('refs',       finalcavgs)
             call cline_make_cavgs%set('which_iter', iter)
             ! Cavgs final output is regularized
