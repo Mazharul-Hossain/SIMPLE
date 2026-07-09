@@ -7,6 +7,8 @@ public :: aff_prop, test_aff_prop
 private
 #include "simple_local_flags.inc"
 
+integer, parameter :: EXEMPLAR_STABLE_CHECKS = 10
+
 type aff_prop
     private
     integer              :: N                    !< nr of data entries
@@ -14,7 +16,7 @@ type aff_prop
     real,    allocatable :: Aold(:,:), Rold(:,:)
     real,    allocatable :: Rp(:,:), tmp(:)
     real,    allocatable :: AS(:,:), dA(:)
-    real,    pointer     :: S(:,:)               !< pointer to similarity matrix
+    real,    allocatable :: S(:,:)               !< private similarity matrix
     real,    allocatable :: Y(:), Y2(:)          !< maxvals
     integer, allocatable :: I(:), I2(:)          !< index arrays
     integer              :: maxits=500           !< maximum number of iterations
@@ -36,30 +38,32 @@ contains
     subroutine new( self, N, S, ftol, lam, pref, maxits )
         class(aff_prop),   intent(inout) :: self
         integer,           intent(in)    :: N               ! # data entries
-        real,    target,   intent(inout) :: S(N,N)          ! similarity matrix
+        real,              intent(in)    :: S(N,N)          ! similarity matrix
         real,    optional, intent(in)    :: ftol, lam, pref ! tolerance, dampening factor, preference thres
         integer, optional, intent(in)    :: maxits
         integer :: i, j
         real    :: ppref, diff
         call self%kill
         ! set constants
-        self%S => S
         self%N = N
         if( present(ftol)    ) self%ftol    = ftol
         if( present(lam)     ) self%lam     = lam
         if( present(maxits)  ) self%maxits  = maxits
         ! calculate similarity characteristics
-        call analyze_smat(S, .false., self%Smin, self%Smax)
+        allocate(self%S(N,N), source=S)
+        call analyze_smat(self%S, .false., self%Smin, self%Smax)
         ! low pref [0.1,1] leads to small numbers of clusters and
         ! high pref leads to large numbers of clusters. Frey suggests Smin - (Smax - Smin) as a threshold for fewer cluster
         ppref = self%Smin
         if( present(pref) ) ppref = pref
-        ! remove degeneracies
-        forall(i=1:N) self%S(i,i) = ppref
+        ! remove degeneracies reproducibly; volcluster/AP restarts must be deterministic
+        do i=1,N
+            self%S(i,i) = ppref
+        end do
         diff = (self%Smax - self%Smin) * self%ftol
         do i=1,self%N
             do j=1,self%N
-                self%S(i,j) = self%S(i,j) + ran3() * diff
+                self%S(i,j) = self%S(i,j) + deterministic_tiebreak(i, j) * diff
             end do
         end do
         ! allocate
@@ -78,11 +82,15 @@ contains
         integer, allocatable, intent(inout) :: labels(:)  !< cluster labels
         real,                 intent(inout) :: simsum     !< similarity sum
         real, allocatable :: similarities(:)
-        real              :: x, realmax, maxdiff, val
-        integer           :: i, j, k, ncls
-        logical           :: converged
+        logical, allocatable :: exemplars(:), exemplars_prev(:)
+        real              :: best, second, avail, colsum, val, pseudo, exemplar_tol, realmax
+        integer           :: i, j, k, ncls, nborder, fallback_center, nstable, best_idx, second_idx
+        logical           :: converged, use_fallback_center
         ! initialize
-        realmax   = huge(x)
+        realmax   = huge(realmax)
+        converged = .false.
+        nstable   = 0
+        allocate(exemplars(self%N), exemplars_prev(self%N), source=.false.)
         self%A    = 0.
         self%R    = 0.
         self%Aold = 0.
@@ -100,121 +108,147 @@ contains
             !------------------------
             ! RESPONSIBILITIES
             !------------------------
-            self%Rold = self%R
-            self%AS   = self%A + self%S
-            self%I    = maxloc(self%AS, dim=2)
-            !$omp parallel do default(shared) private(j,k)
-            do j = 1, self%N
-                self%Y(j) = self%AS(j,self%I(j))
-                self%AS(j,self%I(j)) = -realmax
-            enddo
-            !$omp end parallel do
-            self%I2 = maxloc(self%AS, dim=2)
-            !$omp parallel default(shared) private(j)
-            !$omp do
-            do j = 1, self%N
-                self%Y2(j) = self%AS(j,self%I2(j))
-            enddo
-            !$omp end do
-            !$omp workshare
-            self%R = self%S
-            !$omp end workshare
-            !$omp do
-            do j = 1, self%N
-                self%R(j,:) = self%R(j,:) - self%Y
-            enddo
-            !$omp end do
-            !$omp do 
-            do j=1,self%N
-                self%R(j,self%I(j)) = self%S(j,self%I(j)) - self%Y2(j)
+            !$omp parallel do default(shared) private(j,k) schedule(static)
+            do k = 1, self%N
+                do j = 1, self%N
+                    self%Rold(j,k) = self%R(j,k)
+                    self%AS(j,k)   = self%A(j,k) + self%S(j,k)
+                end do
             end do
-            !$omp end do
-            !$omp workshare
+            !$omp end parallel do
+            !$omp parallel do default(shared) private(j,k,best,second,best_idx,second_idx,val) schedule(static)
+            do j = 1, self%N
+                best_idx   = 1
+                second_idx = 1
+                best       = self%AS(j,1)
+                second     = -huge(second)
+                do k = 2, self%N
+                    val = self%AS(j,k)
+                    if( val > best )then
+                        second     = best
+                        second_idx = best_idx
+                        best       = val
+                        best_idx   = k
+                    else if( val > second )then
+                        second     = val
+                        second_idx = k
+                    endif
+                end do
+                self%I(j)  = best_idx
+                self%I2(j) = second_idx
+                self%Y(j)  = best
+                self%Y2(j) = second
+                do k = 1, self%N
+                    if( k == best_idx )then
+                        self%R(j,k) = self%S(j,k) - second
+                    else
+                        self%R(j,k) = self%S(j,k) - best
+                    endif
+                end do
+            end do
+            !$omp end parallel do
             ! update responsibilities (in a dampened fashion)
-            self%R = (1. - self%lam) * self%R + self%lam * self%Rold
+            !$omp parallel do default(shared) private(j,k) schedule(static)
+            do k = 1, self%N
+                do j = 1, self%N
+                    self%R(j,k) = (1. - self%lam) * self%R(j,k) + self%lam * self%Rold(j,k)
+                end do
+            end do
+            !$omp end parallel do
             !------------------------
             ! AVAILABILITIES
             !------------------------
-            self%Aold = self%A
-            where(self%R > 0.)
-                self%Rp = self%R
-            elsewhere
-                self%Rp = 0.
-            end where
-            !$omp end workshare
-            !$omp do
+            !$omp parallel do default(shared) private(j,k) schedule(static)
             do k = 1, self%N
-                self%Rp(k,k) = self%R(k,k)
+                do j = 1, self%N
+                    self%Aold(j,k) = self%A(j,k)
+                    self%Rp(j,k)   = max(0., self%R(j,k))
+                end do
             end do
-            !$omp end do
-            !$omp do
+            !$omp end parallel do
+            !$omp parallel do default(shared) private(j,k,colsum,avail) schedule(static)
             do k = 1, self%N
-                self%tmp(k)  = sum(self%Rp(:,k))
+                colsum = 0.
+                do j = 1, self%N
+                    if( j /= k ) colsum = colsum + self%Rp(j,k)
+                end do
+                self%tmp(k) = colsum
+                do j = 1, self%N
+                    if( j == k )then
+                        self%A(j,k) = colsum
+                    else
+                        avail = self%R(k,k) + colsum
+                        if( self%R(j,k) > 0. ) avail = avail - self%R(j,k)
+                        self%A(j,k) = min(0., avail)
+                    endif
+                end do
             end do
-            !$omp end do
-            !$omp workshare
-            self%A = -self%Rp
-            !$omp end workshare
-            !$omp do
-            do j = 1, self%N
-                self%A(j,:) = self%A(j,:) + self%tmp
-            end do
-            !$omp end do
-            !$omp do
-            do k = 1, self%N
-                self%dA(k) = self%A(k,k)
-            end do
-            !$omp end do
-            !$omp workshare
-            where(self%A > 0.) self%A = 0.
-            !$omp end workshare
-            !$omp do
-            do k = 1, self%N
-                self%A(k,k) = self%dA(k)
-            end do
-            !$omp end do
-            !$omp workshare
+            !$omp end parallel do
             ! update availabilities (in a dampened fashion)
-            self%A = (1. - self%lam) * self%A + self%lam * self%Aold
-            !$omp end workshare
-            !$omp end parallel
+            !$omp parallel do default(shared) private(j,k) schedule(static)
+            do k = 1, self%N
+                do j = 1, self%N
+                    self%A(j,k) = (1. - self%lam) * self%A(j,k) + self%lam * self%Aold(j,k)
+                end do
+            end do
+            !$omp end parallel do
             !========================
             ! Convergence check each 5th iter
             !========================
             if (mod(i,5) == 0) then
-                maxdiff = 0.0
-                !$omp parallel do default(shared) private(j,k,val) reduction(max:maxdiff)
-                do j = 1, self%N
-                    do k = 1, self%N
-                        val = max( abs(self%A(j,k)-self%Aold(j,k)), abs(self%R(j,k)-self%Rold(j,k)) )
-                        if (val > maxdiff) maxdiff = val
-                    end do
-                end do
-                !$omp end parallel do
-                if (maxdiff < self%ftol) then
-                    write(logfhandle,'(a,i6,1x,es12.4)') 'aff_prop converged at iter=', i, maxdiff
+                call calc_exemplar_mask(exemplars, exemplar_tol)
+                if( any(exemplars) .and. all(exemplars .eqv. exemplars_prev) )then
+                    nstable = nstable + 1
+                else
+                    nstable = 0
+                    exemplars_prev = exemplars
+                endif
+                if( nstable >= EXEMPLAR_STABLE_CHECKS )then
+                    write(logfhandle,'(a,i6,1x,a,i0)') 'aff_prop exemplar set stable at iter=', i, ' checks=', nstable
                     converged = .true.
                     exit
                 end if
             endif
         end do
-        self%R = self%R + self%A ! pseudomarginals
+        if( .not. converged ) write(logfhandle,'(a,i6)') 'aff_prop WARNING: reached maxits without convergence, iter=', self%maxits
+        !$omp parallel do default(shared) private(j,k) schedule(static)
+        do k = 1, self%N
+            do j = 1, self%N
+                self%AS(j,k) = self%A(j,k) + self%R(j,k) ! pseudomarginals
+            end do
+        end do
+        !$omp end parallel do
+        call calc_exemplar_mask(exemplars, exemplar_tol)
+        nborder = 0
+        fallback_center = 1
         ! count the number of clusters
         ncls = 0
         do j=1,self%N
-            if( self%R(j,j) > 0. ) ncls = ncls + 1
+            if( self%AS(j,j) > self%AS(fallback_center,fallback_center) ) fallback_center = j
+            if( exemplars(j) )then
+                ncls = ncls + 1
+            else if( abs(self%AS(j,j)) <= exemplar_tol )then
+                nborder = nborder + 1
+            endif
         end do
+        use_fallback_center = ncls == 0
+        if( use_fallback_center ) ncls = 1
+        if( nborder > 0 ) write(logfhandle,'(a,i0,1x,es12.4)') 'aff_prop near-zero exemplar candidates ignored: ', nborder, exemplar_tol
         if( allocated(centers) ) deallocate(centers)
         if( allocated(labels) )  deallocate(labels)
         allocate( centers(ncls), similarities(ncls), labels(self%N) )
         ! set the cluster centers
-        ncls = 0
-        do j=1,self%N
-            if( self%R(j,j) > 0. )then
-                ncls = ncls + 1
-                centers(ncls) = j
-            endif
-        end do
+        if( use_fallback_center )then
+            centers(1) = fallback_center
+        else
+            ncls = 0
+            do j=1,self%N
+                if( exemplars(j) )then
+                    ncls = ncls + 1
+                    centers(ncls) = j
+                endif
+            end do
+        endif
         ! report back the labeling
         simsum = 0.
         do j=1,self%N
@@ -225,79 +259,129 @@ contains
                     similarities(k) = realmax
                 endif
             end do
-            labels(j) = maxloc(similarities,dim=1)
+            labels(j) = 1
+            do k=2,ncls
+                if( similarities(k) > similarities(labels(j)) ) labels(j) = k
+            end do
             if( j .ne. centers(labels(j)) ) simsum = simsum + similarities(labels(j))
         end do
         simsum = simsum / real(self%N)
-        deallocate(similarities)
+        deallocate(similarities, exemplars, exemplars_prev)
+
+        contains
+
+            subroutine calc_exemplar_mask( mask, tol )
+                logical, intent(inout) :: mask(:)
+                real,    intent(out)   :: tol
+                real :: pseudo_absmax_here
+                integer :: ii
+                pseudo_absmax_here = 0.
+                do ii=1,self%N
+                    pseudo = self%A(ii,ii) + self%R(ii,ii)
+                    pseudo_absmax_here = max(pseudo_absmax_here, abs(pseudo))
+                end do
+                tol = max(10. * epsilon(tol), self%ftol) * max(1., pseudo_absmax_here)
+                do ii=1,self%N
+                    mask(ii) = (self%A(ii,ii) + self%R(ii,ii)) > tol
+                end do
+            end subroutine calc_exemplar_mask
     end subroutine propagate
+
+    pure real function deterministic_tiebreak( i, j ) result( val )
+        integer, intent(in) :: i, j
+        integer, parameter :: HASH_MOD = 8191, HASH_A = 37, HASH_B = 1009
+        integer :: ii, jj, h
+        ii  = mod(i - 1, HASH_MOD)
+        jj  = mod(j - 1, HASH_MOD)
+        h   = mod(HASH_A * ii + HASH_B * jj + mod(ii * jj, HASH_MOD), HASH_MOD)
+        val = real(h) / real(HASH_MOD)
+    end function deterministic_tiebreak
 
     ! UNIT TEST
 
     !>  \brief  is the aff_prop unit test
     subroutine test_aff_prop
-        real,    allocatable :: datavecs(:,:)
+        real,    allocatable :: datavecs(:,:), centers_true(:,:)
         type(aff_prop)       :: apcls
-        real,    allocatable :: simmat(:,:)
-        real                 :: simsum
-        integer, allocatable :: centers(:), labels(:)
-        integer              :: i, j, ncls, nerr, nper, ntot
+        real,    allocatable :: simmat(:,:), simmat_ref(:,:)
+        real                 :: simsum, simsum2, pref
+        integer, allocatable :: centers(:), centers2(:), centers_main(:), labels(:), labels2(:), truth(:)
+        integer              :: i, j, k, ncls, nerr, ndet, nper, ntot, rep
         write(logfhandle,'(a)') '**info(simple_aff_prop_unit_test): testing all functionality'
 #if defined(_WIN32)
-        nper = 40
+        nper = 8
 #else
-        nper = 300
+        nper = 12
 #endif
         ntot = 3 * nper
-        allocate(datavecs(ntot,5), simmat(ntot,ntot))
-        ! make data
-        do i=1,nper
-            datavecs(i,:) = 1.
-        end do
-        do i=nper+1,2*nper
-            datavecs(i,:) = 5.
-        end do
-        do i=2*nper+1,ntot
-            datavecs(i,:) = 10.
+        allocate(datavecs(ntot,5), centers_true(3,5), truth(ntot), simmat(ntot,ntot), simmat_ref(ntot,ntot))
+        centers_true = 0.
+        centers_true(1,1:2) = [0.0, 0.0]
+        centers_true(2,1:2) = [7.0, 0.0]
+        centers_true(3,1:2) = [0.0, 7.0]
+        do k=1,3
+            do i=1,nper
+                j = (k - 1) * nper + i
+                truth(j) = k
+                datavecs(j,:) = centers_true(k,:)
+                datavecs(j,1) = datavecs(j,1) + 0.12 * real(mod(i - 1, 4))
+                datavecs(j,2) = datavecs(j,2) + 0.10 * real((i - 1) / 4)
+                datavecs(j,3) = 0.03 * real(mod(i, 3))
+            end do
         end do
         do i=1,ntot-1
             simmat(i,i) = 0.
             do j=i+1,ntot
-                simmat(i,j) = -euclid(datavecs(i,:),datavecs(j,:))
+                simmat(i,j) = -sum((datavecs(i,:) - datavecs(j,:))**2)
                 simmat(j,i) = simmat(i,j)
             end do
         end do
         simmat(ntot,ntot) = 0.
-        call apcls%new(ntot, simmat)
+        simmat_ref = simmat
+        pref = -1.0
+        call apcls%new(ntot, simmat, pref=pref, lam=0.7, maxits=1000)
         call apcls%propagate(centers, labels, simsum)
         ncls = size(centers)
+        centers_main = centers
         nerr = 0
-        do i=1,nper-1
-            do j=i+1,nper
-                if( labels(i) /= labels(j) ) nerr = nerr+1
-            end do
+        ndet = 0
+        if( maxval(abs(simmat - simmat_ref)) > 0. ) ndet = ndet + 1
+        do rep=1,5
+            call apcls%new(ntot, simmat_ref, pref=pref, lam=0.7, maxits=1000)
+            call apcls%propagate(centers2, labels2, simsum2)
+            if( size(centers2) /= size(centers) )then
+                ndet = ndet + 1
+            else
+                if( any(centers2 /= centers) ) ndet = ndet + 1
+            endif
+            if( size(labels2) /= size(labels) )then
+                ndet = ndet + 1
+            else
+                if( any(labels2 /= labels) ) ndet = ndet + 1
+            endif
         end do
-        do i=nper+1,2*nper-1
-            do j=i+1,2*nper
-                if( labels(i) /= labels(j) ) nerr = nerr+1
-            end do
-        end do
-        do i=2*nper+1,ntot-1
+        do i=1,ntot-1
             do j=i+1,ntot
-                if( labels(i) /= labels(j) ) nerr = nerr+1
+                if( truth(i) == truth(j) )then
+                    if( labels(i) /= labels(j) ) nerr = nerr + 1
+                else
+                    if( labels(i) == labels(j) ) nerr = nerr + 1
+                endif
             end do
         end do
         write(logfhandle,*) 'NR OF CLUSTERS FOUND:', ncls
         write(logfhandle,*) 'NR OF ASSIGNMENT ERRORS:', nerr
+        write(logfhandle,*) 'NR OF DETERMINISM ERRORS:', ndet
         write(logfhandle,*) 'CENTERS'
-        do i=1,size(centers)
-            write(logfhandle,*) datavecs(centers(i),:)
+        do i=1,size(centers_main)
+            write(logfhandle,*) datavecs(centers_main(i),:)
         end do
-        if( ncls == 3 .and. nerr == 0 )then
+        if( ncls == 3 .and. nerr == 0 .and. ndet == 0 )then
             write(logfhandle,'(a)') 'SIMPLE_AFF_PROP_UNIT_TEST COMPLETED ;-)'
         else
             write(logfhandle,'(a)') 'SIMPLE_AFF_PROP_UNIT_TEST FAILED!'
         endif
+        call apcls%kill
     end subroutine test_aff_prop
 
     ! DESTRUCTOR
@@ -305,8 +389,7 @@ contains
     subroutine kill( self )
         class(aff_prop), intent(inout) :: self
         if( self%exists )then
-            self%S => null()
-            deallocate( self%A, self%R, self%Aold, self%Rp,&
+            deallocate( self%S, self%A, self%R, self%Aold, self%Rp,&
             self%Rold, self%AS, self%Y, self%Y2, self%tmp, self%I,&
             self%I2, self%dA )
             self%exists = .false.

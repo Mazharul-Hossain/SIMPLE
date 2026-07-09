@@ -429,7 +429,7 @@ contains
         call cmd_dict%push('projfile_target', 'another SIMPLE *.simple project file')
         call cmd_dict%push('projname',      'Project name (for creation of projname.simple)')
         call cmd_dict%push('prune',         'Whether to perform particles pruning')
-        call cmd_dict%push('prob_neigh_mode', 'prob_neigh neighborhood mode(state|geom|sum|shc|snhc){state}')
+        call cmd_dict%push('prob_neigh_mode', 'prob_neigh neighborhood mode(state|geom|shc|snhc){state}')
         call cmd_dict%push('pspecsz',       'size of power spectrum(in pixels)')
         call cmd_dict%push('qsys_partition', 'Name of target partition of distributed computer system (SLURM/PBS)')
         call cmd_dict%push('qsys_partition2D', 'Name of target partition of distributed computer system dedictaed to 2D analysis(SLURM/PBS)')
@@ -759,7 +759,46 @@ contains
         ! optional keys
         call private_prgs(26)%push_opt_key('nthr')
 
-        n_private_prgs = 26
+        ! FLEX_EIGENVOL_MSTEP, for producing one flex_eigenvol 2D M-step part
+        call private_prgs(27)%set_name('flex_eigenvol_mstep')
+        ! required keys
+        call private_prgs(27)%push_req_key('projfile')
+        call private_prgs(27)%push_req_key('vol1')
+        call private_prgs(27)%push_req_key('infile')
+        call private_prgs(27)%push_req_key('outfile')
+        call private_prgs(27)%push_req_key('part')
+        call private_prgs(27)%push_req_key('nparts')
+        call private_prgs(27)%push_req_key('fromp')
+        call private_prgs(27)%push_req_key('top')
+        call private_prgs(27)%push_req_key('numlen')
+        ! optional keys
+        call private_prgs(27)%push_opt_key('nthr')
+        call private_prgs(27)%push_opt_key('neigs')
+        call private_prgs(27)%push_opt_key('maxits')
+        call private_prgs(27)%push_opt_key('lp')
+        call private_prgs(27)%push_opt_key('outvol')
+
+        ! FLEX_EIGENVOL_ESTEP, for producing one flex_eigenvol latent E-step part
+        call private_prgs(28)%set_name('flex_eigenvol_estep')
+        ! required keys
+        call private_prgs(28)%push_req_key('projfile')
+        call private_prgs(28)%push_req_key('vol1')
+        call private_prgs(28)%push_req_key('infile')
+        call private_prgs(28)%push_req_key('outfile')
+        call private_prgs(28)%push_req_key('refs')
+        call private_prgs(28)%push_req_key('part')
+        call private_prgs(28)%push_req_key('nparts')
+        call private_prgs(28)%push_req_key('fromp')
+        call private_prgs(28)%push_req_key('top')
+        call private_prgs(28)%push_req_key('numlen')
+        ! optional keys
+        call private_prgs(28)%push_opt_key('nthr')
+        call private_prgs(28)%push_opt_key('neigs')
+        call private_prgs(28)%push_opt_key('maxits')
+        call private_prgs(28)%push_opt_key('lp')
+        call private_prgs(28)%push_opt_key('outvol')
+
+        n_private_prgs = 28
     end subroutine new_private_prgs
 
 end module simple_private_prgs

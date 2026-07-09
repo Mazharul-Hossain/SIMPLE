@@ -351,6 +351,9 @@ Mode intent:
 - consume a prior artifact written by stage-5 probabilistic registration
 - evaluate stored class rank lists rather than stochastic class proposals for
   particles with a valid prior row
+- leave assignment weighting to the 2D likelihood assignment policy:
+  `prob_prior` only proposes the class neighborhood, while evaluated
+  candidates are sampled by the shared likelihood route
 
 Fallback in `refine=prob_prior`:
 
@@ -368,6 +371,8 @@ Orthogonality requirements:
 - no format change to `assignment.dat`
 - no mandatory new command-line flags for existing workflows
 - activation only when `refine=prob_prior` is explicitly requested
+- no private probability route inside `prob_prior`; 2D likelihood assignment must use
+  the same top-K `exp(-dist)` assignment semantics as `prob` and `prob_snhc`
 
 ### 2D Binary Artifact Policy (Fast I/O)
 
@@ -520,9 +525,9 @@ the run past the default independent schedule.
 For `multivol_mode=docked`, the split starts a new multi-state update epoch.
 Do not carry pre-split top-K state/projection rows into the post-split epoch.
 The first post-split stage should either produce a fresh top-K artifact or use
-the existing full-update `prob_neigh_mode=sum` stabilization behavior. Later
-post-split stages can consume prior rows produced within the post-split epoch
-through `prob_neigh_mode=prior`.
+the full-update pooled-state `prob_neigh_mode=state` stabilization behavior.
+Later post-split stages can consume prior rows produced within the post-split
+epoch through `prob_neigh_mode=prior`.
 
 ## 7. Staleness and Compatibility
 

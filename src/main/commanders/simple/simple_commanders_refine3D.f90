@@ -713,10 +713,10 @@ contains
             type(string) :: prob_neigh_mode_arg
             prob_neigh_mode_arg = cline%get_carg('prob_neigh_mode')
             select case(trim(prob_neigh_mode_arg%to_char()))
-                case('geom')
+                case('geom', 'state')
                     ! supported
                 case default
-                    THROW_HARD(WORKFLOW_LABEL//' currently supports only prob_neigh_mode=geom')
+                    THROW_HARD(WORKFLOW_LABEL//' supports prob_neigh_mode=geom|state')
             end select
             call prob_neigh_mode_arg%kill
         end subroutine validate_refine3D_multi_prob_neigh_mode
@@ -1181,6 +1181,7 @@ contains
             call cline_missing%set('which_iter', iter_missing)
             call cline_missing%set('extr_iter',  iter_missing)
             call cline_missing%delete('endit')
+            call cline_missing%delete('partition')
             select case(trim(multivol_mode%to_char()))
                 case('input_oris_fixed')
                     call cline_missing%set('refine', 'prob_state')

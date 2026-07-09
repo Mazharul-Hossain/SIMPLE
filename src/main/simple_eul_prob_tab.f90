@@ -4,7 +4,8 @@ use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
 use simple_pftc_srch_api
 use simple_builder,          only: builder
 use simple_eul_prob_tab_utils, only: angle_sampling, build_pind_lookup, calc_athres, calc_num2sample,&
-    &eulprob_dist_switch, materialize_seed_shift, read_seed_shift_table, write_seed_shift_table
+    &eulprob_dist_switch, materialize_seed_shift, read_seed_shift_table, sample_likelihood_dist,&
+    &write_seed_shift_table
 use simple_pftc_shsrch_grad, only: pftc_shsrch_grad
 use simple_type_defs,        only: OBJFUN_EUCLID
 implicit none
@@ -184,12 +185,13 @@ contains
         real    :: lims(2,2), lims_init(2,2), inpl_athres(self%p_ptr%nstates)
         real    :: dists_inpl(self%b_ptr%pftc%get_nrots(),nthr_glob),&
             &dists_inpl_sorted(self%b_ptr%pftc%get_nrots(),nthr_glob), dists_refs(self%nrefs,nthr_glob)
-        logical :: l_prob_objfun, l_sh_first
+        logical :: l_prob_objfun, l_sh_first, l_likelihood_inpl
         if( i_first < 1 .or. i_last > self%nptcls .or. i_last < i_first )then
             THROW_HARD('invalid particle range in eul_prob_tab%fill_tab_range')
         endif
         self%seed_nrots = self%b_ptr%pftc%get_nrots()
         l_prob_objfun   = (self%p_ptr%cc_objfun == OBJFUN_EUCLID)
+        l_likelihood_inpl = trim(self%p_ptr%prob_assign) == 'likelihood' .and. trim(self%p_ptr%refine) /= 'prob_state'
         l_sh_first      = self%p_ptr%l_doshift .and. self%p_ptr%nstates <= 1
         call seed_rnd
         projs_ns = 0
@@ -295,10 +297,15 @@ contains
             real,    intent(out) :: dist_loc
             integer, intent(out) :: irot_loc
             integer :: istate_loc, iproj_loc, full_ref
+            real    :: corr_loc
             istate_loc = self%sinds(ri_loc)
             iproj_loc  = self%jinds(ri_loc)
             full_ref   = (istate_loc-1)*self%p_ptr%nspace + iproj_loc
-            if( l_prob_objfun )then
+            if( l_likelihood_inpl )then
+                call self%b_ptr%pftc%gen_prob_likelihood_objfun_val(full_ref, iptcl_loc, shift_xy,&
+                    &inpl_likelihood_nsample(istate_loc), dist_loc, corr_loc, irot_loc,&
+                    &dists_inpl_sorted(:,ithr_loc), inds_sorted(:,ithr_loc))
+            else if( l_prob_objfun )then
                 call self%b_ptr%pftc%gen_prob_objfun_val(full_ref, iptcl_loc, shift_xy,&
                     &inpl_athres(istate_loc), self%p_ptr%prob_athres, dist_loc, irot_loc,&
                     &dists_inpl_sorted(:,ithr_loc), inds_sorted(:,ithr_loc))
@@ -310,6 +317,13 @@ contains
                 dist_loc = dists_inpl(irot_loc,ithr_loc)
             endif
         end subroutine score_ref
+
+        integer function inpl_likelihood_nsample( istate_loc ) result(nsample)
+            integer, intent(in) :: istate_loc
+            real :: athres_ub
+            athres_ub = min(self%p_ptr%prob_athres, inpl_athres(istate_loc))
+            nsample = min(self%b_ptr%pftc%get_nrots(), max(1, int(athres_ub * real(self%b_ptr%pftc%get_nrots()) / 180.)))
+        end function inpl_likelihood_nsample
 
         subroutine refine_best_refs( i_loc, iptcl_loc, ithr_loc, shift_seed )
             integer, intent(in) :: i_loc, iptcl_loc, ithr_loc
@@ -480,8 +494,10 @@ contains
         logical, allocatable :: ptcl_avail(:)
         integer :: i, iref, assigned_iref, assigned_ptcl, istate, si, active_idx, nactive, ithr
         integer :: alloc_stat
-        real    :: projs_athres
+        real    :: projs_athres, dist_tmp, corr_tmp
+        logical :: l_likelihood
         character(len=256) :: alloc_msg
+        l_likelihood = trim(self%p_ptr%prob_assign) == 'likelihood'
         allocate(stab_inds(self%nptcls, self%nrefs), score_work(self%nptcls,nthr_glob),&
             &score_min(self%nptcls), score_spread(self%nptcls), score_mode(self%nptcls),&
             &inds_sorted(self%nrefs), iref_dist_inds(self%nrefs), greedy_state(self%nptcls),&
@@ -493,7 +509,11 @@ contains
             write(logfhandle,*) trim(alloc_msg)
             THROW_HARD('failed allocating probability assignment work arrays')
         endif
-        call prepare_ref_score_vectors
+        if( l_likelihood )then
+            call prepare_ref_score_vectors
+        else
+            call self%ref_normalize
+        endif
         ! Sort each reference using one scratch score column per worker thread.
         !$omp parallel do default(shared) proc_bind(close) schedule(static) private(iref,i,ithr)
         do iref = 1, self%nrefs
@@ -522,7 +542,12 @@ contains
         else
             call reset_ref_frontier()
             do while( any(ptcl_avail) )
-                assigned_iref = angle_sampling(iref_dist, dists_sorted, inds_sorted, projs_athres, self%p_ptr%prob_athres)
+                if( l_likelihood )then
+                    call sample_likelihood_dist(self%nrefs, frontier_ref_dist, likelihood_nsample(self%nrefs, projs_athres),&
+                        &dist_tmp, corr_tmp, assigned_iref, dists_sorted, inds_sorted)
+                else
+                    assigned_iref = angle_sampling(iref_dist, dists_sorted, inds_sorted, projs_athres, self%p_ptr%prob_athres)
+                endif
                 call assign_current_ref()
                 do iref = 1,self%nrefs
                     call advance_ref_head(iref, 0)
@@ -585,14 +610,25 @@ contains
             invalid_dist = 0.1 * huge(invalid_dist)
             dist_val = self%loc_tab(iref_loc,iptcl_loc)%dist
             score = 1.
-            if( .not.(ieee_is_finite(dist_val) .and. dist_val < invalid_dist) ) return
-            select case(score_mode(iptcl_loc))
-                case(1)
-                    score = 0.5
-                case(2)
-                    score = (dist_val - score_min(iptcl_loc)) / score_spread(iptcl_loc)
-            end select
+            if( .not.(ieee_is_finite(dist_val) .and. dist_val < invalid_dist) )then
+                if( l_likelihood ) score = invalid_dist
+                return
+            endif
+            score = dist_val
         end function ref_score
+
+        integer function likelihood_nsample( n, athres_ub_in ) result(nsample)
+            integer, intent(in) :: n
+            real,    intent(in) :: athres_ub_in
+            real :: athres_ub
+            athres_ub = min(self%p_ptr%prob_athres, athres_ub_in)
+            nsample = min(n, max(1, int(athres_ub * real(n) / 180.)))
+        end function likelihood_nsample
+
+        real function frontier_ref_dist( iref_loc ) result(dist)
+            integer, intent(in) :: iref_loc
+            dist = iref_dist(iref_loc)
+        end function frontier_ref_dist
 
         subroutine reset_ref_frontier()
             do iref = 1,self%nrefs
@@ -627,9 +663,12 @@ contains
         end subroutine assign_current_ref
 
         subroutine assign_greedy_state_labels()
+            ! Multi-state state labelling is deterministic (argmin distance) for both weighting
+            ! schemes; probabilistic exploration is confined to the within-state projection
+            ! assignment (assign_refs_for_state). Only refine=prob_state samples the state label.
             call reset_ref_frontier()
             do while( any(ptcl_avail) )
-                assigned_iref  = minloc(iref_dist, dim=1)
+                assigned_iref = minloc(iref_dist, dim=1)
                 assigned_ptcl  = stab_inds(iref_dist_inds(assigned_iref), assigned_iref)
                 greedy_state(assigned_ptcl) = self%sinds(assigned_iref)
                 ptcl_avail(assigned_ptcl)  = .false.
@@ -663,6 +702,9 @@ contains
                 if( nactive == 0 ) THROW_HARD('no active refs left in multi-state probability assignment')
                 if( nactive == 1 )then
                     active_idx = 1
+                else if( l_likelihood )then
+                    call sample_likelihood_dist(nactive, active_ref_dist, likelihood_nsample(nactive, state_projs_athres(state_filter)),&
+                        &dist_tmp, corr_tmp, active_idx, active_dists_sorted, active_inds)
                 else
                     active_idx = angle_sampling(active_dists(1:nactive), active_dists_sorted(1:nactive),&
                         &active_inds(1:nactive), state_projs_athres(state_filter), self%p_ptr%prob_athres)
@@ -674,6 +716,12 @@ contains
                 enddo
             enddo
         end subroutine assign_refs_for_state
+
+        real function active_ref_dist( active_loc ) result(dist)
+            integer, intent(in) :: active_loc
+            dist = active_dists(active_loc)
+        end function active_ref_dist
+
     end subroutine ref_assign
 
     ! state normalization (same energy) of the state_tab
@@ -722,15 +770,18 @@ contains
     subroutine state_assign( self )
         class(eul_prob_tab), intent(inout) :: self
         integer :: i, istate, assigned_istate, assigned_ptcl, state_dist_inds(self%nstates),&
-                    &stab_inds(self%nptcls, self%nstates)
-        real    :: sorted_tab(self%nptcls, self%nstates), state_dist(self%nstates)
+                    &stab_inds(self%nptcls, self%nstates), inds_sorted(self%nstates)
+        real    :: sorted_tab(self%nptcls, self%nstates), state_dist(self%nstates), state_dists_sorted(self%nstates)
+        real    :: dist_tmp, corr_tmp
         logical :: ptcl_avail(self%nptcls)
+        logical :: l_likelihood
         if( self%nstates == 1 )then
             self%assgn_map = self%state_tab(1,:)
             self%assgn_map%frac = 100.
             return
         endif
-        call self%state_normalize
+        l_likelihood = trim(self%p_ptr%prob_assign) == 'likelihood'
+        if( .not. l_likelihood ) call self%state_normalize
         ! sorting each columns
         sorted_tab = transpose(self%state_tab%dist)
         !$omp parallel do default(shared) proc_bind(close) schedule(static) private(istate,i)
@@ -744,20 +795,40 @@ contains
         state_dist      = sorted_tab(1,:)
         ptcl_avail      = .true.
         do while( any(ptcl_avail) )
-            ! choose next istate to assign !!! SHOULD DO PROBABILISTIC SAMPLING HERE
-            assigned_istate = minloc(state_dist, dim=1)
+            if( l_likelihood )then
+                call sample_likelihood_dist(self%nstates, state_frontier_dist, self%nstates, dist_tmp, corr_tmp,&
+                    &assigned_istate, state_dists_sorted, inds_sorted)
+            else
+                assigned_istate = minloc(state_dist, dim=1)
+            endif
             assigned_ptcl   = stab_inds(state_dist_inds(assigned_istate), assigned_istate)
             ptcl_avail(assigned_ptcl)     = .false.
             self%assgn_map(assigned_ptcl) = self%state_tab(assigned_istate,assigned_ptcl)
             self%assgn_map(assigned_ptcl)%frac = 100.
             ! update the state_dist and state_dist_inds
             do istate = 1, self%nstates
-                do while( state_dist_inds(istate) < self%nptcls .and. .not.(ptcl_avail(stab_inds(state_dist_inds(istate), istate))))
-                    state_dist_inds(istate) = state_dist_inds(istate) + 1
-                    state_dist(istate)      = sorted_tab(state_dist_inds(istate), istate)
-                enddo
+                call advance_state_head(istate)
             enddo
         enddo
+    contains
+
+        subroutine advance_state_head( state_loc )
+            integer, intent(in) :: state_loc
+            do while( state_dist_inds(state_loc) <= self%nptcls )
+                if( ptcl_avail(stab_inds(state_dist_inds(state_loc), state_loc)) )then
+                    state_dist(state_loc) = sorted_tab(state_dist_inds(state_loc), state_loc)
+                    return
+                endif
+                state_dist_inds(state_loc) = state_dist_inds(state_loc) + 1
+            enddo
+            state_dist(state_loc) = huge(state_dist(state_loc))
+        end subroutine advance_state_head
+
+        real function state_frontier_dist( state_loc ) result(dist)
+            integer, intent(in) :: state_loc
+            dist = state_dist(state_loc)
+        end function state_frontier_dist
+
     end subroutine state_assign
 
     ! FILE IO

@@ -5,7 +5,7 @@ use simple_pftc_srch_api
 use simple_builder,            only: builder
 use simple_eul_prob_tab,       only: eul_prob_tab
 use simple_eul_prob_tab_utils, only: angle_sampling, build_pind_lookup, calc_athres, eulprob_dist_switch,&
-    &materialize_seed_shift, read_seed_shift_table, write_seed_shift_table
+    &materialize_seed_shift, read_seed_shift_table, sample_likelihood_dist, write_seed_shift_table
 use simple_decay_funs,        only: extremal_decay
 use simple_pftc_shsrch_grad,   only: pftc_shsrch_grad
 use simple_ori,                only: ori
@@ -52,12 +52,12 @@ contains
     procedure :: dealloc_eval_ws
 end type eval_ws
 
-! Workspace for coarse subspaces used by the geom/state/sum path
+! Workspace for coarse subspaces used by the geom/state path
 type :: coarse_search_ws
     real,    allocatable :: peak_subspace_dists(:,:,:)  ! [npeak,nstates,nthr]
     integer, allocatable :: peak_subspace_inds(:,:,:)   ! [npeak,nstates,nthr]
     integer, allocatable :: peak_subspace_count(:,:)    ! [nstates,nthr]
-    integer, allocatable :: pooled_sub_inds(:,:,:)      ! [npeak,nstates,nthr]
+    integer, allocatable :: pooled_sub_inds(:,:,:)      ! [npooled,nstates,nthr]
     integer, allocatable :: pooled_sub_count(:,:)       ! [nstates,nthr]
 contains
     procedure :: alloc_coarse_ws
@@ -79,7 +79,7 @@ contains
             case('shc','snhc')
                 self%l_direct_stoch_neigh = .true.
                 call self%eul_prob_tab%new(params, build, pinds, .true.)
-            case('geom','state','sum')
+            case('geom','state')
                 self%l_direct_stoch_neigh = .false.
                 l_empty_okay = .false.
                 if( present(empty_okay) ) l_empty_okay = empty_okay
@@ -106,7 +106,7 @@ contains
         call self%fill_tab_range(1, self%nptcls)
     end subroutine fill_tab_neigh
 
-    ! Dispatches to the stochastic (shc/snhc) or subspace (geom/state/sum) path
+    ! Dispatches to the stochastic (shc/snhc) or subspace (geom/state) path
     subroutine fill_tab_neigh_range( self, i_first, i_last )
         class(eul_prob_tab_neigh), intent(inout) :: self
         integer,                   intent(in)    :: i_first, i_last
@@ -119,7 +119,7 @@ contains
         select case(trim(self%p_ptr%prob_neigh_mode))
             case('shc','snhc')
                 call fill_tab_stoch_range(self, i_first, i_last)
-            case('geom','state','sum')
+            case('geom','state')
                 if( .not. allocated(self%b_ptr%subspace_inds) )&
                     &THROW_HARD('simple_eul_prob_tab_neigh::fill_tab_subspace_range; missing subspace indices')
                 call fill_tab_subspace_range(self, i_first, i_last)
@@ -141,10 +141,11 @@ contains
         integer :: i, istate, ithr, max_refs_to_refine, nfull_refs
         integer :: iptcl, si, i_from, i_to, nrots
         real    :: lims(2,2), lims_init(2,2), shift_seed(3)
-        logical :: l_prob_objfun, l_shc_neigh, l_snhc_neigh, l_seed_sh_first
+        logical :: l_prob_objfun, l_shc_neigh, l_snhc_neigh, l_seed_sh_first, l_likelihood_inpl
         nrots = self%b_ptr%pftc%get_nrots()
         self%seed_nrots = nrots
         l_prob_objfun   = (self%p_ptr%cc_objfun == OBJFUN_EUCLID)
+        l_likelihood_inpl = trim(self%p_ptr%prob_assign) == 'likelihood'
         l_shc_neigh     = (trim(self%p_ptr%prob_neigh_mode) == 'shc')
         l_snhc_neigh    = (trim(self%p_ptr%prob_neigh_mode) == 'snhc')
         l_seed_sh_first = self%p_ptr%l_doshift .and. l_shc_neigh
@@ -303,7 +304,10 @@ contains
             sh_loc = 0.
             if( l_with_shift .and. l_seed_sh_first ) sh_loc = shift_seed_loc(2:3)
             if( l_snhc_style )then
-                if( l_prob_objfun )then
+                if( l_likelihood_inpl )then
+                    call self%b_ptr%pftc%gen_prob_likelihood_objfun_val(full_ref_loc, iptcl_loc, sh_loc,&
+                        &smpl_ninpl_loc, dist_loc, corr_loc, irot_loc, dists_inpl(:,ithr_loc), inds_sorted(:,ithr_loc))
+                else if( l_prob_objfun )then
                     call self%b_ptr%pftc%gen_prob_power_objfun_val(full_ref_loc, iptcl_loc, sh_loc, power_loc,&
                         &smpl_ninpl_loc, dist_loc, corr_loc, irot_loc, dists_inpl(:,ithr_loc), inds_sorted(:,ithr_loc))
                 else
@@ -315,7 +319,11 @@ contains
                 endif
             else
                 istate_loc = (full_ref_loc - 1) / self%p_ptr%nspace + 1
-                if( l_prob_objfun )then
+                if( l_likelihood_inpl )then
+                    call self%b_ptr%pftc%gen_prob_likelihood_objfun_val(full_ref_loc, iptcl_loc, sh_loc,&
+                        &inpl_likelihood_nsample(istate_loc), dist_loc, corr_loc, irot_loc,&
+                        &dists_inpl_sorted(:,ithr_loc), inds_sorted(:,ithr_loc))
+                else if( l_prob_objfun )then
                     call self%b_ptr%pftc%gen_prob_objfun_val(full_ref_loc, iptcl_loc, sh_loc,&
                         &inpl_athres(istate_loc), self%p_ptr%prob_athres, dist_loc, irot_loc,&
                         &dists_inpl_sorted(:,ithr_loc), inds_sorted(:,ithr_loc))
@@ -332,6 +340,13 @@ contains
             endif
         end subroutine score_direct_ref
 
+        integer function inpl_likelihood_nsample( istate_loc ) result(nsample)
+            integer, intent(in) :: istate_loc
+            real :: athres_ub
+            athres_ub = min(self%p_ptr%prob_athres, inpl_athres(istate_loc))
+            nsample = min(nrots, max(1, int(athres_ub * real(nrots) / 180.)))
+        end function inpl_likelihood_nsample
+
     end subroutine fill_tab_stoch_range
 
     ! NEIGHBORHOOD SUBSPACES BRANCH
@@ -346,16 +361,16 @@ contains
         type(eval_ws)          :: eval_work
         integer, allocatable   :: inds_sorted(:,:)
         real,    allocatable   :: inpl_athres(:), dists_inpl(:,:), dists_inpl_sorted(:,:)
-        integer :: i, istate, ithr, max_refs_to_refine, nsubs, npeak_target
+        integer :: i, istate, ithr, max_refs_to_refine, nsubs, npeak_target, npooled_capacity
         integer :: iptcl, si, i_from, i_to, nrots
         real    :: lims(2,2), lims_init(2,2), shift_seed(3)
-        logical :: l_prob_objfun, l_geom_neigh, l_state_neigh, l_sum_neigh, l_seed_sh_first
+        logical :: l_prob_objfun, l_geom_neigh, l_state_neigh, l_seed_sh_first, l_likelihood_inpl
         nrots = self%b_ptr%pftc%get_nrots()
         self%seed_nrots = nrots
         l_prob_objfun   = (self%p_ptr%cc_objfun == OBJFUN_EUCLID)
+        l_likelihood_inpl = trim(self%p_ptr%prob_assign) == 'likelihood'
         l_geom_neigh    = (trim(self%p_ptr%prob_neigh_mode) == 'geom')
         l_state_neigh   = (trim(self%p_ptr%prob_neigh_mode) == 'state')
-        l_sum_neigh     = (trim(self%p_ptr%prob_neigh_mode) == 'sum')
         ! Keep shift-first seeding single-state only. In multi-state runs this
         ! can bias all states toward the same previous-state shift basin.
         l_seed_sh_first = self%p_ptr%l_doshift .and. self%p_ptr%nstates <= 1
@@ -365,6 +380,7 @@ contains
         call seed_rnd
         nsubs        = size(self%b_ptr%subspace_inds)
         npeak_target = min(max(1, self%p_ptr%npeaks), nsubs)
+        npooled_capacity = min(nsubs, max(1, npeak_target * max(1, self%nstates)))
         call clear_sparse_eval_table_range(self, i_from, i_to)
         allocate(inpl_athres(self%p_ptr%nstates), source=self%p_ptr%prob_athres)
         allocate(dists_inpl(nrots,nthr_glob), dists_inpl_sorted(nrots,nthr_glob), inds_sorted(nrots,nthr_glob))
@@ -374,7 +390,7 @@ contains
             istate = self%ssinds(si)
             inpl_athres(istate) = calc_athres(self%b_ptr%spproj_field, 'dist_inpl', self%p_ptr%prob_athres, state=istate)
         enddo
-        call coarse_ws%alloc_coarse_ws(npeak_target, self%p_ptr%nstates, nthr_glob)
+        call coarse_ws%alloc_coarse_ws(npeak_target, npooled_capacity, self%p_ptr%nstates, nthr_glob)
         if( self%p_ptr%l_doshift )then
             lims(:,1)      = -self%p_ptr%trs
             lims(:,2)      =  self%p_ptr%trs
@@ -425,7 +441,6 @@ contains
             if( l_geom_neigh )then
                 call build_geometric_neighborhood(ithr_loc, prev_proj)
             else
-                if( l_sum_neigh )   call find_sum_peak_subspaces(i_loc, ithr_loc, iptcl_loc, shift_seed_loc, l_with_shift)
                 if( l_state_neigh ) call find_peak_subspaces    (i_loc, ithr_loc, iptcl_loc, shift_seed_loc, l_with_shift)
                 call build_pooled_neighborhood(ithr_loc, prev_proj)
             endif
@@ -464,68 +479,6 @@ contains
             enddo
         end subroutine find_peak_subspaces
 
-        ! Scores all subspace representatives with distance summed across all active states,
-        ! keep the top-npeak_target and propagates to every state; prob_neigh_mode=sum
-        subroutine find_sum_peak_subspaces(i_loc, ithr_loc, iptcl_loc, shift_seed_loc, l_with_shift)
-            integer, intent(in) :: i_loc, ithr_loc, iptcl_loc
-            real,    intent(in) :: shift_seed_loc(3)
-            logical, intent(in) :: l_with_shift
-            integer :: si_loc, istate_loc, isub_loc, full_ref_subspace, irot_loc, ri_loc, coarse_proj
-            integer :: nvalid_loc, anchor_state, expected_states
-            real    :: dist_loc, sum_dist_loc
-            coarse_ws%peak_subspace_dists(:,:,ithr_loc) = huge(1.0)
-            coarse_ws%peak_subspace_inds(:,:,ithr_loc)  = 0
-            coarse_ws%peak_subspace_count(:,ithr_loc)   = 0
-            anchor_state    = 0
-            expected_states = 0
-            do si_loc = 1, self%nstates
-                istate_loc = self%ssinds(si_loc)
-                if( .not. self%state_exists(istate_loc) ) cycle
-                expected_states = expected_states + 1
-                if( anchor_state == 0 ) anchor_state = istate_loc
-            enddo
-            if( expected_states < 1 ) return
-            do isub_loc = 1, nsubs
-                coarse_proj = self%b_ptr%subspace_inds(isub_loc)
-                sum_dist_loc = 0.
-                nvalid_loc   = 0
-                do si_loc = 1, self%nstates
-                    istate_loc = self%ssinds(si_loc)
-                    if( .not. self%state_exists(istate_loc) ) cycle
-                    full_ref_subspace = (istate_loc-1)*self%p_ptr%nspace + coarse_proj
-                    call score_subspace_ref(full_ref_subspace, ithr_loc, iptcl_loc, shift_seed_loc,&
-                        &l_with_shift, dist_loc, irot_loc)
-                    sum_dist_loc = sum_dist_loc + dist_loc
-                    nvalid_loc = nvalid_loc + 1
-                    ri_loc = eval_work%fullref_to_sparse_ref(full_ref_subspace)
-                    if( ri_loc > 0 )&
-                        &call record_sparse_eval(self, i_loc, ri_loc, dist_loc, irot_loc, 0., 0., .false.)
-                enddo
-                if( nvalid_loc == expected_states )&
-                    &call consider_peak_subspace(isub_loc, anchor_state, ithr_loc, sum_dist_loc)
-            enddo
-            call copy_anchor_peak_subspaces(anchor_state, ithr_loc)
-        end subroutine find_sum_peak_subspaces
-
-        ! Copies the peak subspace selection from the anchor state to all other active states
-        ! prob_neigh_mode=sum
-        subroutine copy_anchor_peak_subspaces(anchor_state, ithr_loc)
-            integer, intent(in) :: anchor_state, ithr_loc
-            integer :: si_loc, istate_loc, npeak_found_loc
-            npeak_found_loc = coarse_ws%peak_subspace_count(anchor_state,ithr_loc)
-            do si_loc = 1,self%nstates
-                istate_loc = self%ssinds(si_loc)
-                if( istate_loc == anchor_state ) cycle
-                coarse_ws%peak_subspace_count(istate_loc,ithr_loc) = npeak_found_loc
-                if( npeak_found_loc > 0 )then
-                    coarse_ws%peak_subspace_dists(1:npeak_found_loc,istate_loc,ithr_loc) =&
-                        &coarse_ws%peak_subspace_dists(1:npeak_found_loc,anchor_state,ithr_loc)
-                    coarse_ws%peak_subspace_inds(1:npeak_found_loc,istate_loc,ithr_loc) =&
-                        &coarse_ws%peak_subspace_inds(1:npeak_found_loc,anchor_state,ithr_loc)
-                endif
-            enddo
-        end subroutine copy_anchor_peak_subspaces
-
         ! Selects the subspace that contains the particle's previous best projection
         ! No coarse path; prob_neigh_mode=geom
         subroutine build_geometric_neighborhood(ithr_loc, prev_proj_loc)
@@ -542,7 +495,7 @@ contains
             enddo
         end subroutine build_geometric_neighborhood
 
-        ! Evaluates a coarse subspace representative; prob_neigh_mode=state|sum
+        ! Evaluates a coarse subspace representative; prob_neigh_mode=state
         subroutine score_subspace_ref(full_ref_loc, ithr_loc, iptcl_loc, shift_seed_loc,&
             &l_with_shift, dist_loc, irot_loc)
             integer, intent(in)  :: full_ref_loc, ithr_loc, iptcl_loc
@@ -572,7 +525,7 @@ contains
             endif
         end subroutine score_subspace_ref
 
-        ! Maintains a sorted top-npeak_target list of subspace indices per state; prob_neigh_mode=state|sum
+        ! Maintains a sorted top-npeak_target list of subspace indices per state; prob_neigh_mode=state
         subroutine consider_peak_subspace(isub_loc, istate_loc, ithr_loc, dist)
             integer, intent(in) :: isub_loc, istate_loc, ithr_loc
             real,    intent(in) :: dist
@@ -602,45 +555,58 @@ contains
             coarse_ws%peak_subspace_inds(insert_loc,istate_loc,ithr_loc)  = isub_loc
         end subroutine consider_peak_subspace
 
-        ! Merges per-state peak subspace lists into the pooled set, always including the
-        ! subspace of the previous best orientation
+        ! Merges per-state peak subspace lists into one shared pooled set, always including
+        ! the subspace of the previous best orientation. The same pooled directions are
+        ! evaluated for every active state so state assignment compares like with like.
         subroutine build_pooled_neighborhood(ithr_loc, prev_proj_loc)
             integer, intent(in) :: ithr_loc, prev_proj_loc
-            integer :: si_loc, istate_loc, npeak_found
-            integer :: prev_isub_loc, k_loc, slot
-            logical :: already_in_pool
+            integer :: si_loc, istate_loc, src_state, npeak_found, ncopy
+            integer :: prev_isub_loc, k_loc, pooled_count, candidate_isub
+            logical :: state_has_prev
             coarse_ws%pooled_sub_count(:,ithr_loc) = 0
+            pooled_count = 0
+            prev_isub_loc = self%b_ptr%subspace_full2sub_map(max(1, min(self%p_ptr%nspace, prev_proj_loc)))
+            if( prev_isub_loc < 1 .or. prev_isub_loc > nsubs ) prev_isub_loc = 1
             do si_loc = 1, self%nstates
-                istate_loc = self%ssinds(si_loc)
-                npeak_found = coarse_ws%peak_subspace_count(istate_loc,ithr_loc)
-                if( npeak_found > 0 )then
-                    coarse_ws%pooled_sub_inds(1:npeak_found,istate_loc,ithr_loc) =&
-                        &coarse_ws%peak_subspace_inds(1:npeak_found,istate_loc,ithr_loc)
-                    coarse_ws%pooled_sub_count(istate_loc,ithr_loc) = npeak_found
-                endif
-                ! Subspace corresponding to the previous best orientation
-                prev_isub_loc = self%b_ptr%subspace_full2sub_map(max(1, min(self%p_ptr%nspace, prev_proj_loc)))
-                if( prev_isub_loc < 1 .or. prev_isub_loc > nsubs ) prev_isub_loc = 1
-                ! Avoid duplicate evaluation
-                already_in_pool = .false.
-                do k_loc = 1, coarse_ws%pooled_sub_count(istate_loc,ithr_loc)
-                    if( coarse_ws%pooled_sub_inds(k_loc,istate_loc,ithr_loc) == prev_isub_loc )then
-                        already_in_pool = .true.
+                src_state = self%ssinds(si_loc)
+                npeak_found = coarse_ws%peak_subspace_count(src_state,ithr_loc)
+                state_has_prev = .false.
+                do k_loc = 1, npeak_found
+                    if( coarse_ws%peak_subspace_inds(k_loc,src_state,ithr_loc) == prev_isub_loc )then
+                        state_has_prev = .true.
                         exit
                     endif
                 enddo
-                if( already_in_pool ) cycle
-                ! Make the previous-orientation subspace part of the npeak_target peaks.
-                ! Append or evict the worst (last) entry.
-                if( coarse_ws%pooled_sub_count(istate_loc,ithr_loc) < npeak_target )then
-                    slot = coarse_ws%pooled_sub_count(istate_loc,ithr_loc) + 1
-                    coarse_ws%pooled_sub_count(istate_loc,ithr_loc) = slot
-                else
-                    slot = npeak_target
+                ncopy = npeak_found
+                if( (.not. state_has_prev) .and. npeak_found >= npeak_target ) ncopy = max(0, npeak_target - 1)
+                do k_loc = 1, ncopy
+                    candidate_isub = coarse_ws%peak_subspace_inds(k_loc,src_state,ithr_loc)
+                    call add_pooled_subspace(candidate_isub, ithr_loc, pooled_count)
+                enddo
+                if( .not. state_has_prev ) call add_pooled_subspace(prev_isub_loc, ithr_loc, pooled_count)
+            enddo
+            do si_loc = 1, self%nstates
+                istate_loc = self%ssinds(si_loc)
+                if( pooled_count > 0 )then
+                    coarse_ws%pooled_sub_inds(1:pooled_count,istate_loc,ithr_loc) =&
+                        &coarse_ws%pooled_sub_inds(1:pooled_count,1,ithr_loc)
+                    coarse_ws%pooled_sub_count(istate_loc,ithr_loc) = pooled_count
                 endif
-                coarse_ws%pooled_sub_inds(slot,istate_loc,ithr_loc) = prev_isub_loc
             enddo
         end subroutine build_pooled_neighborhood
+
+        subroutine add_pooled_subspace(isub_loc, ithr_loc, pooled_count)
+            integer, intent(in)    :: isub_loc, ithr_loc
+            integer, intent(inout) :: pooled_count
+            integer :: k_loc
+            if( isub_loc < 1 .or. isub_loc > nsubs ) return
+            do k_loc = 1, pooled_count
+                if( coarse_ws%pooled_sub_inds(k_loc,1,ithr_loc) == isub_loc ) return
+            enddo
+            if( pooled_count >= size(coarse_ws%pooled_sub_inds,1) ) return
+            pooled_count = pooled_count + 1
+            coarse_ws%pooled_sub_inds(pooled_count,1,ithr_loc) = isub_loc
+        end subroutine add_pooled_subspace
 
         ! Pass over fine references of the pooled neighborhoods
         subroutine evaluate_neighborhood(i_loc, ithr_loc, iptcl_loc, shift_seed_loc, l_with_shift, neval)
@@ -650,7 +616,7 @@ contains
             integer, intent(out) :: neval
             integer :: jsub, kref_loc, nrefs_sub_loc, offset_loc
             integer :: si_loc, ri_loc, istate_loc, iproj_loc, irot_loc, iref_loc, isub_loc
-            real    :: dist
+            real    :: dist, corr_loc
             neval = 0
             do si_loc = 1,self%nstates
                 istate_loc = self%ssinds(si_loc)
@@ -664,7 +630,17 @@ contains
                         if( ri_loc < 1 ) cycle
                         iproj_loc = self%jinds(ri_loc)
                         iref_loc  = (istate_loc-1)*self%p_ptr%nspace + iproj_loc
-                        if( l_prob_objfun )then
+                        if( l_likelihood_inpl )then
+                            if( l_with_shift )then
+                                call self%b_ptr%pftc%gen_prob_likelihood_objfun_val(iref_loc, iptcl_loc,&
+                                    &shift_seed_loc(2:3), inpl_likelihood_nsample(istate_loc), dist, corr_loc, irot_loc,&
+                                    &dists_inpl_sorted(:,ithr_loc), inds_sorted(:,ithr_loc))
+                            else
+                                call self%b_ptr%pftc%gen_prob_likelihood_objfun_val(iref_loc, iptcl_loc,&
+                                    &[0.,0.], inpl_likelihood_nsample(istate_loc), dist, corr_loc, irot_loc,&
+                                    &dists_inpl_sorted(:,ithr_loc), inds_sorted(:,ithr_loc))
+                            endif
+                        else if( l_prob_objfun )then
                             if( l_with_shift )then
                                 call self%b_ptr%pftc%gen_prob_objfun_val(iref_loc, iptcl_loc, shift_seed_loc(2:3),&
                                     &inpl_athres(istate_loc), self%p_ptr%prob_athres, dist, irot_loc,&
@@ -694,6 +670,13 @@ contains
                 enddo
             enddo
         end subroutine evaluate_neighborhood
+
+        integer function inpl_likelihood_nsample( istate_loc ) result(nsample)
+            integer, intent(in) :: istate_loc
+            real :: athres_ub
+            athres_ub = min(self%p_ptr%prob_athres, inpl_athres(istate_loc))
+            nsample = min(nrots, max(1, int(athres_ub * real(nrots) / 180.)))
+        end function inpl_likelihood_nsample
 
     end subroutine fill_tab_subspace_range
 
@@ -802,10 +785,11 @@ contains
         integer   :: k, idx, nactive, total, m, start, maxref, nleft, assigned_idx, nsel, pos, last_ref
         integer   :: greedy_state(self%nptcls)
         real      :: projs_athres, state_projs_athres(self%p_ptr%nstates)
-        real      :: huge_val
-        logical   :: l_prob_objfun, final_assigned(self%nptcls), l_filter_greedy_state, l_seed_fallback_shift
+        real      :: huge_val, dist_tmp, corr_tmp
+        logical   :: l_prob_objfun, final_assigned(self%nptcls), l_filter_greedy_state, l_seed_fallback_shift, l_likelihood
         huge_val = huge(1.0)
         l_prob_objfun = (self%p_ptr%cc_objfun == OBJFUN_EUCLID)
+        l_likelihood = trim(self%p_ptr%prob_assign) == 'likelihood'
         l_seed_fallback_shift = self%p_ptr%l_doshift .and. self%p_ptr%nstates <= 1 .and. &
             &trim(self%p_ptr%prob_neigh_mode) /= 'snhc'
         allocate(dists_inpl(self%b_ptr%pftc%get_nrots()), dists_inpl_sorted(self%b_ptr%pftc%get_nrots()), inds_sorted(self%b_ptr%pftc%get_nrots()))
@@ -813,7 +797,7 @@ contains
             ! Seed particle with no evaluated candidate with previous orientation
             call seed_fallback_if_empty(i)
         enddo
-        call self%ref_normalize()
+        if( .not. l_likelihood ) call self%ref_normalize()
         call build_sparse_assignment_graph()
         call assign_particles_globally()
         call assign_remaining_particles_from_best_touched_ref()
@@ -929,7 +913,10 @@ contains
             call init_frontier()
             do while( nleft > 0 )
                 if( nsel == 0 ) exit
-                assigned_idx  = minloc(frontier%sel_dists(1:nsel), dim=1)
+                ! Multi-state state labelling is deterministic (argmin distance) for both weighting
+                ! schemes; probabilistic exploration is confined to the within-state projection
+                ! assignment (assign_particles_for_state). Only refine=prob_state samples the state.
+                assigned_idx = minloc(frontier%sel_dists(1:nsel), dim=1)
                 assigned_iref = frontier%sel_refs(assigned_idx)
                 assigned_ptcl = graph%ref_list(graph%ref_offsets(assigned_iref) + graph%ref_pos(assigned_iref) - 1)
                 greedy_state(assigned_ptcl) = self%sinds(assigned_iref)
@@ -952,8 +939,13 @@ contains
             call init_frontier()
             do while( nleft > 0 )
                 if( nsel == 0 ) exit
-                assigned_idx = angle_sampling(frontier%sel_dists(1:nsel), frontier%sel_dists_sorted(1:nsel),&
-                    &frontier%inds_sorted(1:nsel), projs_athres, self%p_ptr%prob_athres)
+                if( l_likelihood )then
+                    call sample_likelihood_dist(nsel, selected_frontier_dist, likelihood_nsample(nsel, projs_athres),&
+                        &dist_tmp, corr_tmp, assigned_idx, frontier%sel_dists_sorted, frontier%inds_sorted)
+                else
+                    assigned_idx = angle_sampling(frontier%sel_dists(1:nsel), frontier%sel_dists_sorted(1:nsel),&
+                        &frontier%inds_sorted(1:nsel), projs_athres, self%p_ptr%prob_athres)
+                endif
                 call commit_selected_assignment()
             enddo
         end subroutine assign_particles_single_state
@@ -966,8 +958,13 @@ contains
             call init_frontier()
             do while( nleft > 0 )
                 if( nsel == 0 ) exit
-                assigned_idx = angle_sampling(frontier%sel_dists(1:nsel), frontier%sel_dists_sorted(1:nsel),&
-                    &frontier%inds_sorted(1:nsel), state_projs_athres(state_filter), self%p_ptr%prob_athres)
+                if( l_likelihood )then
+                    call sample_likelihood_dist(nsel, selected_frontier_dist, likelihood_nsample(nsel, state_projs_athres(state_filter)),&
+                        &dist_tmp, corr_tmp, assigned_idx, frontier%sel_dists_sorted, frontier%inds_sorted)
+                else
+                    assigned_idx = angle_sampling(frontier%sel_dists(1:nsel), frontier%sel_dists_sorted(1:nsel),&
+                        &frontier%inds_sorted(1:nsel), state_projs_athres(state_filter), self%p_ptr%prob_athres)
+                endif
                 call commit_selected_assignment()
             enddo
         end subroutine assign_particles_for_state
@@ -1059,7 +1056,7 @@ contains
             type(ori) :: o_prev
             integer :: istate_loc, iproj_loc, irot_loc, fallback_state, fallback_proj, fallback_ref_full
             integer :: ri_loc, fallback_ref_loc
-            real    :: inpl_athres_state, sh_seed(2), dist
+            real    :: inpl_athres_state, sh_seed(2), dist, corr_loc
             if( pick_best_evaluated_ref(iptcl_loc) > 0 ) return
             call self%b_ptr%spproj_field%get_ori(self%pinds(iptcl_loc), o_prev)
             istate_loc = o_prev%get_state()
@@ -1088,7 +1085,13 @@ contains
                 fallback_ref_full = (fallback_state-1)*self%p_ptr%nspace + fallback_proj
                 sh_seed = 0.
                 if( l_seed_fallback_shift ) sh_seed = o_prev%get_2Dshift()
-                if( l_prob_objfun )then
+                if( l_likelihood .and. self%p_ptr%l_prob_inpl )then
+                    inpl_athres_state = calc_athres(self%b_ptr%spproj_field, 'dist_inpl',&
+                        &self%p_ptr%prob_athres, state=fallback_state)
+                    call self%b_ptr%pftc%gen_prob_likelihood_objfun_val(fallback_ref_full, self%pinds(iptcl_loc),&
+                        &sh_seed, likelihood_nsample(self%b_ptr%pftc%get_nrots(), inpl_athres_state),&
+                        &dist, corr_loc, irot_loc, dists_inpl_sorted, inds_sorted)
+                else if( l_prob_objfun )then
                     if( self%p_ptr%l_prob_inpl )then
                         inpl_athres_state = calc_athres(self%b_ptr%spproj_field, 'dist_inpl',&
                             &self%p_ptr%prob_athres, state=fallback_state)
@@ -1175,6 +1178,19 @@ contains
                 endif
             endif
         end subroutine sync_frontier_ref
+
+        integer function likelihood_nsample( n, athres_ub_in ) result(nsample)
+            integer, intent(in) :: n
+            real,    intent(in) :: athres_ub_in
+            real :: athres_ub
+            athres_ub = min(self%p_ptr%prob_athres, athres_ub_in)
+            nsample = min(n, max(1, int(athres_ub * real(n) / 180.)))
+        end function likelihood_nsample
+
+        real function selected_frontier_dist( isel ) result(dist)
+            integer, intent(in) :: isel
+            dist = frontier%sel_dists(isel)
+        end function selected_frontier_dist
 
     end subroutine ref_assign_neigh
 
@@ -1561,13 +1577,13 @@ contains
     ! COARSE_SEARCH_WS bound procedures
 
     ! Allocates all arrays of a coarse_search_ws workspace for the subspace path.
-    subroutine alloc_coarse_ws( self, npeak_target, nstates, nthr )
+    subroutine alloc_coarse_ws( self, npeak_target, npooled_capacity, nstates, nthr )
         class(coarse_search_ws), intent(inout) :: self
-        integer,                 intent(in)    :: npeak_target, nstates, nthr
+        integer,                 intent(in)    :: npeak_target, npooled_capacity, nstates, nthr
         call self%dealloc_coarse_ws
         allocate(self%peak_subspace_dists(npeak_target,nstates,nthr), source=huge(1.0))
         allocate(self%peak_subspace_inds(npeak_target,nstates,nthr),  source=0)
-        allocate(self%pooled_sub_inds(npeak_target,nstates,nthr),     source=0)
+        allocate(self%pooled_sub_inds(npooled_capacity,nstates,nthr), source=0)
         allocate(self%pooled_sub_count(nstates,nthr),                 source=0)
         allocate(self%peak_subspace_count(nstates,nthr),              source=0)
     end subroutine alloc_coarse_ws

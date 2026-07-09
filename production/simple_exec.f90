@@ -53,6 +53,7 @@ call exec_ori_commander(       trim(prg), cline, l_silent, l_did_execute)
 call exec_print_commander(     trim(prg), cline, l_silent, l_did_execute)
 call exec_sim_commander(       trim(prg), cline, l_silent, l_did_execute)
 call exec_volume_commander(    trim(prg), cline, l_silent, l_did_execute)
+call exec_sieve_commander(     trim(prg), cline, l_silent, l_did_execute)
 call exec_sym_commander(       trim(prg), cline, l_silent, l_did_execute)
 call exec_res_commander(       trim(prg), cline, l_silent, l_did_execute)
 call exec_dock_commander(      trim(prg), cline, l_silent, l_did_execute)
@@ -71,7 +72,7 @@ if( logfhandle .ne. OUTPUT_UNIT )then
     if( is_open(logfhandle) ) call fclose(logfhandle)
 endif
 if( .not. l_silent )then
-    call simple_print_git_version('b370efd4c')
+    call simple_print_git_version('ac323dad7')
     ! end timer and print
     rt_exec = toc(t0)
     call simple_print_timer(rt_exec)

@@ -490,6 +490,9 @@ contains
     module subroutine derive_sampling_settings(self, cline)
         class(parameters), intent(inout) :: self
         class(cmdline),    intent(inout) :: cline
+        if( (trim(self%balance).eq.'no') .and. (trim(self%partition).eq.'yes') )then
+            THROW_HARD('balance=no and partition=yes are incompatible; derive_sampling_settings')
+        endif
         self%l_ufrac_trec_defined = cline%defined('ufrac_trec')
         if( self%update_frac <= .99 )then
             self%l_update_frac = .true.
@@ -834,18 +837,15 @@ contains
             case DEFAULT
         end select
         select case(trim(self%prob_neigh_mode))
-            case('state','geom','sum','shc','snhc')
+            case('state','geom','shc','snhc')
             case DEFAULT
-                THROW_HARD('unsupported prob_neigh_mode; expected state|geom|sum|shc|snhc')
+                THROW_HARD('unsupported prob_neigh_mode; expected state|geom|shc|snhc')
         end select
         select case(trim(self%prob_assign))
             case('legacy','likelihood')
             case DEFAULT
                 THROW_HARD('unsupported prob_assign; expected legacy|likelihood')
         end select
-        if( self%nstates == 1 .and. trim(self%refine) == 'prob_neigh' .and. trim(self%prob_neigh_mode) == 'sum' )then
-            self%prob_neigh_mode = 'state'
-        endif
         self%l_neigh = .false.
         if( str_has_substr(self%refine, 'neigh') )then
             if( .not. cline%defined('nspace_sub') ) self%nspace_sub = 500
