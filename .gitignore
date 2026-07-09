@@ -55,4 +55,5 @@ docs/
 !/.codex/run-joint2d-sgd-science.sh
 !/.codex/summarize-joint2d-sgd-science.sh
 !/.codex/joint2d-sgd-runner-common.sh
+!/.codex/joint2d-sgd-checker-common.sh
 /.vscode
