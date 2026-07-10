@@ -24,6 +24,10 @@ Default validation matrix:
   cavg_eta_0p25:         joint_default with sgd_eta_cavg=0.25
   balance_0p05:          joint_default with sgd_balance_weight=0.05
 
+All joint cases automatically use the compiled iteration schedule:
+  1-10 legacy likelihood; 11-20 alternate joint/legacy; 21+ joint.
+No additional schedule parameter is required.
+
 Environment overrides:
   JOINT2D_SGD_PROJECTS_HOME        Defaults to ~/Projects.
   JOINT2D_SGD_BUILD_COPY           Defaults to ~/Projects/SIMPLE_joint2d_sgd_build.
@@ -164,6 +168,7 @@ Default validation matrix:
   cavg_eta_0p05:         joint_default with sgd_eta_cavg=0.05
   cavg_eta_0p25:         joint_default with sgd_eta_cavg=0.25
   balance_0p05:          joint_default with sgd_balance_weight=0.05
+Joint schedule: automatic (1-10 legacy likelihood; 11-20 alternate; 21+ joint)
 Failure policy: each case/replicate is independent; failed cases are recorded and later cases continue.
 EOF
   exit 0
@@ -196,6 +201,7 @@ echo "Source project: $project_path"
 echo "Workflow root: $workflow_root"
 echo "Project relative path: $project_rel"
 echo "ncls=$ncls mskdiam=$mskdiam nthr=$nthr reps=$reps"
+echo "Joint schedule: automatic (1-10 legacy likelihood; 11-20 alternate; 21+ joint)"
 
 for rep in $(seq 1 "$reps"); do
   run_case baseline "$rep" baseline NA NA NA NA sgd=no

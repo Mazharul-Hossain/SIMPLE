@@ -264,6 +264,7 @@ contains
         call self%job_descr%set('startit',    int2str(params%startit))
         call self%job_descr%set('which_iter', int2str(params%which_iter))
         call self%job_descr%set('extr_iter',  int2str(params%extr_iter))
+        call self%job_descr%set('sgd',        trim(params%sgd))
         call self%job_descr%set('frcs',       FRCS_FILE)
         call cleanup_distributed_iteration_artifacts(params)
         if( params%l_prob_align_mode )then

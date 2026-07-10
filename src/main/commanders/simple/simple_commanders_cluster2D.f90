@@ -34,13 +34,15 @@ contains
     !> Single entrypoint (shared-memory OR distributed master), driven by a strategy.
     subroutine exec_cluster2D( self, cline )
         use simple_cluster2D_strategy
+        use simple_joint2D_sgd_schedule, only: joint2D_sgd_active_for_iteration,&
+            &JOINT2D_SGD_WARMUP_ITS, JOINT2D_SGD_ALTERNATE_UNTIL
         class(commander_cluster2D), intent(inout) :: self
         class(cmdline),             intent(inout) :: cline
         class(cluster2D_strategy), allocatable    :: strategy
         type(parameters)       :: params
         type(builder)          :: build
         type(simple_nice_comm) :: nice_comm
-        logical                :: converged
+        logical                :: converged, l_sgd_requested, l_sgd_schedule, l_sgd_active
         integer                :: niters
         ! local defaults (kept consistent with previous distributed master)
         call cline%set('prg', 'cluster2D')
@@ -48,6 +50,8 @@ contains
         ! Select execution strategy (shared-memory vs distributed master)
         strategy = create_cluster2D_strategy(cline)
         call strategy%initialize(params, build, cline)
+        l_sgd_requested = params%l_sgd
+        l_sgd_schedule  = l_sgd_requested .and. trim(params%sgd_mode) == 'joint'
         if( params%l_nonuniform ) THROW_HARD('2D nonuniform filtering has been removed; exec_cluster2D')
         ! Nice communicator
         call nice_comm%init(params%niceprocid, params%niceserver)
@@ -70,6 +74,24 @@ contains
             niters            = niters + 1
             params%which_iter = params%which_iter + 1
             params%extr_iter  = params%extr_iter  + 1
+            ! Only the joint optimizer is scheduled; refine=prob and prob_assign=likelihood stay active.
+            l_sgd_active = l_sgd_requested
+            if( l_sgd_schedule ) l_sgd_active = joint2D_sgd_active_for_iteration(params%which_iter)
+            params%l_sgd = l_sgd_active
+            if( l_sgd_active )then
+                params%sgd = 'yes'
+                call cline%set('sgd', 'yes')
+            else
+                params%sgd = 'no'
+                call cline%set('sgd', 'no')
+            endif
+            if( l_sgd_schedule )then
+                write(logfhandle,'(A,I0,1X,A,A,1X,A,I0,1X,A,I0)')&
+                    &'>>> JOINT2D SGD SCHEDULE: iteration=', params%which_iter,&
+                    &'mode=', merge('joint            ', 'legacy_likelihood', l_sgd_active),&
+                    &'warmup_through=', JOINT2D_SGD_WARMUP_ITS,&
+                    &'alternate_through=', JOINT2D_SGD_ALTERNATE_UNTIL
+            endif
             nice_comm%stat_root%stage = "iteration " // int2str(params%which_iter)
             call nice_comm%cycle()
             ! Strategy handles everything: alignment + cavgs + convergence
@@ -82,6 +104,15 @@ contains
         nice_comm%stat_root%stage = "terminating"
         call nice_comm%cycle()
         call strategy%finalize_run(params, build, cline)
+        ! Preserve the user's requested mode for a following abinitio2D stage.
+        params%l_sgd = l_sgd_requested
+        if( l_sgd_requested )then
+            params%sgd = 'yes'
+            call cline%set('sgd', 'yes')
+        else
+            params%sgd = 'no'
+            call cline%set('sgd', 'no')
+        endif
         call strategy%cleanup(params)
         call nice_comm%terminate()
         call qsys_cleanup(params)

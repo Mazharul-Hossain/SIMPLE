@@ -14,6 +14,10 @@ Workstation layout:
   Build copy:  ~/Projects/SIMPLE_joint2d_sgd_build
   Test runs:   ~/Projects/simple_joint2d_sgd_smoke_<timestamp>
 
+Joint cases automatically use the compiled iteration schedule:
+  1-10 legacy likelihood; 11-20 alternate joint/legacy; 21+ joint.
+No additional schedule parameter is required.
+
 Environment overrides:
   JOINT2D_SGD_PROJECTS_HOME       Defaults to ~/Projects.
   JOINT2D_SGD_BUILD_COPY          Defaults to ~/Projects/SIMPLE_joint2d_sgd_build.
@@ -88,6 +92,7 @@ common_project_probe JOINT2D_SGD_SMOKE_PROJECT JOINT_SGD_SMOKE_PROJECT
 
 if [[ "${1:-}" == "--check" ]]; then
   print_common_check "Default smoke root: $projects_home/simple_joint2d_sgd_smoke_<timestamp>"
+  echo "Joint schedule: automatic (1-10 legacy likelihood; 11-20 alternate; 21+ joint)"
   exit 0
 fi
 
@@ -109,6 +114,7 @@ echo "Source project: $project_path"
 echo "Workflow root: $workflow_root"
 echo "Project relative path: $project_rel"
 echo "ncls=$ncls mskdiam=$mskdiam nthr=$nthr"
+echo "Joint schedule: automatic (1-10 legacy likelihood; 11-20 alternate; 21+ joint)"
 
 run_case baseline baseline sgd=no
 run_case joint_topk1 joint sgd=yes sgd_mode=joint sgd_topk=1 sgd_eta_cavg=1.0 sgd_diag=yes
