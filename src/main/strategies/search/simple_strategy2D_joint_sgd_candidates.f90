@@ -392,18 +392,22 @@ contains
         if( present(updated)   ) updated   = .true.
     end subroutine apply_shift_refinement
 
-    subroutine apply_reliability( self, min_cands, max_entropy )
+    subroutine apply_reliability( self, min_cands, max_entropy, hard_fallback_when_empty )
         class(joint2D_candidate_table), intent(inout) :: self
         integer,                        intent(in)    :: min_cands
         real,                           intent(in)    :: max_entropy
-        integer :: iptcl, irank, min_cands_eff, nc, topk
+        logical, optional,              intent(in)    :: hard_fallback_when_empty
+        integer :: iptcl, irank, min_cands_eff, nc, topk, hard, fallback_count
         real    :: norm_h
+        logical :: l_hard_fallback_when_empty
 
         call require_allocated(self, 'reliability requested before build/read')
         if( min_cands < 1 ) THROW_HARD('joint2D_candidate_table: min_cands must be >= 1')
         if( max_entropy < 0. .or. max_entropy > 1. )then
             THROW_HARD('joint2D_candidate_table: max_entropy must be between 0 and 1')
         endif
+        l_hard_fallback_when_empty = .false.
+        if( present(hard_fallback_when_empty) ) l_hard_fallback_when_empty = hard_fallback_when_empty
 
         topk = size(self%cand, 1)
         min_cands_eff = min_cands
@@ -440,6 +444,29 @@ contains
                 self%cand(irank,iptcl)%eff_weight = self%cand(irank,iptcl)%weight
             end do
         end do
+
+        if( l_hard_fallback_when_empty .and. count(self%accepted) == 0 .and. count(self%ncand > 0) > 0 )then
+            fallback_count = 0
+            do iptcl = 1, size(self%ncand)
+                nc = self%ncand(iptcl)
+                if( nc < 1 ) cycle
+                hard = self%hard_rank(iptcl)
+                if( hard < 1 .or. hard > nc ) cycle
+                self%accepted(iptcl)        = .true.
+                self%particle_weight(iptcl) = 1.
+                do irank = 1, nc
+                    self%cand(irank,iptcl)%eff_weight = 0.
+                end do
+                self%cand(hard,iptcl)%eff_weight = 1.
+                fallback_count = fallback_count + 1
+            end do
+            write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,F7.3)')&
+                &'>>> JOINT2D SGD TOPK FALLBACK:', 'hard_winner=', fallback_count,&
+                &'nonempty=', count(self%ncand > 0),&
+                &'too_few=', count(self%reject_reason == RELIABILITY_TOO_FEW),&
+                &'high_entropy=', count(self%reject_reason == RELIABILITY_HIGH_ENTROPY),&
+                &'max_entropy=', max_entropy
+        endif
     end subroutine apply_reliability
 
     subroutine write_hard_assignments( self, assgn_map, empty_is_error )
@@ -696,6 +723,7 @@ contains
         class(joint2D_candidate_table), intent(in) :: self
         character(len=*),               intent(in) :: label
         integer :: nptcls, topk, nonempty, empty_count, accepted_count, too_few_count, entropy_count
+        integer :: fallback_count
         integer :: winner_churn_count
         real    :: avg_ncand, avg_entropy, avg_initial_entropy, avg_norm_entropy, avg_winner_weight
         real    :: avg_initial_loss, avg_expected_loss, avg_loss_delta
@@ -713,6 +741,7 @@ contains
         accepted_count = count(self%accepted)
         too_few_count  = count(self%reject_reason == RELIABILITY_TOO_FEW)
         entropy_count  = count(self%reject_reason == RELIABILITY_HIGH_ENTROPY)
+        fallback_count = count(self%accepted .and. self%reject_reason /= RELIABILITY_OK)
         winner_churn_count = count((self%ncand > 0) .and. (self%initial_hard_rank /= self%hard_rank))
         avg_ncand = 0.
         avg_entropy = 0.
@@ -746,9 +775,10 @@ contains
             winner_weight_min = minval(self%winner_weight, mask=self%ncand > 0)
             winner_weight_max = maxval(self%winner_weight, mask=self%ncand > 0)
         endif
-        write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
+        write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
             &'>>> JOINT2D SGD TOPK:', trim(label), 'topk=', topk, 'nptcls=', nptcls, 'empty=', empty_count,&
-            &'accepted=', accepted_count, 'too_few=', too_few_count, 'high_entropy=', entropy_count
+            &'accepted=', accepted_count, 'too_few=', too_few_count, 'high_entropy=', entropy_count,&
+            &'fallback=', fallback_count
         write(logfhandle,'(A,1X,A,1X,A,F7.3,1X,A,F7.3,1X,A,F7.3,1X,A,F7.3,1X,A,I0)')&
             &'>>> JOINT2D SGD TOPK STATS:', trim(label), 'avg_ncand=', avg_ncand,&
             &'avg_entropy=', avg_entropy, 'avg_norm_entropy=', avg_norm_entropy,&

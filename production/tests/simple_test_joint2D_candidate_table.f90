@@ -162,6 +162,12 @@ call require_close(tab_balance%norm_entropy(1), tab_balance%entropy(1) / log(rea
     &1.0e-6, 'balance reliability uses post-prior entropy')
 call tab_balance%apply_reliability(2, 0.0)
 call require_true(.not. tab_balance%accepted(1), 'post-balance high-entropy candidate is rejected')
+call tab_balance%apply_reliability(2, 0.0, hard_fallback_when_empty=.true.)
+call require_true(tab_balance%accepted(1), 'opt-in empty reliability fallback accepts hard winner')
+call require_close(tab_balance%cand(tab_balance%hard_rank(1),1)%eff_weight, 1.0, 1.0e-6,&
+    &'opt-in empty reliability fallback gives hard winner unit support')
+call require_close(sum(tab_balance%cand(1:tab_balance%ncand(1),1)%eff_weight), 1.0, 1.0e-6,&
+    &'opt-in empty reliability fallback keeps particle support normalized')
 call tab_balance%apply_reliability(2, 1.0)
 call del_file(ROUNDTRIP_FNAME)
 call tab_balance%write_table(ROUNDTRIP_FNAME)

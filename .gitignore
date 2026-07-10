@@ -57,3 +57,4 @@ docs/
 !/.codex/joint2d-sgd-runner-common.sh
 !/.codex/joint2d-sgd-checker-common.sh
 /.vscode
+/joint2d-runtime-debug

@@ -55,7 +55,7 @@ joint2d_sgd_common_init() {
   testing_home="${SIMPLE_DATA_TESTING_HOME:-${simple_home}_data_testing}"
   projects_home="$(env_or_legacy JOINT2D_SGD_PROJECTS_HOME JOINT_SGD_PROJECTS_HOME "$HOME/Projects")"
   build_copy="$(env_or_legacy JOINT2D_SGD_BUILD_COPY JOINT_SGD_BUILD_COPY "$projects_home/SIMPLE_joint2d_sgd_build")"
-  build_jobs="$(env_or_legacy JOINT2D_SGD_BUILD_JOBS JOINT_SGD_BUILD_JOBS 4)"
+  build_jobs="$(env_or_legacy JOINT2D_SGD_BUILD_JOBS JOINT_SGD_BUILD_JOBS 32)"
   cmake_build_type="$(env_or_legacy JOINT2D_SGD_CMAKE_BUILD_TYPE JOINT_SGD_CMAKE_BUILD_TYPE Debug)"
   betagal_data="$(env_or_legacy JOINT2D_SGD_BETAGAL_DATA JOINT_SGD_BETAGAL_DATA /mnt/beegfs/elmlund/testing-datasets/betagal)"
   betagal_sample_count="$(env_or_legacy JOINT2D_SGD_BETAGAL_SAMPLE_COUNT JOINT_SGD_BETAGAL_SAMPLE_COUNT "")"

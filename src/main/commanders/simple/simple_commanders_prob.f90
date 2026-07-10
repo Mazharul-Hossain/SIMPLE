@@ -456,9 +456,11 @@ contains
             end do
             call joint_candidates%set_base_shifts(base_shifts)
             call joint_candidates%optimize_logits(params%sgd_inner_its, params%sgd_eta_latent)
-            call joint_candidates%apply_reliability(params%sgd_cavg_min_cands, params%sgd_cavg_max_entropy)
+            call joint_candidates%apply_reliability(params%sgd_cavg_min_cands, params%sgd_cavg_max_entropy,&
+                &hard_fallback_when_empty=.true.)
             call joint_candidates%apply_balance_prior(params%ncls, params%sgd_balance_weight, balance_diag)
-            call joint_candidates%apply_reliability(params%sgd_cavg_min_cands, params%sgd_cavg_max_entropy)
+            call joint_candidates%apply_reliability(params%sgd_cavg_min_cands, params%sgd_cavg_max_entropy,&
+                &hard_fallback_when_empty=.true.)
             if( count(joint_candidates%accepted) == 0 )then
                 THROW_HARD('joint 2D top-K reliability rejected all particles')
             endif

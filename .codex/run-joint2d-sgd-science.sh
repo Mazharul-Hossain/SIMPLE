@@ -14,6 +14,16 @@ Workstation layout:
   Build copy:  ~/Projects/SIMPLE_joint2d_sgd_build
   Test runs:   ~/Projects/simple_joint2d_sgd_science_<timestamp>
 
+Default validation matrix:
+  baseline:              sgd=no
+  joint_topk1_equiv:     sgd=yes sgd_mode=joint sgd_topk=1 sgd_eta_cavg=1.0 sgd_eta_latent=0.5 sgd_balance_weight=0.0
+  joint_default:         sgd=yes sgd_mode=joint sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=0.0
+  latent_eta_0p1:        joint_default with sgd_eta_latent=0.1
+  latent_eta_1p0:        joint_default with sgd_eta_latent=1.0
+  cavg_eta_0p05:         joint_default with sgd_eta_cavg=0.05
+  cavg_eta_0p25:         joint_default with sgd_eta_cavg=0.25
+  balance_0p05:          joint_default with sgd_balance_weight=0.05
+
 Environment overrides:
   JOINT2D_SGD_PROJECTS_HOME        Defaults to ~/Projects.
   JOINT2D_SGD_BUILD_COPY           Defaults to ~/Projects/SIMPLE_joint2d_sgd_build.
@@ -81,6 +91,7 @@ run_case() {
   local status_file="$scratch_root/${case_id}.check"
   local status="pass"
 
+  total_cases=$((total_cases + 1))
   copy_case_root "$case_id"
   echo "Running $case_id in $case_root"
   (
@@ -101,8 +112,13 @@ run_case() {
 
   record_manifest "$case_name" "$rep" "$mode" "$log_file" "$case_root" "$topk" \
     "$eta_latent" "$eta_cavg" "$balance_weight" "${params[*]}" "$status"
-  [[ "$status" == "pass" ]] || fail "$case_id failed with status $status; log: $log_file"
-  echo "Log: $log_file"
+  if [[ "$status" == "pass" ]]; then
+    echo "Log: $log_file"
+  else
+    failed_cases=$((failed_cases + 1))
+    failed_case_list+=( "$case_id:$status:$log_file" )
+    echo "Continuing after $case_id failed with status $status; log: $log_file" >&2
+  fi
 }
 
 joint2d_sgd_runner_label="joint2D-SGD science runner"
@@ -138,6 +154,18 @@ common_project_probe JOINT2D_SGD_SCIENCE_PROJECT JOINT_SGD_SCIENCE_PROJECT
 if [[ "${1:-}" == "--check" ]]; then
   print_common_check "Default science root: $projects_home/simple_joint2d_sgd_science_<timestamp>"
   echo "Replicates: $(env_or_legacy JOINT2D_SGD_SCIENCE_REPS JOINT_SGD_SCIENCE_REPS 1)"
+  cat <<'EOF'
+Default validation matrix:
+  baseline:              sgd=no
+  joint_topk1_equiv:     sgd=yes sgd_mode=joint sgd_topk=1 sgd_eta_cavg=1.0 sgd_eta_latent=0.5 sgd_balance_weight=0.0
+  joint_default:         sgd=yes sgd_mode=joint sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=0.0
+  latent_eta_0p1:        joint_default with sgd_eta_latent=0.1
+  latent_eta_1p0:        joint_default with sgd_eta_latent=1.0
+  cavg_eta_0p05:         joint_default with sgd_eta_cavg=0.05
+  cavg_eta_0p25:         joint_default with sgd_eta_cavg=0.25
+  balance_0p05:          joint_default with sgd_balance_weight=0.05
+Failure policy: each case/replicate is independent; failed cases are recorded and later cases continue.
+EOF
   exit 0
 fi
 
@@ -159,6 +187,9 @@ manifest="$scratch_root/science_runs.tsv"
 
 mkdir -p "$scratch_root"
 write_manifest_header
+total_cases=0
+failed_cases=0
+failed_case_list=()
 
 echo "Science root: $scratch_root"
 echo "Source project: $project_path"
@@ -186,3 +217,11 @@ done
 
 "$summarizer" "$scratch_root"
 echo "joint2D-SGD scientific validation complete: $scratch_root"
+echo "Cases completed: $total_cases"
+echo "Cases failed: $failed_cases"
+if [[ "$failed_cases" -gt 0 ]]; then
+  echo "Failed cases:" >&2
+  printf '  %s\n' "${failed_case_list[@]}" >&2
+  echo "Science root with logs and summary: $scratch_root" >&2
+  exit 1
+fi

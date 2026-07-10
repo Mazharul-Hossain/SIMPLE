@@ -509,7 +509,8 @@ contains
             if( nonfinite_total > 0 )then
                 THROW_HARD('joint 2D in-plane refinement produced nonfinite diagnostics')
             endif
-            call joint_topk_candidates%apply_reliability(p_ptr%sgd_cavg_min_cands, p_ptr%sgd_cavg_max_entropy)
+            call joint_topk_candidates%apply_reliability(p_ptr%sgd_cavg_min_cands, p_ptr%sgd_cavg_max_entropy,&
+                &hard_fallback_when_empty=.true.)
             if( count(joint_topk_candidates%accepted) == 0 )then
                 THROW_HARD('joint 2D in-plane refinement left zero accepted top-K particles')
             endif
@@ -667,7 +668,8 @@ contains
                 mean_loss_delta = sum(loss_delta_sum_t) / real(refined_total)
             endif
             if( accepted_batch > 0 ) mean_winner_shift = sum(winner_shift_sum_t) / real(accepted_batch)
-            call joint_topk_candidates%apply_reliability(p_ptr%sgd_cavg_min_cands, p_ptr%sgd_cavg_max_entropy)
+            call joint_topk_candidates%apply_reliability(p_ptr%sgd_cavg_min_cands, p_ptr%sgd_cavg_max_entropy,&
+                &hard_fallback_when_empty=.true.)
             if( count(joint_topk_candidates%accepted) == 0 )then
                 THROW_HARD('joint 2D shift refinement left zero accepted top-K particles')
             endif
@@ -697,7 +699,8 @@ contains
             endif
             call joint_topk_candidates%apply_balance_prior(p_ptr%ncls, p_ptr%sgd_balance_weight,&
                 &balance_diag, first_ptcl=batch_start, last_ptcl=batch_end)
-            call joint_topk_candidates%apply_reliability(p_ptr%sgd_cavg_min_cands, p_ptr%sgd_cavg_max_entropy)
+            call joint_topk_candidates%apply_reliability(p_ptr%sgd_cavg_min_cands, p_ptr%sgd_cavg_max_entropy,&
+                &hard_fallback_when_empty=.true.)
             if( count(joint_topk_candidates%accepted) == 0 )then
                 THROW_HARD('joint 2D class-balance prior left zero accepted top-K particles')
             endif
