@@ -105,13 +105,13 @@ create_simple_runtime_shim() {
   if [[ -x "$simple_exec_dir/simple_exec" ]]; then
     link_runtime_file "$simple_exec_dir/simple_exec" "$shim_root/bin/simple_exec"
   else
-    link_runtime_file "$simple_exec_dir/simple_exec.exe" "$shim_root/bin/simple_exec.exe"
+    link_runtime_file "$simple_exec_dir/simple_exec.exe" "$shim_root/bin/simple_exec"
   fi
 
   if [[ -x "$simple_exec_dir/simple_private_exec" ]]; then
     link_runtime_file "$simple_exec_dir/simple_private_exec" "$shim_root/bin/simple_private_exec"
   else
-    link_runtime_file "$simple_exec_dir/simple_private_exec.exe" "$shim_root/bin/simple_private_exec.exe"
+    link_runtime_file "$simple_exec_dir/simple_private_exec.exe" "$shim_root/bin/simple_private_exec"
   fi
 
   for script_root in \
@@ -121,8 +121,13 @@ create_simple_runtime_shim() {
     "$projects_home/SIMPLE/scripts"
   do
     if [[ -d "$script_root" ]]; then
-      rm -f "$shim_root/scripts"
-      ln -s "$script_root" "$shim_root/scripts" 2>/dev/null || true
+      if [[ -e "$shim_root/scripts" || -L "$shim_root/scripts" ]]; then
+        rm -rf "$shim_root/scripts"
+      fi
+      if ! ln -s "$script_root" "$shim_root/scripts" 2>/dev/null; then
+        mkdir -p "$shim_root/scripts"
+        cp -a "$script_root"/. "$shim_root/scripts"/
+      fi
       break
     fi
   done
