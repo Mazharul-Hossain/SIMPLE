@@ -8,6 +8,7 @@ Usage:
 
 Reads SCIENCE_ROOT/science_runs.tsv and writes:
   SCIENCE_ROOT/science_metrics.csv
+  SCIENCE_ROOT/science_iterations.csv
   SCIENCE_ROOT/science_summary.md
 
 The summarizer is report-only. It parses existing log markers and text STAR-like
@@ -63,6 +64,50 @@ kv_last() {
       }
       print "NA"
     }' "$file"
+}
+
+emit_iteration_rows() {
+  local file="$1"
+  local profile="$2"
+  local case_name="$3"
+  local rep="$4"
+  local stage4_mode="$5"
+  [[ -f "$file" ]] || return 0
+  awk -v profile="$profile" -v case_name="$case_name" -v rep="$rep" -v stage4_mode="$stage4_mode" '
+    function quoted(v) { gsub(/"/, "\"\"", v); return "\"" v "\"" }
+    function value(line, key,    n,a,i,prefix,v) {
+      n = split(line, a, /[[:space:]]+/)
+      prefix = key "="
+      for (i = 1; i <= n; i++) {
+        if (index(a[i], prefix) == 1) {
+          v = substr(a[i], length(prefix) + 1)
+          if (v != "") return v
+        }
+      }
+      return "NA"
+    }
+    /ABINITIO2D SGD STAGE:/ {
+      stage = value($0, "stage")
+      iteration = "NA"
+      stage_iter = "NA"
+      policy = value($0, "activation")
+      mode = (policy == "off" ? "sgd_off" : "configured")
+      print quoted(profile) "," quoted(case_name) "," quoted(rep) "," quoted(stage4_mode) "," quoted(stage) "," quoted(iteration) "," quoted(stage_iter) "," quoted(policy) "," quoted(mode) "," quoted("stage_policy") "," quoted($0)
+      next
+    }
+    /JOINT2D SGD SCHEDULE:/ {
+      iteration = value($0, "iteration")
+      stage_iter = value($0, "stage_iter")
+      policy = value($0, "policy")
+      mode = value($0, "mode")
+      print quoted(profile) "," quoted(case_name) "," quoted(rep) "," quoted(stage4_mode) "," quoted(stage) "," quoted(iteration) "," quoted(stage_iter) "," quoted(policy) "," quoted(mode) "," quoted("schedule") "," quoted($0)
+      next
+    }
+    /JOINT2D SGD (TOPK|LATENT|WINNER|INPL|SHIFT|BALANCE|REFS)|CAVG SGD (UPDATE|SUPPORT|NORMS|RESTORE)/ {
+      marker = ($0 ~ /JOINT2D SGD/ ? "joint_diagnostic" : "cavg_diagnostic")
+      print quoted(profile) "," quoted(case_name) "," quoted(rep) "," quoted(stage4_mode) "," quoted(stage) "," quoted(iteration) "," quoted(stage_iter) "," quoted(policy) "," quoted(mode) "," quoted(marker) "," quoted($0)
+    }
+  ' "$file"
 }
 
 first_existing_star() {
@@ -133,7 +178,7 @@ population_metrics() {
 
 write_header() {
   cat <<'EOF'
-case,replicate,mode,status,project,ncls,mskdiam,nthr,topk,sgd_eta_latent,sgd_eta_cavg,sgd_balance_weight,accepted_frac,empty,accepted,too_few,high_entropy,avg_entropy,entropy_min,entropy_max,avg_norm_entropy,norm_entropy_min,norm_entropy_max,avg_winner_weight,winner_weight_min,winner_weight_max,expected_loss_delta,winner_churn,inpl_changed,shift_step_mean,shift_step_max,cavg_support_min,cavg_support_mean,cavg_support_max,cavg_updated,cavg_preserved,cavg_grad_norm,cavg_step_norm,cavg_rel_step_norm,cavg_nonfinite,frc_mean_peak,frc_max_peak,frc_usable_classes,active_classes,active_class_fraction,max_population_fraction,zero_population_classes,pop_entropy,collapse_index,population_source,log_file,run_dir
+case,replicate,profile,mode,stage4_mode,status,project,ncls,mskdiam,nthr,topk,sgd_eta_latent,sgd_eta_cavg,sgd_balance_weight,accepted_frac,empty,accepted,too_few,high_entropy,avg_entropy,entropy_min,entropy_max,avg_norm_entropy,norm_entropy_min,norm_entropy_max,avg_winner_weight,winner_weight_min,winner_weight_max,expected_loss_delta,winner_churn,inpl_changed,shift_step_mean,shift_step_max,cavg_support_min,cavg_support_mean,cavg_support_max,cavg_updated,cavg_preserved,cavg_grad_norm,cavg_step_norm,cavg_rel_step_norm,cavg_nonfinite,frc_mean_peak,frc_max_peak,frc_usable_classes,active_classes,active_class_fraction,max_population_fraction,zero_population_classes,pop_entropy,collapse_index,population_source,log_file,run_dir
 EOF
 }
 
@@ -145,17 +190,20 @@ fi
 root="$1"
 manifest="$root/science_runs.tsv"
 metrics="$root/science_metrics.csv"
+iterations="$root/science_iterations.csv"
 summary="$root/science_summary.md"
 
 [[ -f "$manifest" ]] || fail "manifest not found: $manifest"
 
 write_header > "$metrics"
+echo 'profile,case,replicate,stage4_mode,stage,iteration,stage_iter,policy,mode,marker,raw' > "$iterations"
 
-tail -n +2 "$manifest" | while IFS=$'\t' read -r case_name rep mode log_file run_dir project ncls mskdiam nthr topk eta_latent eta_cavg balance_weight params status; do
+tail -n +2 "$manifest" | while IFS=$'\t' read -r case_name rep profile mode stage4_mode log_file run_dir project ncls mskdiam nthr topk eta_latent eta_cavg balance_weight params status; do
   [[ -n "${case_name:-}" ]] || continue
   if [[ ! -f "$log_file" ]]; then
     status="missing_log"
   fi
+  emit_iteration_rows "$log_file" "$profile" "$case_name" "$rep" "$stage4_mode" >> "$iterations"
 
   accepted_frac="$(kv_last "$log_file" 'JOINT2D SGD TOPK RANGES:' 'accepted_frac')"
   empty="$(kv_last "$log_file" 'JOINT2D SGD TOPK:' 'empty')"
@@ -193,7 +241,7 @@ tail -n +2 "$manifest" | while IFS=$'\t' read -r case_name rep mode log_file run
     pop_entropy collapse_index population_source <<< "$pop_csv"
 
   emit_csv_row \
-    "$case_name" "$rep" "$mode" "$status" "$project" "$ncls" "$mskdiam" "$nthr" \
+    "$case_name" "$rep" "$profile" "$mode" "$stage4_mode" "$status" "$project" "$ncls" "$mskdiam" "$nthr" \
     "$topk" "$eta_latent" "$eta_cavg" "$balance_weight" "$accepted_frac" "$empty" \
     "$accepted" "$too_few" "$high_entropy" "$avg_entropy" "$entropy_min" "$entropy_max" \
     "$avg_norm_entropy" "$norm_entropy_min" "$norm_entropy_max" "$avg_winner_weight" \
@@ -215,11 +263,12 @@ done
   echo
   echo "- \`science_runs.tsv\`"
   echo "- \`science_metrics.csv\`"
+  echo "- \`science_iterations.csv\`"
   echo "- \`science_summary.md\`"
   echo
   echo "## Cases"
   echo
-  awk -F, 'NR > 1 { gsub(/"/, "", $1); gsub(/"/, "", $2); gsub(/"/, "", $4); print "- " $1 " replicate " $2 ": " $4 }' "$metrics"
+  awk -F, 'NR > 1 { gsub(/"/, "", $1); gsub(/"/, "", $2); gsub(/"/, "", $3); gsub(/"/, "", $6); print "- " $1 " replicate " $2 " (" $3 "): " $6 }' "$metrics"
   echo
   echo "## Baseline vs Joint Highlights"
   echo
@@ -236,13 +285,31 @@ done
         $(h["frc_mean_peak"]), $(h["active_classes"]), $(h["collapse_index"])
     }' "$metrics"
   echo
+  echo "## Review Flags"
+  echo
+  awk -F, '
+    NR == 1 { for (i = 1; i <= NF; i++) { gsub(/"/, "", $i); h[$i] = i }; next }
+    {
+      for (i = 1; i <= NF; i++) gsub(/"/, "", $i)
+      flagged = 0
+      if ($(h["status"]) != "pass") { print "- " $(h["case"]) " rep " $(h["replicate"]) ": status=" $(h["status"]); flagged = 1 }
+      if ($(h["cavg_nonfinite"]) != "NA" && $(h["cavg_nonfinite"]) + 0 > 0) { print "- " $(h["case"]) ": nonfinite CAVG updates"; flagged = 1 }
+      if ($(h["active_class_fraction"]) != "NA" && $(h["active_class_fraction"]) + 0 < 0.5) { print "- " $(h["case"]) ": active class fraction below 0.5"; flagged = 1 }
+      if ($(h["collapse_index"]) != "NA" && $(h["collapse_index"]) + 0 > 0.5) { print "- " $(h["case"]) ": collapse index above 0.5"; flagged = 1 }
+      any += flagged
+    }
+    END { if (any == 0) print "- No automatic failure or collapse flags were triggered." }
+  ' "$metrics"
+  echo
   echo "## Notes"
   echo
   echo "- Baseline runs intentionally have joint2D-SGD metric fields as \`NA\`."
   echo "- Population metrics are extracted from text STAR-like exports when available; otherwise they are \`NA\`."
   echo "- FRC peak metrics come from joint restoration diagnostics. If a baseline text FRC export is unavailable, baseline FRC fields remain \`NA\`."
   echo "- This report flags evidence for review; it does not claim scientific superiority automatically."
+  echo "- Per-stage and per-iteration schedule/diagnostic records are retained in \`science_iterations.csv\`; run-level metrics remain compact summaries."
 } > "$summary"
 
 echo "Wrote $metrics"
+echo "Wrote $iterations"
 echo "Wrote $summary"

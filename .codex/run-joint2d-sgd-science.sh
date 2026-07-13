@@ -14,19 +14,14 @@ Workstation layout:
   Build copy:  ~/Projects/SIMPLE_joint2d_sgd_build
   Test runs:   ~/Projects/simple_joint2d_sgd_science_<timestamp>
 
-Default validation matrix:
-  baseline:              sgd=no
-  joint_topk1_equiv:     sgd=yes sgd_mode=joint sgd_topk=1 sgd_eta_cavg=1.0 sgd_eta_latent=0.5 sgd_balance_weight=0.0
-  joint_default:         sgd=yes sgd_mode=joint sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=0.0
-  latent_eta_0p1:        joint_default with sgd_eta_latent=0.1
-  latent_eta_1p0:        joint_default with sgd_eta_latent=1.0
-  cavg_eta_0p05:         joint_default with sgd_eta_cavg=0.05
-  cavg_eta_0p25:         joint_default with sgd_eta_cavg=0.25
-  balance_0p05:          joint_default with sgd_balance_weight=0.05
+Default activation matrix:
+  baseline:          sgd=no
+  stage4_off:        stage 4 off; stages 5+ on
+  stage4_alternate:  stage 4 off/on by local iteration; stages 5+ on
+  stage4_on:         stage 4 on; stages 5+ on
 
-All joint cases automatically use the compiled iteration schedule:
-  1-10 legacy likelihood; 11-20 alternate joint/legacy; 21+ joint.
-No additional schedule parameter is required.
+The optional hyperparameters profile retains the 015 optimizer sweep with
+sgd_stage4_mode=alternate.
 
 Environment overrides:
   JOINT2D_SGD_PROJECTS_HOME        Defaults to ~/Projects.
@@ -34,6 +29,7 @@ Environment overrides:
   JOINT2D_SGD_SCIENCE_ROOT         Defaults to ~/Projects/simple_joint2d_sgd_science_<timestamp>.
   JOINT2D_SGD_SCIENCE_PROJECT      Existing extracted .simple project for validation.
   JOINT2D_SGD_SCIENCE_REPS         Number of replicates. Defaults to 1; recommended 3.
+  JOINT2D_SGD_SCIENCE_PROFILE      activation or hyperparameters. Defaults to activation.
   JOINT2D_SGD_SCIENCE_NCLS         abinitio2D ncls. Defaults to 100.
   JOINT2D_SGD_SCIENCE_MSKDIAM      abinitio2D mskdiam. Defaults to 190.
   JOINT2D_SGD_SCIENCE_NTHR         abinitio2D nthr. Defaults to 32.
@@ -57,7 +53,7 @@ EOF
 
 write_manifest_header() {
   cat > "$manifest" <<'EOF'
-case	replicate	mode	log_file	run_dir	project	ncls	mskdiam	nthr	topk	sgd_eta_latent	sgd_eta_cavg	sgd_balance_weight	params	status
+case	replicate	profile	mode	stage4_mode	log_file	run_dir	project	ncls	mskdiam	nthr	topk	sgd_eta_latent	sgd_eta_cavg	sgd_balance_weight	params	status
 EOF
 }
 
@@ -65,17 +61,18 @@ record_manifest() {
   local case_name="$1"
   local rep="$2"
   local mode="$3"
-  local log_file="$4"
-  local run_dir="$5"
-  local topk="$6"
-  local eta_latent="$7"
-  local eta_cavg="$8"
-  local balance_weight="$9"
-  local params="${10}"
-  local status="${11}"
+  local stage4_mode="$4"
+  local log_file="$5"
+  local run_dir="$6"
+  local topk="$7"
+  local eta_latent="$8"
+  local eta_cavg="$9"
+  local balance_weight="${10}"
+  local params="${11}"
+  local status="${12}"
 
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$case_name" "$rep" "$mode" "$log_file" "$run_dir" "$project_path" \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$case_name" "$rep" "$profile" "$mode" "$stage4_mode" "$log_file" "$run_dir" "$project_path" \
     "$ncls" "$mskdiam" "$nthr" "$topk" "$eta_latent" "$eta_cavg" \
     "$balance_weight" "$params" "$status" >> "$manifest"
 }
@@ -84,11 +81,12 @@ run_case() {
   local case_name="$1"
   local rep="$2"
   local mode="$3"
-  local topk="$4"
-  local eta_latent="$5"
-  local eta_cavg="$6"
-  local balance_weight="$7"
-  shift 7
+  local stage4_mode="$4"
+  local topk="$5"
+  local eta_latent="$6"
+  local eta_cavg="$7"
+  local balance_weight="$8"
+  shift 8
   local params=( "$@" )
   local case_id="${case_name}_rep${rep}"
   local log_file="$scratch_root/${case_id}.log"
@@ -104,7 +102,7 @@ run_case() {
   ) >"$log_file" 2>&1 || status="run_failed"
 
   if [[ "$status" == "pass" ]]; then
-    if "$checker" "$mode" "$log_file" "$case_root" "$case_name" >"$status_file" 2>&1; then
+    if "$checker" "$mode" "$log_file" "$stage4_mode" "$case_root" "$case_name" >"$status_file" 2>&1; then
       status="pass"
     else
       status="check_failed"
@@ -114,7 +112,7 @@ run_case() {
     echo "run failed before checker; see $log_file" > "$status_file"
   fi
 
-  record_manifest "$case_name" "$rep" "$mode" "$log_file" "$case_root" "$topk" \
+  record_manifest "$case_name" "$rep" "$mode" "$stage4_mode" "$log_file" "$case_root" "$topk" \
     "$eta_latent" "$eta_cavg" "$balance_weight" "${params[*]}" "$status"
   if [[ "$status" == "pass" ]]; then
     echo "Log: $log_file"
@@ -158,17 +156,10 @@ common_project_probe JOINT2D_SGD_SCIENCE_PROJECT JOINT_SGD_SCIENCE_PROJECT
 if [[ "${1:-}" == "--check" ]]; then
   print_common_check "Default science root: $projects_home/simple_joint2d_sgd_science_<timestamp>"
   echo "Replicates: $(env_or_legacy JOINT2D_SGD_SCIENCE_REPS JOINT_SGD_SCIENCE_REPS 1)"
+  echo "Profile: $(env_or_legacy JOINT2D_SGD_SCIENCE_PROFILE JOINT_SGD_SCIENCE_PROFILE activation)"
   cat <<'EOF'
-Default validation matrix:
-  baseline:              sgd=no
-  joint_topk1_equiv:     sgd=yes sgd_mode=joint sgd_topk=1 sgd_eta_cavg=1.0 sgd_eta_latent=0.5 sgd_balance_weight=0.0
-  joint_default:         sgd=yes sgd_mode=joint sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=0.0
-  latent_eta_0p1:        joint_default with sgd_eta_latent=0.1
-  latent_eta_1p0:        joint_default with sgd_eta_latent=1.0
-  cavg_eta_0p05:         joint_default with sgd_eta_cavg=0.05
-  cavg_eta_0p25:         joint_default with sgd_eta_cavg=0.25
-  balance_0p05:          joint_default with sgd_balance_weight=0.05
-Joint schedule: automatic (1-10 legacy likelihood; 11-20 alternate; 21+ joint)
+Activation profile: baseline, stage4_off, stage4_alternate, stage4_on.
+Hyperparameters profile: the 015 sweep with stage4_alternate.
 Failure policy: each case/replicate is independent; failed cases are recorded and later cases continue.
 EOF
   exit 0
@@ -186,9 +177,14 @@ reps="$(env_or_legacy JOINT2D_SGD_SCIENCE_REPS JOINT_SGD_SCIENCE_REPS 1)"
 ncls="$(env_or_legacy JOINT2D_SGD_SCIENCE_NCLS JOINT_SGD_SCIENCE_NCLS 100)"
 mskdiam="$(env_or_legacy JOINT2D_SGD_SCIENCE_MSKDIAM JOINT_SGD_SCIENCE_MSKDIAM 190)"
 nthr="$(env_or_legacy JOINT2D_SGD_SCIENCE_NTHR JOINT_SGD_SCIENCE_NTHR 32)"
+profile="$(env_or_legacy JOINT2D_SGD_SCIENCE_PROFILE JOINT_SGD_SCIENCE_PROFILE activation)"
 manifest="$scratch_root/science_runs.tsv"
 
 [[ "$reps" =~ ^[0-9]+$ && "$reps" -ge 1 ]] || fail "JOINT2D_SGD_SCIENCE_REPS must be a positive integer"
+case "$profile" in
+  activation|hyperparameters) ;;
+  *) fail "JOINT2D_SGD_SCIENCE_PROFILE must be activation or hyperparameters" ;;
+esac
 
 mkdir -p "$scratch_root"
 write_manifest_header
@@ -200,25 +196,32 @@ echo "Science root: $scratch_root"
 echo "Source project: $project_path"
 echo "Workflow root: $workflow_root"
 echo "Project relative path: $project_rel"
-echo "ncls=$ncls mskdiam=$mskdiam nthr=$nthr reps=$reps"
-echo "Joint schedule: automatic (1-10 legacy likelihood; 11-20 alternate; 21+ joint)"
+echo "ncls=$ncls mskdiam=$mskdiam nthr=$nthr reps=$reps profile=$profile"
 
 for rep in $(seq 1 "$reps"); do
-  run_case baseline "$rep" baseline NA NA NA NA sgd=no
-  run_case joint_topk1_equiv "$rep" joint 1 0.5 1.0 0.0 \
-    sgd=yes sgd_mode=joint sgd_topk=1 sgd_eta_cavg=1.0 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
-  run_case joint_default "$rep" joint 3 0.5 0.1 0.0 \
-    sgd=yes sgd_mode=joint sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
-  run_case latent_eta_0p1 "$rep" joint 3 0.1 0.1 0.0 \
-    sgd=yes sgd_mode=joint sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.1 sgd_balance_weight=0.0 sgd_diag=yes
-  run_case latent_eta_1p0 "$rep" joint 3 1.0 0.1 0.0 \
-    sgd=yes sgd_mode=joint sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=1.0 sgd_balance_weight=0.0 sgd_diag=yes
-  run_case cavg_eta_0p05 "$rep" joint 3 0.5 0.05 0.0 \
-    sgd=yes sgd_mode=joint sgd_topk=3 sgd_eta_cavg=0.05 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
-  run_case cavg_eta_0p25 "$rep" joint 3 0.5 0.25 0.0 \
-    sgd=yes sgd_mode=joint sgd_topk=3 sgd_eta_cavg=0.25 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
-  run_case balance_0p05 "$rep" joint 3 0.5 0.1 0.05 \
-    sgd=yes sgd_mode=joint sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=0.05 sgd_diag=yes
+  run_case baseline "$rep" baseline off NA NA NA NA sgd=no
+  if [[ "$profile" == "activation" ]]; then
+    for stage4_mode in off alternate on; do
+      case_name="$(joint2d_sgd_stage4_case_name "$stage4_mode")"
+      joint2d_sgd_make_joint_args "$stage4_mode" 3 0.5 0.1 0.0
+      run_case "$case_name" "$rep" joint "$stage4_mode" 3 0.5 0.1 0.0 "${joint2d_sgd_case_args[@]}"
+    done
+  else
+    run_case joint_topk1_equiv "$rep" joint alternate 1 0.5 1.0 0.0 \
+      sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=1 sgd_eta_cavg=1.0 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
+    run_case joint_default "$rep" joint alternate 3 0.5 0.1 0.0 \
+      sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
+    run_case latent_eta_0p1 "$rep" joint alternate 3 0.1 0.1 0.0 \
+      sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.1 sgd_balance_weight=0.0 sgd_diag=yes
+    run_case latent_eta_1p0 "$rep" joint alternate 3 1.0 0.1 0.0 \
+      sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=1.0 sgd_balance_weight=0.0 sgd_diag=yes
+    run_case cavg_eta_0p05 "$rep" joint alternate 3 0.5 0.05 0.0 \
+      sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.05 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
+    run_case cavg_eta_0p25 "$rep" joint alternate 3 0.5 0.25 0.0 \
+      sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.25 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
+    run_case balance_0p05 "$rep" joint alternate 3 0.5 0.1 0.05 \
+      sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=0.05 sgd_diag=yes
+  fi
 done
 
 "$summarizer" "$scratch_root"

@@ -4,8 +4,8 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  .codex/check-joint2d-sgd-science-log.sh baseline <LOG> [RUN_DIR] [CASE]
-  .codex/check-joint2d-sgd-science-log.sh joint    <LOG> [RUN_DIR] [CASE]
+  .codex/check-joint2d-sgd-science-log.sh baseline <LOG> [STAGE4_MODE] [RUN_DIR] [CASE]
+  .codex/check-joint2d-sgd-science-log.sh joint    <LOG> <STAGE4_MODE> [RUN_DIR] [CASE]
 
 Checks logs produced by .codex/run-joint2d-sgd-science.sh. RUN_DIR is optional;
 when provided, the checker also verifies that abinitio2D output and class/FRC
@@ -26,8 +26,9 @@ fi
 
 mode="$1"
 log_file="$2"
-run_dir="${3:-}"
-case_name="${4:-unknown}"
+stage4_mode="${3:-alternate}"
+run_dir="${4:-}"
+case_name="${5:-unknown}"
 
 [[ -f "$log_file" ]] || fail "log file does not exist: $log_file"
 
@@ -39,7 +40,7 @@ case "$mode" in
     check_baseline_log
     ;;
   joint)
-    check_science_joint_log "$case_name"
+    check_science_joint_log "$case_name" "$stage4_mode"
     ;;
   *)
     fail "mode must be baseline or joint"

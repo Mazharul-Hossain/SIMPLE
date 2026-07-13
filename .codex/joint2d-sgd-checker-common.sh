@@ -125,6 +125,10 @@ check_smoke_joint_log() {
 
 check_science_joint_log() {
   local case_name="${1:-unknown}"
+  local stage4_mode="${2:-alternate}"
+  check_abinitio_stage_matrix "$stage4_mode" on
+  check_no_joint_outside_late_stages
+  check_stage4_iteration_policy "$stage4_mode"
   require_contains 'JOINT2D SGD TOPK: prob_align2D' 'prob_align2D top-K diagnostics'
   require_contains 'JOINT2D SGD TOPK: cluster2D' 'cluster2D top-K diagnostics'
   require_contains 'JOINT2D SGD LATENT' 'latent-logit diagnostics'
