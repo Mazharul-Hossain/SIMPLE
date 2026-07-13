@@ -75,8 +75,10 @@ static int waitpid(pid_t pid, int *status, int options) { return -1; }
 #endif
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #ifndef _WIN32
 #include <unistd.h>       /* getpid()  */
+#include <sys/resource.h>
 #else
 #include <process.h>
 #endif
@@ -813,6 +815,56 @@ int get_sysinfo(long* HWMusage, long*totalram, long* sharedram, long* bufferram,
         }
 #endif
         return 0;
+}
+
+/* Peak resident set size for the current process, normalized to bytes.
+ * Linux reports ru_maxrss in KiB while macOS reports bytes.  The kernel
+ * maintains this high-water mark, so callers only need to query it once at
+ * the end of a profiled region. */
+int64_t simple_peak_rss_bytes(void)
+{
+#ifdef _WIN32
+    return -1;
+#else
+    struct rusage usage;
+    if (getrusage(RUSAGE_SELF, &usage) != 0) return -1;
+#ifdef __APPLE__
+    return (int64_t)usage.ru_maxrss;
+#else
+    return (int64_t)usage.ru_maxrss * 1024;
+#endif
+#endif
+}
+
+/* Current resident set size for the current process, normalized to bytes.
+ * Unlike the peak query this value may decrease after phase-local teardown,
+ * although an allocator is free to retain released pages. */
+int64_t simple_current_rss_bytes(void)
+{
+#ifdef _WIN32
+    return -1;
+#elif defined(__APPLE__)
+    struct task_basic_info info;
+    mach_msg_type_number_t count = TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_BASIC_INFO, (task_info_t)&info, &count) != KERN_SUCCESS) return -1;
+    return (int64_t)info.resident_size;
+#elif defined(__linux__)
+    FILE *stream;
+    unsigned long ignored_pages, resident_pages;
+    long page_size;
+    stream = fopen("/proc/self/statm", "r");
+    if (stream == NULL) return -1;
+    if (fscanf(stream, "%lu %lu", &ignored_pages, &resident_pages) != 2) {
+        fclose(stream);
+        return -1;
+    }
+    fclose(stream);
+    page_size = sysconf(_SC_PAGESIZE);
+    if (page_size <= 0) return -1;
+    return (int64_t)resident_pages * (int64_t)page_size;
+#else
+    return -1;
+#endif
 }
 
 int unlink_cb(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf)

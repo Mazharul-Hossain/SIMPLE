@@ -37,11 +37,11 @@
 !==============================================================================
 module simple_ptcl_sieve
   use unix,                               only: c_time, c_long
-  use simple_defs,                        only: logfhandle, STDLEN, CWD_GLOB
+  use simple_defs,                        only: logfhandle, STDLEN, CWD_GLOB, JPEG_DIM
   use simple_error,                       only: simple_exception
   use simple_image,                       only: image
   use simple_timer,                       only: timer_int_kind, tic, toc
-  use simple_fileio,                      only: swap_suffix, simple_copy_file, write_filetable, simple_touch, basename
+  use simple_fileio,                      only: swap_suffix, simple_copy_file, write_filetable, simple_touch, basename, simple_list_files
   use simple_string,                      only: string
   use simple_syslib,                      only: simple_mkdir, simple_abspath, simple_chdir, &
                                                 simple_getcwd, file_exists, del_file, dir_exists
@@ -55,13 +55,29 @@ module simple_ptcl_sieve
   use simple_imgarr_utils,                only: read_cavgs_into_imgarr, dealloc_imgarr, write_imgarr
   use simple_string_utils,                only: int2str
   use simple_projfile_utils,              only: merge_chunk_projfiles
-  use simple_cavg_quality_types,          only: cavg_quality_result, CAVG_QUALITY_CONTEXT_SIEVE
+  use simple_cavg_quality_model,          only: CAVG_QUALITY_MODEL_CHUNK_DEFAULT, cavg_quality_model
+  use simple_cavg_quality_types,          only: cavg_quality_result, CAVG_QUALITY_CONTEXT_SIEVE, &
+                                                CAVG_REJECT_REASON_POP, CAVG_REJECT_REASON_BAD_PIXELS, &
+                                                CAVG_REJECT_REASON_NO_COMPONENT, CAVG_REJECT_REASON_MASK_GEOMETRY, &
+                                                CAVG_REJECT_REASON_BP_CENTER_EDGE_LOW, CAVG_REJECT_REASON_LOCVAR_FG_LOW, &
+                                                CAVG_REJECT_REASON_FUZZY_BALL_SIGNAL_LOW
   use simple_class_compatibility,         only: class_compatibility, support_model_metrics
   use simple_cavg_quality_helpers,        only: cavg_rejection_reason_string
-  use simple_cavg_quality_analysis,       only: evaluate_cavg_quality_hard_reject
+  use simple_cavg_quality_analysis,       only: evaluate_cavg_quality_hard_reject, evaluate_cavg_quality
 
   implicit none
-  public  :: ptcl_sieve
+  public :: ptcl_sieve
+  public :: DEFAULT_COARSE_POP_THRESHOLD
+  public :: DEFAULT_FINE_POP_THRESHOLD
+  public :: DEFAULT_NCLS
+  public :: DEFAULT_COARSE_BOX
+  public :: DEFAULT_FINE_BOX
+  public :: DEFAULT_COARSE_NSAMPLE
+  public :: DEFAULT_FINE_NSAMPLE
+  public :: DEFAULT_LPSTART
+  public :: DEFAULT_COARSE_LP
+  public :: DEFAULT_FINE_LP
+
   private
 #include "simple_local_flags.inc"
 
@@ -74,8 +90,6 @@ module simple_ptcl_sieve
   integer, parameter :: DEFAULT_FINE_BOX                      = 128
   integer, parameter :: DEFAULT_COARSE_NSAMPLE                = 2000
   integer, parameter :: DEFAULT_FINE_NSAMPLE                  = 2000
-  integer, parameter :: COARSE_COMPATIBILITY_TRAINING_THRESHOLD = 10
-  integer, parameter :: FINE_COMPATIBILITY_TRAINING_THRESHOLD = 10
   real,    parameter :: DEFAULT_LPSTART                       = 15.0
   real,    parameter :: DEFAULT_COARSE_LP                     = 15.0
   real,    parameter :: DEFAULT_FINE_LP                       = 10.0
@@ -136,16 +150,17 @@ module simple_ptcl_sieve
     type(string)                      :: completedir
     type(string)                      :: latest_jpeg
     type(string)                      :: latest_stkname
-    logical                           :: coarse_only        = .false.
-    logical                           :: pre_chunked        = .false.
-    logical                           :: final_ingestion    = .false.
-    logical                           :: compatibility_training_pass_1_complete = .false.
-    logical                           :: compatibility_training_pass_2_complete = .false.
-    integer                           :: compatibility_training_pass_1_count    = 0
-    integer                           :: compatibility_training_pass_2_count    = 0
+    logical                           :: coarse_only             = .false.
+    logical                           :: pre_chunked             = .false.
+    logical                           :: final_ingestion         = .false.
+    logical                           :: model_rejection_enabled = .false.
     integer                           :: nparallel          = 1
     integer                           :: nthr               = 1
     integer                           :: nparts             = 1
+    integer                           :: n_coarse_accepted_ptcls = 0
+    integer                           :: n_coarse_rejected_ptcls = 0
+    integer                           :: n_fine_accepted_ptcls   = 0
+    integer                           :: n_fine_rejected_ptcls   = 0
     integer                           :: n_accepted_ptcls   = 0
     integer                           :: n_accepted_mics    = 0
     integer                           :: n_rejected_ptcls   = 0
@@ -164,6 +179,10 @@ module simple_ptcl_sieve
     procedure :: get_n_chunks_running
     procedure :: get_n_pass_1_non_rejected_ptcls
     procedure :: get_n_pass_2_non_rejected_ptcls
+    procedure :: get_n_coarse_accepted_ptcls
+    procedure :: get_n_coarse_rejected_ptcls
+    procedure :: get_n_fine_accepted_ptcls
+    procedure :: get_n_fine_rejected_ptcls
     procedure :: get_n_accepted_ptcls
     procedure :: get_n_accepted_micrographs
     procedure :: get_n_rejected_ptcls
@@ -181,6 +200,7 @@ module simple_ptcl_sieve
     procedure :: submit
     procedure :: collect_and_reject
     procedure :: reject_cavgs
+    procedure :: cleanup_chunk
   end type ptcl_sieve
 
 contains
@@ -194,12 +214,10 @@ contains
   ! limit, mask diameter, and thread count; imports any existing chunks from a
   ! previous run; creates all four output directories; allocates empty chunk
   ! arrays; and initialises the queue environment.
-  subroutine new( self, params, completedir, coarse_only, pre_chunked, compatibility_refs )
+  subroutine new( self, params, completedir, pre_chunked )
     class(ptcl_sieve), intent(inout) :: self
     type(parameters),           intent(in)    :: params
     type(string),               intent(in)    :: completedir
-    type(string),     optional, intent(in)    :: compatibility_refs
-    logical,          optional, intent(in)    :: coarse_only
     logical,          optional, intent(in)    :: pre_chunked
     type(string)                              :: cwd
     integer(timer_int_kind)                   :: t0
@@ -211,24 +229,39 @@ contains
     self%mskdiam     = params%mskdiam
     self%nthr        = params%nthr
     self%nparts      = params%nparts
-    if( present(coarse_only) ) self%coarse_only = coarse_only
-    if( present(pre_chunked) ) self%pre_chunked = pre_chunked
+    if( present(pre_chunked)        ) self%pre_chunked             = pre_chunked
+    if( params%single_pass == 'yes' ) self%coarse_only             = .true.
+    if( params%fine_model  == 'yes' ) self%model_rejection_enabled = .true.
+    if( params%lpstart > 0.0 ) then
+      if( self%coarse_defaults%lpstart /= params%lpstart ) self%coarse_defaults%lpstart = params%lpstart
+      if( self%fine_defaults%lpstart   /= params%lpstart ) self%fine_defaults%lpstart   = params%lpstart
+    end if
+    if( params%lpstop_coarse  > 0.0 .and. self%coarse_defaults%lpstop   /= params%lpstop_coarse ) self%coarse_defaults%lpstop   = params%lpstop_coarse
+    if( params%lpstop_fine    > 0.0 .and. self%fine_defaults%lpstop     /= params%lpstop_fine   ) self%fine_defaults%lpstop     = params%lpstop_fine
+    if( params%box_coarse     > 0   .and. self%coarse_defaults%box_crop /= params%box_coarse    ) self%coarse_defaults%box_crop = params%box_coarse
+    if( params%box_fine       > 0   .and. self%fine_defaults%box_crop   /= params%box_fine      ) self%fine_defaults%box_crop   = params%box_fine
+    if( params%nsample_coarse > 0   .and. self%coarse_defaults%nsample  /= params%nsample_coarse) self%coarse_defaults%nsample  = params%nsample_coarse
+    if( params%nsample_fine   > 0   .and. self%fine_defaults%nsample    /= params%nsample_fine  ) self%fine_defaults%nsample    = params%nsample_fine
+    if( params%ncls_coarse    > 0   .and. self%coarse_defaults%ncls     /= params%ncls_coarse   ) self%coarse_defaults%ncls     = params%ncls_coarse
+    if( params%ncls_fine      > 0   .and. self%fine_defaults%ncls       /= params%ncls_fine     ) self%fine_defaults%ncls       = params%ncls_fine
     self%outdir_chunks_coarse = string(cwd%to_char() // '/chunks_coarse')
     self%outdir_chunks_fine   = string(cwd%to_char() // '/chunks_fine')
     allocate(self%chunks_coarse(0))
     allocate(self%chunks_fine(0))
     ! Import existing chunks before creating directories.
-    if( dir_exists(self%outdir_chunks_coarse)      ) call self%import_existing_chunks_coarse()
-    if( dir_exists(self%outdir_chunks_fine) ) call self%import_existing_chunks_fine()
+    if( dir_exists(self%outdir_chunks_coarse) ) call self%import_existing_chunks_coarse()
+    if( dir_exists(self%outdir_chunks_fine)   ) call self%import_existing_chunks_fine()
     call simple_mkdir(self%outdir_chunks_coarse)
     call simple_mkdir(self%outdir_chunks_fine)
     call self%qenv%new(params, 1, exec_bin=string('simple_exec'))
     call self%coarse_compatibility_model%new()
     call self%fine_compatibility_model%new()
-    if( present(compatibility_refs) ) then
-      if( file_exists(compatibility_refs) ) then
-        call self%coarse_compatibility_model%train(compatibility_refs)
-        call self%fine_compatibility_model%train(compatibility_refs)
+    if( params%refs /= '' ) then
+      if( file_exists(params%refs) ) then
+        call self%coarse_compatibility_model%train(params%refs)
+        call self%fine_compatibility_model%train(params%refs)
+      else
+        THROW_HARD('Compatibility reference file not found: ' // params%refs%to_char())
       end if
     end if
     call timer_stop(t0, string('new'))
@@ -256,16 +289,17 @@ contains
     end if
     call self%coarse_compatibility_model%kill()
     call self%fine_compatibility_model%kill()
-    self%compatibility_training_pass_1_complete = .false.
-    self%compatibility_training_pass_2_complete = .false.
-    self%compatibility_training_pass_1_count    = 0
-    self%compatibility_training_pass_2_count    = 0
-    self%n_accepted_ptcls    = 0
-    self%n_accepted_mics     = 0
-    self%n_rejected_ptcls    = 0
-    self%coarse_only         = .false.
-    self%pre_chunked         = .false.
-    self%final_ingestion     = .false.
+    self%n_coarse_accepted_ptcls = 0
+    self%n_coarse_rejected_ptcls = 0
+    self%n_fine_accepted_ptcls   = 0
+    self%n_fine_rejected_ptcls   = 0
+    self%n_accepted_ptcls        = 0
+    self%n_accepted_mics         = 0
+    self%n_rejected_ptcls        = 0
+    self%coarse_only             = .false.
+    self%pre_chunked             = .false.
+    self%final_ingestion         = .false.
+    self%model_rejection_enabled = .false.
     call timer_stop(t0, string('kill'))
   end subroutine kill
 
@@ -447,6 +481,34 @@ contains
       end associate
     end do
   end function get_n_pass_2_non_rejected_ptcls
+
+  ! Returns the cumulative number of coarse-tier accepted particles after
+  ! coarse rejection and compatibility filtering.
+  pure integer function get_n_coarse_accepted_ptcls( self )
+    class(ptcl_sieve), intent(in) :: self
+    get_n_coarse_accepted_ptcls = self%n_coarse_accepted_ptcls
+  end function get_n_coarse_accepted_ptcls
+
+  ! Returns the cumulative number of coarse-tier rejected particles after
+  ! coarse rejection and compatibility filtering.
+  pure integer function get_n_coarse_rejected_ptcls( self )
+    class(ptcl_sieve), intent(in) :: self
+    get_n_coarse_rejected_ptcls = self%n_coarse_rejected_ptcls
+  end function get_n_coarse_rejected_ptcls
+
+  ! Returns the cumulative number of fine-tier accepted particles after
+  ! fine rejection and compatibility filtering.
+  pure integer function get_n_fine_accepted_ptcls( self )
+    class(ptcl_sieve), intent(in) :: self
+    get_n_fine_accepted_ptcls = self%n_fine_accepted_ptcls
+  end function get_n_fine_accepted_ptcls
+
+  ! Returns the cumulative number of fine-tier rejected particles after
+  ! fine rejection and compatibility filtering.
+  pure integer function get_n_fine_rejected_ptcls( self )
+    class(ptcl_sieve), intent(in) :: self
+    get_n_fine_rejected_ptcls = self%n_fine_rejected_ptcls
+  end function get_n_fine_rejected_ptcls
 
   ! Returns the cumulative number of particles accepted (state > 0) across all
   ! finalised fine chunks. Updated by collect_and_reject when each fine chunk
@@ -1123,8 +1185,8 @@ contains
           call spproj%kill()
           call simple_copy_file(chunk%projfile, self%completedir // '/' // basename(chunk%projfile))
           call simple_touch(chunk%folder%to_char() // '/COMPLETE')
-          chunk%complete            = .true.
-          write(logfhandle,'(A,I6)') '>>> FINALISED FINE CHUNK # ', chunk%id
+          chunk%complete = .true.
+          write(logfhandle,'(A,I6)') '>>> FINALISED COARSE CHUNK # ', chunk%id
         end if
         if( (.not. self%coarse_only) .and. chunk%rejection_complete .and. .not. chunk%complete ) then
           if( self%get_n_chunks_fine() == 0 ) then
@@ -1188,7 +1250,7 @@ contains
           call spproj%kill()
           call simple_copy_file(chunk%projfile, self%completedir // '/' // basename(chunk%projfile))
           call simple_touch(chunk%folder%to_char() // '/COMPLETE')
-          chunk%complete            = .true.
+          chunk%complete = .true.
           write(logfhandle,'(A,I6)') '>>> FINALISED FINE CHUNK # ', chunk%id
         end if
       end associate
@@ -1206,12 +1268,13 @@ contains
     type(string),        intent(in)    :: label
     type(image),         allocatable   :: cavg_imgs(:), out_imgs(:)
     integer,             allocatable   :: states(:)
-    type(cavg_quality_result)          :: quality
     type(support_model_metrics)        :: compat_metrics
+    type(cavg_quality_result)          :: quality
+    type(cavg_quality_model)           :: model
     type(sp_project)                   :: spproj
     type(string)                       :: stkname, jpgname
     integer(timer_int_kind)            :: t0
-    integer                            :: ncls, iimg, nout
+    integer                            :: ncls, iimg, nout, non_zero_ptcls, n_total_ptcls
     real                               :: smpd_dummy
 
     if( .not. chunk%abinitio2D_complete ) return
@@ -1232,42 +1295,58 @@ contains
       end do
       if( .not. self%coarse_compatibility_model%converged() ) then
         call self%coarse_compatibility_model%train(spproj)
+        call self%coarse_compatibility_model%get_support_model_metrics(compat_metrics)
+        write(logfhandle,'(A,I6,A,3(F10.4,1X),A,3(F10.4,1X),A,L1,A,L1,A,L1)') &
+          '>>> COARSE COMPAT METRICS CHUNK # ', chunk%id, ' a/b/c=', &
+          compat_metrics%axis_a, compat_metrics%axis_b, compat_metrics%axis_c, ' da/db/dc=', &
+          compat_metrics%delta_a, compat_metrics%delta_b, compat_metrics%delta_c, ' valid=', &
+          compat_metrics%valid, ' delta_valid=', compat_metrics%delta_valid, ' converged=', compat_metrics%converged
+        if( compat_metrics%converged ) then
+          write(logfhandle,'(A,I6)') '>>> COARSE COMPATIBILITY MODEL CONVERGED AT CHUNK # ', chunk%id
+        end if
       end if
       call self%coarse_compatibility_model%infer(spproj)
-      call self%coarse_compatibility_model%get_support_model_metrics(compat_metrics)
-      write(logfhandle,'(A,I6,A,3(F10.4,1X),A,3(F10.4,1X),A,L1,A,L1,A,L1)') &
-        '>>> COARSE COMPAT METRICS CHUNK # ', chunk%id, ' a/b/c=', &
-        compat_metrics%axis_a, compat_metrics%axis_b, compat_metrics%axis_c, ' da/db/dc=', &
-        compat_metrics%delta_a, compat_metrics%delta_b, compat_metrics%delta_c, ' valid=', &
-        compat_metrics%valid, ' delta_valid=', compat_metrics%delta_valid, ' converged=', compat_metrics%converged
-      if( compat_metrics%converged ) then
-        write(logfhandle,'(A,I6)') '>>> COARSE COMPATIBILITY MODEL CONVERGED AT CHUNK # ', chunk%id
-      end if
-
     else
-      call evaluate_cavg_quality_hard_reject(cavg_imgs, spproj%os_cls2D, 0.0, quality, CAVG_QUALITY_CONTEXT_SIEVE)
+      if( self%model_rejection_enabled ) then
+          call model%init_preset(CAVG_QUALITY_MODEL_CHUNK_DEFAULT)
+          model%context = CAVG_QUALITY_CONTEXT_SIEVE
+          call evaluate_cavg_quality_hard_reject(cavg_imgs, spproj%os_cls2D, 0.0, quality, CAVG_QUALITY_CONTEXT_SIEVE)
+          call evaluate_cavg_quality(cavg_imgs, spproj%os_cls2D, 0.0, quality, model, CAVG_QUALITY_CONTEXT_SIEVE)
+          call model%kill()
+      else
+          call evaluate_cavg_quality_hard_reject(cavg_imgs, spproj%os_cls2D, 0.0, quality, CAVG_QUALITY_CONTEXT_SIEVE)
+      end if
       do iimg = 1, size(cavg_imgs)
           if( quality%states(iimg) == 0 ) then
               call spproj%os_cls2D%set(iimg, 'state', 0)
-              call spproj%os_cls2D%set(iimg, 'rejection_reason', string('coarse_reject: ')//cavg_rejection_reason_string(quality%reasons(iimg)))
+              call spproj%os_cls2D%set(iimg, 'rejection_reason', string('fine_reject: ')//cavg_rejection_reason_string(quality%reasons(iimg)))
           end if
       end do
       if( .not. self%fine_compatibility_model%converged() ) then
         call self%fine_compatibility_model%train(spproj)
+        call self%fine_compatibility_model%get_support_model_metrics(compat_metrics)
+        write(logfhandle,'(A,I6,A,3(F10.4,1X),A,3(F10.4,1X),A,L1,A,L1,A,L1)') &
+          '>>> FINE COMPAT METRICS CHUNK # ', chunk%id, ' a/b/c=', &
+          compat_metrics%axis_a, compat_metrics%axis_b, compat_metrics%axis_c, ' da/db/dc=', &
+          compat_metrics%delta_a, compat_metrics%delta_b, compat_metrics%delta_c, ' valid=', &
+          compat_metrics%valid, ' delta_valid=', compat_metrics%delta_valid, ' converged=', compat_metrics%converged
+        if( compat_metrics%converged ) then
+          write(logfhandle,'(A,I6)') '>>> FINE COMPATIBILITY MODEL CONVERGED AT CHUNK # ', chunk%id
+        end if
       end if
       call self%fine_compatibility_model%infer(spproj)
-      call self%fine_compatibility_model%get_support_model_metrics(compat_metrics)
-      write(logfhandle,'(A,I6,A,3(F10.4,1X),A,3(F10.4,1X),A,L1,A,L1,A,L1)') &
-        '>>> FINE COMPAT METRICS CHUNK # ', chunk%id, ' a/b/c=', &
-        compat_metrics%axis_a, compat_metrics%axis_b, compat_metrics%axis_c, ' da/db/dc=', &
-        compat_metrics%delta_a, compat_metrics%delta_b, compat_metrics%delta_c, ' valid=', &
-        compat_metrics%valid, ' delta_valid=', compat_metrics%delta_valid, ' converged=', compat_metrics%converged
-      if( compat_metrics%converged ) then
-        write(logfhandle,'(A,I6)') '>>> FINE COMPATIBILITY MODEL CONVERGED AT CHUNK # ', chunk%id
-      end if
     end if
     states = spproj%os_cls2D%get_all_asint('state')
     call spproj%map_cavgs_selection(states)
+    non_zero_ptcls = spproj%os_ptcl2D%count_state_gt_zero()
+    n_total_ptcls  = spproj%os_ptcl2D%get_noris()
+    if( label == LABEL_COARSE ) then
+      self%n_coarse_accepted_ptcls = self%n_coarse_accepted_ptcls + non_zero_ptcls
+      self%n_coarse_rejected_ptcls = self%n_coarse_rejected_ptcls + n_total_ptcls - non_zero_ptcls
+    else
+      self%n_fine_accepted_ptcls   = self%n_fine_accepted_ptcls + non_zero_ptcls
+      self%n_fine_rejected_ptcls   = self%n_fine_rejected_ptcls + n_total_ptcls - non_zero_ptcls
+    end if
     call spproj%write()
 
     ! write selected
@@ -1286,6 +1365,8 @@ contains
     call mrc2jpeg_tiled(stkname, jpgname)
     write(logfhandle,'(A,A)') '>>> JPEG ', jpgname%to_char()
 
+    call write_rejection_reason_overlay_jpg(chunk, label, cavg_imgs, states, quality)
+
     ! write rejected
     allocate(out_imgs(count(states == 0)))
     nout    = 0
@@ -1302,19 +1383,392 @@ contains
     call mrc2jpeg_tiled(stkname, jpgname)
     write(logfhandle,'(A,A)') '>>> JPEG ', jpgname%to_char()
 
-
     call simple_touch(chunk%folder%to_char() // '/REJECTION_FINISHED')
     chunk%nptcls_selected    = spproj%os_ptcl2D%count_state_gt_zero()
     chunk%rejection_complete = .true.
     write(logfhandle,'(A,A,A,I6,A,I8,A,I8,A)') '>>> COMPLETED REJECTION FOR ', &
       label%to_char(), ' # ', chunk%id, ' : ', &
       chunk%nptcls_selected, '/', chunk%nptcls, ' PARTICLES SELECTED'
-
+      
+    call self%cleanup_chunk(chunk, label)
     call dealloc_imgarr(cavg_imgs)
     call spproj%kill()
     if( allocated(states) ) deallocate(states)
     call timer_stop(t0, string('reject_cavgs'))
   end subroutine reject_cavgs
+
+  subroutine cleanup_chunk( self, chunk, label )
+    class(ptcl_sieve),   intent(inout) :: self
+    type(chunk2D_state), intent(inout) :: chunk
+    type(string),        intent(in)    :: label
+    type(string), allocatable          :: files(:)
+    type(string)                       :: fname_keep, fname_keep_last_iter_jpeg, fname_keep_last_iter_stk
+    type(string)                       :: fname_keep_last_iter_even_stk, fname_keep_last_iter_odd_stk
+    type(string)                       :: fname_keep_sigma, fname
+    integer(timer_int_kind)            :: t0
+    integer                            :: i, ndeleted, iter_idx, max_iter_jpeg, max_iter_stk, sigma_rank, max_sigma_rank
+    integer                            :: max_iter_even_stk, max_iter_odd_stk
+    t0 = timer_start()
+
+    call simple_list_files(chunk%folder%to_char() // '/*', files)
+    if( .not. allocated(files) ) then
+      call timer_stop(t0, string('cleanup_chunk'))
+      return
+    end if
+
+    fname_keep                = basename(chunk%projfile)
+    fname_keep_last_iter_jpeg = ''
+    fname_keep_last_iter_stk  = ''
+    fname_keep_last_iter_even_stk = ''
+    fname_keep_last_iter_odd_stk  = ''
+    fname_keep_sigma          = ''
+    max_iter_jpeg             = -1
+    max_iter_stk              = -1
+    max_iter_even_stk         = -1
+    max_iter_odd_stk          = -1
+    max_sigma_rank            = -1
+    do i = 1, size(files)
+      fname = basename(files(i))
+
+      iter_idx = iter_jpeg_index(fname)
+      if( iter_idx > max_iter_jpeg ) then
+        max_iter_jpeg             = iter_idx
+        fname_keep_last_iter_jpeg = fname
+      end if
+
+      iter_idx = iter_stack_index(fname)
+      if( .not. (fname%has_substr('_even') .or. fname%has_substr('_odd')) ) then
+        if( iter_idx > max_iter_stk ) then
+          max_iter_stk             = iter_idx
+          fname_keep_last_iter_stk = fname
+        end if
+      end if
+      if( fname%has_substr('_even') ) then
+        if( iter_idx > max_iter_even_stk ) then
+          max_iter_even_stk         = iter_idx
+          fname_keep_last_iter_even_stk = fname
+        end if
+      end if
+      if( fname%has_substr('_odd') ) then
+        if( iter_idx > max_iter_odd_stk ) then
+          max_iter_odd_stk         = iter_idx
+          fname_keep_last_iter_odd_stk = fname
+        end if
+      end if
+
+      sigma_rank = sigma_file_rank(fname)
+      if( sigma_rank > max_sigma_rank ) then
+        max_sigma_rank = sigma_rank
+        fname_keep_sigma = fname
+      end if
+    end do
+
+    ndeleted   = 0
+    do i = 1, size(files)
+      fname = basename(files(i))
+      if( fname == fname_keep ) cycle
+      if( fname == string(ABINITIO2D_FINISHED) ) cycle
+      if( fname == string('REJECTION_FINISHED') ) cycle
+      if( fname == string('COMPLETE') ) cycle
+      if( fname == string(REJECTION_FAILED) ) cycle
+      if( fname == string(FRCS_FILE) ) cycle
+      if( fname_keep_last_iter_jpeg%strlen() > 0 .and. fname == fname_keep_last_iter_jpeg ) cycle
+      if( fname_keep_last_iter_stk%strlen()  > 0 .and. fname == fname_keep_last_iter_stk  ) cycle
+      if( fname_keep_last_iter_even_stk%strlen() > 0 .and. fname == fname_keep_last_iter_even_stk ) cycle
+      if( fname_keep_last_iter_odd_stk%strlen()  > 0 .and. fname == fname_keep_last_iter_odd_stk  ) cycle
+      if( fname_keep_sigma%strlen()          > 0 .and. fname == fname_keep_sigma          ) cycle
+      if( fname%has_substr('_selected.jpg') .or. fname%has_substr('_rejected.jpg') ) cycle
+      if( fname%has_substr('_selected.jpeg') .or. fname%has_substr('_rejected.jpeg') ) cycle
+      if( fname%has_substr('_all_reasons') ) cycle
+      if( file_exists(files(i)) ) then
+        call del_file(files(i))
+        ndeleted = ndeleted + 1
+      end if
+    end do
+
+    if( ndeleted > 0 ) then
+      write(logfhandle,'(A,A,A,I6,A)') '>>> CLEANED ', label%to_char(), ' # ', chunk%id, ' (REMOVED NON-ESSENTIAL FILES)'
+    end if
+
+    call timer_stop(t0, string('cleanup_chunk'))
+ 
+  contains
+
+    ! Returns the iteration index for chunk-local JPEGs that follow the
+    ! '*_iterNNN.jpg' or '*_iterNNN.jpeg' naming convention.
+    ! Returns -1 when the file is not an iteration JPEG.
+    pure integer function iter_jpeg_index( fname )
+      type(string), intent(in) :: fname
+      character(len=:), allocatable :: s
+      integer :: n, p_iter, i, ch
+
+      iter_jpeg_index = -1
+      s = fname%to_char()
+      n = len_trim(s)
+      if( n < 4 ) return
+      if( .not. ((n >= 4 .and. s(n-3:n) == '.jpg') .or. (n >= 5 .and. s(n-4:n) == '.jpeg')) ) return
+
+      p_iter = index(s, '_iter', back=.true.)
+      if( p_iter == 0 ) return
+      i = p_iter + 5
+      if( i > n ) return
+
+      do while( i <= n )
+        ch = iachar(s(i:i))
+        if( ch < iachar('0') .or. ch > iachar('9') ) exit
+        if( iter_jpeg_index < 0 ) iter_jpeg_index = 0
+        iter_jpeg_index = 10 * iter_jpeg_index + ch - iachar('0')
+        i = i + 1
+      end do
+
+      if( i == p_iter + 5 ) iter_jpeg_index = -1
+    end function iter_jpeg_index
+
+    ! Returns the iteration index for chunk-local stack files that follow the
+    ! '*_iterNNN.mrc' or '*_iterNNN.mrcs' naming convention.
+    ! Returns -1 when the file is not an iteration stack.
+    pure integer function iter_stack_index( fname )
+      type(string), intent(in) :: fname
+      character(len=:), allocatable :: s
+      integer :: n, p_iter, i, ch
+
+      iter_stack_index = -1
+      s = fname%to_char()
+      n = len_trim(s)
+      if( n < 4 ) return
+      if( .not. ((n >= 4 .and. s(n-3:n) == '.mrc') .or. (n >= 5 .and. s(n-4:n) == '.mrcs')) ) return
+
+      p_iter = index(s, '_iter', back=.true.)
+      if( p_iter == 0 ) return
+      i = p_iter + 5
+      if( i > n ) return
+
+      do while( i <= n )
+        ch = iachar(s(i:i))
+        if( ch < iachar('0') .or. ch > iachar('9') ) exit
+        if( iter_stack_index < 0 ) iter_stack_index = 0
+        iter_stack_index = 10 * iter_stack_index + ch - iachar('0')
+        i = i + 1
+      end do
+
+      if( i == p_iter + 5 ) iter_stack_index = -1
+    end function iter_stack_index
+
+    ! Returns a rank for sigma candidate files.
+    ! -1: not a sigma .star file
+    !  0: sigma .star without an iteration suffix
+    ! >0: sigma .star with _iterNNN (rank = NNN + 1)
+    pure integer function sigma_file_rank( fname )
+      type(string), intent(in) :: fname
+      character(len=:), allocatable :: s
+      integer :: n, p_iter, i, ch
+
+      sigma_file_rank = -1
+      s = fname%to_char()
+      n = len_trim(s)
+      if( n < 5 ) return
+      if( s(n-4:n) /= '.star' ) return
+      if( index(s, 'sigma') == 0 ) return
+
+      sigma_file_rank = 0
+      p_iter = index(s, '_iter', back=.true.)
+      if( p_iter == 0 ) return
+      i = p_iter + 5
+      if( i > n ) return
+
+      sigma_file_rank = 1
+      do while( i <= n )
+        ch = iachar(s(i:i))
+        if( ch < iachar('0') .or. ch > iachar('9') ) exit
+        sigma_file_rank = 10 * sigma_file_rank + ch - iachar('0')
+        i = i + 1
+      end do
+
+      if( i == p_iter + 5 ) sigma_file_rank = 0
+    end function sigma_file_rank
+    
+  end subroutine cleanup_chunk
+
+  ! Writes a third JPEG containing all class averages with reason-coded borders
+  ! and emits a sidecar key file documenting the color mapping.
+  subroutine write_rejection_reason_overlay_jpg( chunk, label, cavg_imgs, states, quality )
+    type(chunk2D_state), intent(in)    :: chunk
+    type(string),        intent(in)    :: label
+    type(image),         intent(inout) :: cavg_imgs(:)
+    integer,             intent(in)    :: states(:)
+    type(cavg_quality_result), intent(in) :: quality
+    type(image)                      :: tile_img, work_img
+    type(string)                     :: jpgname, keyname
+    real, allocatable                :: rgb_map(:,:,:)
+    integer                          :: ncls, xtiles, ytiles
+    integer                          :: icls, ix, iy, ldim(3), borderw, g8
+    integer                          :: x_start, x_end, y_start, y_end, iu
+    integer                          :: reason_code
+
+    ncls = size(cavg_imgs)
+    if( ncls == 0 ) return
+
+    xtiles = max(1, floor(sqrt(real(ncls))))
+    ytiles = ceiling(real(ncls) / real(xtiles))
+    call tile_img%new([xtiles * JPEG_DIM, ytiles * JPEG_DIM, 1], cavg_imgs(1)%get_smpd())
+
+    ldim = cavg_imgs(1)%get_ldim()
+    call work_img%new(ldim, cavg_imgs(1)%get_smpd())
+
+    do icls = 1, ncls
+      call work_img%copy(cavg_imgs(icls))
+      call work_img%fft
+      if( ldim(1) > JPEG_DIM ) then
+        call work_img%clip_inplace([JPEG_DIM, JPEG_DIM, 1])
+      else
+        call work_img%pad_inplace([JPEG_DIM, JPEG_DIM, 1], backgr=0., antialiasing=.false.)
+      end if
+      call work_img%ifft
+      ix = mod(icls - 1, xtiles) + 1
+      iy = (icls - 1) / xtiles + 1
+      call tile_img%tile(work_img, ix, iy)
+    end do
+
+    rgb_map = tile_img%get_rmat()
+    rgb_map(:,:,1) = max(0.0, min(255.0, rgb_map(:,:,1))) / 255.0
+
+    ! Encode all class pixels as neutral RGB so the tile content stays grayscale
+    ! while allowing colored overlays on selected border pixels.
+    do iy = 1, size(rgb_map,2)
+      do ix = 1, size(rgb_map,1)
+        g8 = nint(max(0.0, min(1.0, rgb_map(ix,iy,1))) * 255.0)
+        rgb_map(ix,iy,1) = rgb_code(g8, g8, g8)
+      end do
+    end do
+
+    borderw = 3
+    do icls = 1, ncls
+      ix = mod(icls - 1, xtiles) + 1
+      iy = (icls - 1) / xtiles + 1
+      x_start = (ix - 1) * JPEG_DIM + 1
+      x_end   = ix * JPEG_DIM
+      y_start = (iy - 1) * JPEG_DIM + 1
+      y_end   = iy * JPEG_DIM
+
+      if( states(icls) > 0 ) then
+        reason_code = -1
+      else if( quality%states(icls) == 0 ) then
+        reason_code = quality%reasons(icls)
+      else
+        reason_code = 100
+      end if
+      call paint_reason_border(rgb_map, x_start, x_end, y_start, y_end, borderw, reason_code)
+    end do
+
+    call draw_reason_key_swatches(rgb_map)
+    ! Force deterministic [0,1] range for RGB packing in simple_jpg.
+    rgb_map(1,1,1) = 0.0
+    rgb_map(1,2,1) = 1.0
+
+    call tile_img%set_rmat(rgb_map, .false.)
+    jpgname = swap_suffix(chunk%projfile, '_all_reasons'//JPG_EXT, METADATA_EXT)
+    call tile_img%write_jpg(jpgname, colorspec=3)
+    write(logfhandle,'(A,A)') '>>> JPEG ', jpgname%to_char()
+
+    keyname = string(jpgname%to_char() // '.key.txt')
+    open(newunit=iu, file=keyname%to_char(), status='replace', action='write')
+    write(iu,'(A)') 'Rejection Reason Color Key'
+    write(iu,'(A)') 'Selected (state>0): green'
+    write(iu,'(A)') 'Compatibility reject: orange'
+    write(iu,'(A)') 'POP: red'
+    write(iu,'(A)') 'BAD_PIXELS: magenta'
+    write(iu,'(A)') 'NO_COMPONENT: cyan'
+    write(iu,'(A)') 'MASK_GEOMETRY: yellow'
+    write(iu,'(A)') 'BP_CENTER_EDGE_LOW: blue'
+    write(iu,'(A)') 'LOCVAR_FG_LOW: purple'
+    write(iu,'(A)') 'FUZZY_BALL_SIGNAL_NEG: brown'
+    close(iu)
+    write(logfhandle,'(A,A)') '>>> KEY  ', keyname%to_char()
+
+    if( allocated(rgb_map) ) deallocate(rgb_map)
+    call tile_img%kill()
+    call work_img%kill()
+
+  contains
+
+    pure real function rgb_code(r, g, b)
+      integer, intent(in) :: r, g, b
+      integer :: packed
+      packed = ishft(max(0, min(255, r)), 16) + ishft(max(0, min(255, g)), 8) + max(0, min(255, b))
+      rgb_code = real(packed) / 16777215.0
+    end function rgb_code
+
+    pure real function reason_color(code)
+      integer, intent(in) :: code
+      select case(code)
+      case(-1)
+        reason_color = rgb_code( 46, 204, 113) ! selected
+      case(100)
+        reason_color = rgb_code(255, 165,   0) ! compatibility reject
+      case(CAVG_REJECT_REASON_POP)
+        reason_color = rgb_code(220,  20,  60)
+      case(CAVG_REJECT_REASON_BAD_PIXELS)
+        reason_color = rgb_code(255,   0, 255)
+      case(CAVG_REJECT_REASON_NO_COMPONENT)
+        reason_color = rgb_code(  0, 200, 200)
+      case(CAVG_REJECT_REASON_MASK_GEOMETRY)
+        reason_color = rgb_code(255, 220,   0)
+      case(CAVG_REJECT_REASON_BP_CENTER_EDGE_LOW)
+        reason_color = rgb_code( 30, 144, 255)
+      case(CAVG_REJECT_REASON_LOCVAR_FG_LOW)
+        reason_color = rgb_code(153,  50, 204)
+      case(CAVG_REJECT_REASON_FUZZY_BALL_SIGNAL_LOW)
+        reason_color = rgb_code(139,  69,  19)
+      case default
+        reason_color = rgb_code(180, 180, 180)
+      end select
+    end function reason_color
+
+    pure subroutine paint_reason_border(rmap, xs, xe, ys, ye, width, code)
+      real,    intent(inout) :: rmap(:,:,:)
+      integer, intent(in)    :: xs, xe, ys, ye, width, code
+      integer :: i, j
+      real    :: col
+      col = reason_color(code)
+      do j = ys, ye
+        do i = xs, min(xe, xs + width - 1)
+          rmap(i,j,1) = col
+        end do
+        do i = max(xs, xe - width + 1), xe
+          rmap(i,j,1) = col
+        end do
+      end do
+      do i = xs, xe
+        do j = ys, min(ye, ys + width - 1)
+          rmap(i,j,1) = col
+        end do
+        do j = max(ys, ye - width + 1), ye
+          rmap(i,j,1) = col
+        end do
+      end do
+    end subroutine paint_reason_border
+
+    pure subroutine draw_reason_key_swatches(rmap)
+      real, intent(inout) :: rmap(:,:,:)
+      integer, parameter  :: ncolors = 9, box = 12, gap = 4, margin = 6
+      integer             :: i, x0, y0, x1, y1, c
+      integer             :: codes(ncolors)
+      codes = [ -1, 100, CAVG_REJECT_REASON_POP, CAVG_REJECT_REASON_BAD_PIXELS, &
+                CAVG_REJECT_REASON_NO_COMPONENT, CAVG_REJECT_REASON_MASK_GEOMETRY, &
+                CAVG_REJECT_REASON_BP_CENTER_EDGE_LOW, CAVG_REJECT_REASON_LOCVAR_FG_LOW, &
+                CAVG_REJECT_REASON_FUZZY_BALL_SIGNAL_LOW ]
+      y0 = margin
+      do i = 1, ncolors
+        x0 = margin + (i - 1) * (box + gap)
+        x1 = min(size(rmap,1), x0 + box - 1)
+        y1 = min(size(rmap,2), y0 + box - 1)
+        do c = x0, x1
+          rmap(c, y0:y1, 1) = reason_color(codes(i))
+        end do
+      end do
+    end subroutine draw_reason_key_swatches
+
+  end subroutine write_rejection_reason_overlay_jpg
 
   ! ============================================================================
   ! MODULE-LEVEL HELPERS

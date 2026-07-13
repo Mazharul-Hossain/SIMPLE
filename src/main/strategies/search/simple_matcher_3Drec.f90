@@ -3,6 +3,7 @@ module simple_matcher_3Drec
 use simple_core_module_api
 use simple_timer
 use simple_builder,         only: builder
+use simple_classaverager,  only: fourier_2d_accumulator
 use simple_cmdline,         only: cmdline
 use simple_matcher_ptcl_io, only: discrete_read_imgbatch, discrete_read_imgbatch_source, prepimgbatch, killimgbatch
 use simple_memoize_ft_maps, only: memoize_ft_maps, forget_ft_maps
@@ -10,104 +11,71 @@ use simple_parameters,      only: parameters
 use simple_refine3D_fnames, only: refine3D_partial_rec_fbody, refine3D_state_vol_fname
 implicit none
 
-public :: init_rec, prep_imgs4rec, update_rec, write_partial_recs, finalize_rec_objs, calc_3Drec
+public :: init_rec, prep_imgs4rec, cleanup_rec_buffers, write_state_partial, calc_3Drec, calc_projdir3Drec
 private
 #include "simple_local_flags.inc"
 
 contains
 
-    !>  \brief  initializes all volumes for reconstruction
-    subroutine preprecvols( params, build )
-        class(parameters), intent(in)    :: params
-        class(builder),    intent(inout) :: build
-        integer, allocatable :: pops(:)
-        integer :: istate
-        call build%spproj_field%get_pops(pops, 'state', maxn=params%nstates)
-        do istate = 1, params%nstates
-            if( pops(istate) > 0)then
-                call build%eorecvols(istate)%new(params, build%spproj)
-                call build%eorecvols(istate)%reset_all
-            endif
-        end do
-        deallocate(pops)
-    end subroutine preprecvols
-
-    !>  \brief  destructs all volumes for reconstruction
-    subroutine killrecvols( params, build )
-        class(parameters), intent(in) :: params
-        class(builder),    intent(inout) :: build
-        integer :: istate
-        do istate = 1, params%nstates
-            call build%eorecvols(istate)%kill
-        end do
-    end subroutine killrecvols
-
-    !>  \brief  grids one particle image to the volume
-    subroutine grid_ptcl( build, fpl, se, o )
-        class(builder),     intent(inout) :: build
-        class(fplane_type), intent(in)    :: fpl
-        class(sym),         intent(inout) :: se
-        class(ori),         intent(inout) :: o
-        integer :: s, eo
-        s = o%get_state()
-        if( s == 0 ) return
-        eo = o%get_eo()
-        call build%eorecvols(s)%grid_plane(se, o, fpl, eo)
-    end subroutine grid_ptcl
-
     !> volumetric 3d reconstruction
     subroutine calc_3Drec( params, build, cline, nptcls, pinds )
-        use simple_imgarr_utils, only: alloc_imgarr, dealloc_imgarr
         class(parameters), intent(inout) :: params
         class(builder),    intent(inout) :: build
         class(cmdline),    intent(inout) :: cline
         integer,           intent(in)    :: nptcls
         integer,           intent(in)    :: pinds(nptcls)
         type(fplane_type), allocatable   :: fpls(:)
-        integer :: batchlims(2), ibatch, batchsz
+        integer, allocatable :: grouped_pinds(:), state_offsets(:)
+        integer :: batchlims(2), ibatch, batchsz, state
         logical :: l_den_src
         logical :: DEBUG = .false.
         integer(timer_int_kind) :: t, t0
         real(timer_int_kind)    :: t_init, t_read, t_prep, t_grid, t_tot
+        if( nptcls < 1 ) return
         if( DEBUG ) t0 = tic()
-        ! Initialize objects for recontruction
+        call group_pinds_by_state(params, build, nptcls, pinds, grouped_pinds, state_offsets)
+        ! Initialize state-independent reconstruction buffers only after
+        ! registration and assignment are complete.
         if( DEBUG ) t = tic()
         call init_rec(params, build, MAXIMGBATCHSZ, fpls)
-        ! Prep batch image objects
         call prepimgbatch(params, build, MAXIMGBATCHSZ)
         l_den_src = params%l_ptcl_src_den
         if( DEBUG ) t_init = toc(t)
-        ! gridding batch loop
         if( DEBUG ) then
             t_read = 0.d0
             t_prep = 0.d0
             t_grid = 0.d0
         endif
-        do ibatch = 1,nptcls,MAXIMGBATCHSZ
-            batchlims = [ibatch, min(nptcls, ibatch+MAXIMGBATCHSZ-1)]
-            batchsz   = batchlims(2) - batchlims(1) + 1
-            ! read images
-            if( DEBUG ) t = tic()
-            if( l_den_src )then
-                call discrete_read_imgbatch_source(params, build, 'den', batchsz, pinds(batchlims(1):batchlims(2)), &
-                    [1,batchsz], build%imgbatch(:batchsz))
-            else
-                call discrete_read_imgbatch(params, build, nptcls, pinds, batchlims)
+        do state = 1,params%nstates
+            if( state_offsets(state+1) <= state_offsets(state) )then
+                call mark_empty_state(build, state)
+                cycle
             endif
-            if( DEBUG ) t_read = t_read + toc(t)
-            ! preprocess images into padded objects
-            if( DEBUG ) t = tic()
-            call prep_imgs4rec(params, build, batchsz, build%imgbatch(:batchsz),&
-                                &pinds(batchlims(1):batchlims(2)), fpls(:batchsz))
-            if( DEBUG ) t_prep = t_prep + toc(t)
-            ! insert padded slices into lattice
-            if( DEBUG ) t = tic()
-            call update_rec(params, build, batchsz, pinds(batchlims(1):batchlims(2)), fpls(:batchsz))
-            if( DEBUG ) t_grid = t_grid + toc(t)
-        end do
-        ! Write partial reconstructions and clean up reconstruction objects
-        call write_partial_recs(params, build, cline, fpls)
-        call finalize_rec_objs(params, build)
+            call init_state_rec(params, build)
+            do ibatch = state_offsets(state),state_offsets(state+1)-1,MAXIMGBATCHSZ
+                batchlims = [ibatch, min(state_offsets(state+1)-1, ibatch+MAXIMGBATCHSZ-1)]
+                batchsz   = batchlims(2) - batchlims(1) + 1
+                if( DEBUG ) t = tic()
+                if( l_den_src )then
+                    call discrete_read_imgbatch_source(params, build, 'den', batchsz, &
+                        grouped_pinds(batchlims(1):batchlims(2)), [1,batchsz], build%imgbatch(:batchsz))
+                else
+                    call discrete_read_imgbatch(params, build, size(grouped_pinds), grouped_pinds, batchlims)
+                endif
+                if( DEBUG ) t_read = t_read + toc(t)
+                if( DEBUG ) t = tic()
+                call prep_imgs4rec(params, build, batchsz, build%imgbatch(:batchsz), &
+                    grouped_pinds(batchlims(1):batchlims(2)), fpls(:batchsz))
+                if( DEBUG ) t_prep = t_prep + toc(t)
+                if( DEBUG ) t = tic()
+                call update_state_rec(state, build, batchsz, grouped_pinds(batchlims(1):batchlims(2)), fpls(:batchsz))
+                if( DEBUG ) t_grid = t_grid + toc(t)
+            enddo
+            call write_state_partial(params, build, cline, state)
+            call build%eorecvol%kill
+        enddo
+        call cleanup_rec_buffers(build, fpls)
+        deallocate(grouped_pinds, state_offsets)
         if( DEBUG .and. (params%part==1) )then
             t_tot = toc(t0)
             print *,'Init          : ', t_init
@@ -118,26 +86,255 @@ contains
         endif
     end subroutine calc_3Drec
 
+    !> Volumetric 3D reconstruction from compact projection-direction sums.
+    !! Particles are first accumulated on the native 2D Fourier grid with the
+    !! exact KB numerator/CTF^2 machinery used for class averages.  Those raw
+    !! sums are then inserted directly into the 3D reconstruction; they are
+    !! never CTF-density corrected and never transformed through real space.
+    subroutine calc_projdir3Drec( params, build, cline, nptcls, pinds )
+        class(parameters), intent(inout) :: params
+        class(builder),    intent(inout) :: build
+        class(cmdline),    intent(inout) :: cline
+        integer,           intent(in)    :: nptcls
+        integer,           intent(in)    :: pinds(nptcls)
+        type(fourier_2d_accumulator) :: projdir_sums(2)
+        type(fplane_type), allocatable :: fpls(:)
+        type(fplane_type) :: compact_fpl
+        type(ori) :: orientation
+        integer, allocatable :: eopops(:,:), grouped_pinds(:), state_offsets(:), proj2slice(:,:)
+        integer :: batchlims(2), batchsz, ibatch, i, j, iptcl, iproj, eo, peo, state, nproj_eo(2)
+        logical :: l_den_src
+        if( nptcls < 1 ) return
+        if( params%nspace /= build%eulspace%get_noris() )then
+            THROW_HARD('nspace/eulspace mismatch; calc_projdir3Drec')
+        endif
+        ! Standalone reconstruct3D callers do not have the matcher phase that
+        ! finalizes these labels before writing orientation metadata.
+        call build%spproj_field%set_projs(build%eulspace)
+        call group_pinds_by_state(params, build, nptcls, pinds, grouped_pinds, state_offsets)
+        call init_rec(params, build, MAXIMGBATCHSZ, fpls)
+        call prepimgbatch(params, build, MAXIMGBATCHSZ)
+        allocate(eopops(params%nspace,2), proj2slice(params%nspace,2), source=0)
+        l_den_src = params%l_ptcl_src_den
+        do state = 1,params%nstates
+            if( state_offsets(state+1) <= state_offsets(state) )then
+                call mark_empty_state(build, state)
+                cycle
+            endif
+            eopops = 0
+            !$omp parallel do default(shared) private(i,iptcl,iproj,eo) &
+            !$omp schedule(static) proc_bind(close) reduction(+:eopops)
+            do i = state_offsets(state),state_offsets(state+1)-1
+                iptcl = grouped_pinds(i)
+                iproj = build%spproj_field%get_int(iptcl, 'proj')
+                if( iproj < 1 .or. iproj > params%nspace ) cycle
+                eo = build%spproj_field%get_eo(iptcl) + 1
+                if( eo < 1 .or. eo > 2 ) cycle
+                eopops(iproj,eo) = eopops(iproj,eo) + 1
+            enddo
+            !$omp end parallel do
+            if( sum(eopops) == 0 )then
+                call mark_empty_state(build, state)
+                cycle
+            endif
+            call init_state_rec(params, build)
+            ! Allocate only populated projection directions for this state.
+            ! proj2slice keeps the external eulspace index while avoiding a
+            ! dense nspace*box^2 allocation when sampling is sparse.
+            proj2slice = 0
+            nproj_eo   = 0
+            do eo = 1,2
+                do iproj = 1,params%nspace
+                    if( eopops(iproj,eo) == 0 ) cycle
+                    nproj_eo(eo) = nproj_eo(eo) + 1
+                    proj2slice(iproj,eo) = nproj_eo(eo)
+                enddo
+                call projdir_sums(eo)%new([params%box_crop,params%box_crop], max(1,nproj_eo(eo)))
+            enddo
+            do ibatch = state_offsets(state),state_offsets(state+1)-1,MAXIMGBATCHSZ
+                batchlims = [ibatch, min(state_offsets(state+1)-1,ibatch+MAXIMGBATCHSZ-1)]
+                batchsz   = batchlims(2) - batchlims(1) + 1
+                if( l_den_src )then
+                    call discrete_read_imgbatch_source(params, build, 'den', batchsz, &
+                        &grouped_pinds(batchlims(1):batchlims(2)), [1,batchsz], build%imgbatch(:batchsz))
+                else
+                    call discrete_read_imgbatch(params, build, size(grouped_pinds), grouped_pinds, batchlims)
+                endif
+                call prep_imgs4rec(params, build, batchsz, build%imgbatch(:batchsz), &
+                    &grouped_pinds(batchlims(1):batchlims(2)), fpls(:batchsz))
+                ! Each OpenMP iteration owns one projection-direction/even-odd
+                ! slice, matching the race-free class-average accumulation policy.
+                !$omp parallel do default(shared) private(j,iproj,eo,i,iptcl,peo) &
+                !$omp schedule(dynamic) proc_bind(close)
+                do j = 1,2*params%nspace
+                    eo    = merge(1,2,j<=params%nspace)
+                    iproj = j - (eo-1)*params%nspace
+                    if( eopops(iproj,eo) == 0 ) cycle
+                    do i = batchlims(1),batchlims(2)
+                        iptcl = grouped_pinds(i)
+                        if( build%spproj_field%get_int(iptcl,'proj') /= iproj ) cycle
+                        peo = build%spproj_field%get_eo(iptcl) + 1
+                        if( peo /= eo ) cycle
+                        call projdir_sums(eo)%add_fplane(build%spproj_field%e3get(iptcl), &
+                            &fpls(i-batchlims(1)+1), proj2slice(iproj,eo))
+                    enddo
+                enddo
+                !$omp end parallel do
+            enddo
+            ! The compact phase: at most 2*nspace native 2D sums are inserted
+            ! for this state, carrying their accumulated numerator and CTF^2.
+            do iproj = 1,params%nspace
+                call build%eulspace%get_ori(iproj, orientation)
+                call orientation%set_state(state)
+                if( eopops(iproj,1) > 0 )then
+                    call orientation%set('eo',0)
+                    call projdir_sums(1)%export_fplane(proj2slice(iproj,1), compact_fpl)
+                    call build%eorecvol%grid_plane_compact(build%pgrpsyms, orientation, compact_fpl, 0)
+                endif
+                if( eopops(iproj,2) > 0 )then
+                    call orientation%set('eo',1)
+                    call projdir_sums(2)%export_fplane(proj2slice(iproj,2), compact_fpl)
+                    call build%eorecvol%grid_plane_compact(build%pgrpsyms, orientation, compact_fpl, 1)
+                endif
+            enddo
+            call projdir_sums(1)%kill
+            call projdir_sums(2)%kill
+            call write_state_partial(params, build, cline, state)
+            call build%eorecvol%kill
+        enddo
+        if( allocated(compact_fpl%cmplx_plane) ) deallocate(compact_fpl%cmplx_plane)
+        if( allocated(compact_fpl%ctfsq_plane) ) deallocate(compact_fpl%ctfsq_plane)
+        deallocate(eopops, grouped_pinds, state_offsets, proj2slice)
+        call orientation%kill
+        call cleanup_rec_buffers(build, fpls)
+    end subroutine calc_projdir3Drec
+
+    !> Group the selected reconstruction particles by their final hard state.
+    subroutine group_pinds_by_state( params, build, nptcls, pinds, grouped_pinds, state_offsets )
+        class(parameters),              intent(in)  :: params
+        class(builder),                 intent(in)  :: build
+        integer,                        intent(in)  :: nptcls, pinds(nptcls)
+        integer, allocatable,           intent(out) :: grouped_pinds(:), state_offsets(:)
+        integer, allocatable :: state_counts(:), next_pos(:)
+        integer :: i, iptcl, state, nvalid, ninvalid
+        allocate(state_counts(params%nstates), source=0)
+        ninvalid = 0
+        do i = 1,nptcls
+            iptcl = pinds(i)
+            state = build%spproj_field%get_state(iptcl)
+            if( state < 1 .or. state > params%nstates )then
+                ninvalid = ninvalid + 1
+                cycle
+            endif
+            state_counts(state) = state_counts(state) + 1
+        enddo
+        allocate(state_offsets(params%nstates+1))
+        state_offsets(1) = 1
+        do state = 1,params%nstates
+            state_offsets(state+1) = state_offsets(state) + state_counts(state)
+        enddo
+        nvalid = state_offsets(params%nstates+1) - 1
+        allocate(grouped_pinds(nvalid), next_pos(params%nstates))
+        next_pos = state_offsets(1:params%nstates)
+        do i = 1,nptcls
+            iptcl = pinds(i)
+            state = build%spproj_field%get_state(iptcl)
+            if( state < 1 .or. state > params%nstates ) cycle
+            grouped_pinds(next_pos(state)) = iptcl
+            next_pos(state) = next_pos(state) + 1
+        enddo
+        if( nvalid + ninvalid /= nptcls ) THROW_HARD('invalid state grouping count; group_pinds_by_state')
+        if( ninvalid > 0 )then
+            write(logfhandle,'(A,I0)') '>>> RECONSTRUCTION: SKIPPING PARTICLES WITH INVALID/STATE-ZERO LABELS: ', ninvalid
+        endif
+        do state = 1,params%nstates
+            write(logfhandle,'(A,I0,A,I0)') '>>> RECONSTRUCTION STATE ', state, ' PARTICLE COUNT: ', state_counts(state)
+        enddo
+        deallocate(state_counts, next_pos)
+    end subroutine group_pinds_by_state
+
+    !> Initialize the singleton worker reconstructor for one hard state.
+    subroutine init_state_rec( params, build )
+        class(parameters), intent(in)    :: params
+        class(builder),    intent(inout) :: build
+        call build%eorecvol%new(params, build%spproj)
+        call build%eorecvol%reset_all
+    end subroutine init_state_rec
+
+    !> Insert a state-homogeneous particle batch into the singleton reconstructor.
+    subroutine update_state_rec( state, build, nptcls, pinds, fplanes )
+        integer,           intent(in)    :: state, nptcls, pinds(nptcls)
+        class(builder),    intent(inout) :: build
+        type(fplane_type), intent(inout) :: fplanes(nptcls)
+        type(ori) :: orientation
+        integer :: iptcl, i, eo
+        do i = 1,nptcls
+            iptcl = pinds(i)
+            call build%spproj_field%get_ori(iptcl, orientation)
+            if( orientation%get_state() /= state )then
+                THROW_HARD('non-homogeneous reconstruction batch; update_state_rec')
+            endif
+            eo = orientation%get_eo()
+            call build%eorecvol%grid_plane(build%pgrpsyms, orientation, fplanes(i), eo)
+        enddo
+        call orientation%kill
+    end subroutine update_state_rec
+
+    !> Write one current-state Cartesian partial using the existing artifact contract.
+    subroutine write_state_partial( params, build, cline, state )
+        class(parameters), intent(inout) :: params
+        class(builder),    intent(inout) :: build
+        class(cmdline),    intent(inout) :: cline
+        integer,           intent(in)    :: state
+        integer :: numlen_part
+        numlen_part = max(1, params%numlen)
+        call build%eorecvol%compress_exp
+        call build%eorecvol%write_eos(refine3D_partial_rec_fbody(state, params%part, numlen_part))
+        if( .not. cline%defined('force_volassemble') )then
+            params%vols(state) = refine3D_state_vol_fname(state)
+            call cline%set('vol'//int2str(state), params%vols(state))
+        endif
+    end subroutine write_state_partial
+
+    subroutine mark_empty_state( build, state )
+        class(builder),    intent(inout) :: build
+        integer,           intent(in)    :: state
+        if( allocated(build%fsc) ) build%fsc(state,:) = 0.
+    end subroutine mark_empty_state
+
+    !> Release reconstruction-only buffers after the final state is written.
+    subroutine cleanup_rec_buffers( build, fplanes )
+        use simple_imgarr_utils, only: dealloc_imgarr
+        class(builder),                 intent(inout) :: build
+        type(fplane_type), allocatable, intent(inout) :: fplanes(:)
+        integer :: i
+        if( allocated(fplanes) )then
+            do i = 1,size(fplanes)
+                if( allocated(fplanes(i)%cmplx_plane) )    deallocate(fplanes(i)%cmplx_plane)
+                if( allocated(fplanes(i)%ctfsq_plane) )    deallocate(fplanes(i)%ctfsq_plane)
+                if( allocated(fplanes(i)%transfer_plane) ) deallocate(fplanes(i)%transfer_plane)
+            enddo
+            deallocate(fplanes)
+        endif
+        call dealloc_imgarr(build%img_pad_heap)
+        call forget_ft_maps
+        call killimgbatch(build)
+    end subroutine cleanup_rec_buffers
+
     !>  Initiates objects required for online volumetric 3d reconstruction
     !>  Does not read images
-    subroutine init_rec( params, build, maxbatchsz, fplanes, init_volumes )
+    subroutine init_rec( params, build, maxbatchsz, fplanes )
         use simple_imgarr_utils, only: alloc_imgarr
         class(parameters),              intent(in)    :: params
         class(builder),                 intent(inout) :: build
         integer,                        intent(in)    :: maxbatchsz
         type(fplane_type), allocatable, intent(inout) :: fplanes(:)
-        logical, optional,              intent(in)    :: init_volumes
-        logical :: l_init_volumes
-        l_init_volumes = .true.
-        if( present(init_volumes) ) l_init_volumes = init_volumes
         ! sanity check for ml_reg
         if( params%l_ml_reg )then
             if( .not. allocated(build%esig%sigma2_noise) )then
                 THROW_HARD('build%esig%sigma2_noise is not allocated while ml_reg is enabled; calc_3Drec')
             endif
         endif
-        ! init volumes
-        if( l_init_volumes ) call preprecvols(params, build)
         ! allocate convenience CTF & memory aligned objects
         if( allocated(fplanes) )  deallocate(fplanes)
         allocate(fplanes(maxbatchsz))
@@ -178,64 +375,5 @@ contains
         end do
         !$omp end parallel do
     end subroutine prep_imgs4rec
-
-    subroutine update_rec( params, build, nptcls, pinds, fplanes )
-        class(parameters), intent(in)    :: params
-        class(builder),    intent(inout) :: build
-        integer,           intent(in)    :: nptcls
-        integer,           intent(in)    :: pinds(nptcls)
-        type(fplane_type), intent(inout) :: fplanes(nptcls)
-        type(ori) :: orientation
-        integer   :: iptcl, i
-        call memoize_ft_maps([params%boxpd, params%boxpd, 1], params%smpd)
-        do i = 1,nptcls
-            iptcl  = pinds(i)
-            call build%spproj_field%get_ori(iptcl, orientation)
-            if( orientation%isstatezero() ) cycle
-            call grid_ptcl(build, fplanes(i), build%pgrpsyms, orientation)
-        end do
-        call orientation%kill
-    end subroutine update_rec
-
-    !> volumetric 3d reconstruction
-    subroutine write_partial_recs( params, build, cline, fplanes )
-        use simple_imgarr_utils, only: dealloc_imgarr
-        class(parameters),              intent(inout) :: params
-        class(builder),                 intent(inout) :: build
-        class(cmdline),                 intent(inout) :: cline
-        type(fplane_type), allocatable, intent(inout) :: fplanes(:)
-        integer :: i, s, numlen_part
-        do i = 1,size(fplanes)
-            if( allocated(fplanes(i)%cmplx_plane) ) deallocate(fplanes(i)%cmplx_plane)
-            if( allocated(fplanes(i)%ctfsq_plane) ) deallocate(fplanes(i)%ctfsq_plane)
-            if( allocated(fplanes(i)%transfer_plane) ) deallocate(fplanes(i)%transfer_plane)
-        end do
-        deallocate(fplanes)
-        call dealloc_imgarr(build%img_pad_heap)
-        ! write partial reconstructions for downstream volassemble
-        numlen_part = max(1, params%numlen)
-        do s=1,params%nstates
-            if( build%spproj_field%get_pop(s, 'state') == 0 )then
-                build%fsc(s,:) = 0.
-                cycle
-            endif
-            call build%eorecvols(s)%compress_exp
-            call build%eorecvols(s)%write_eos(refine3D_partial_rec_fbody(s, params%part, numlen_part))
-            if( .not. cline%defined('force_volassemble') )then
-                params%vols(s) = refine3D_state_vol_fname(s)
-                call cline%set('vol'//int2str(s), params%vols(s))
-            endif
-        end do
-    end subroutine write_partial_recs
-
-    subroutine finalize_rec_objs( params, build )
-        use simple_imgarr_utils, only: dealloc_imgarr
-        class(parameters), intent(in)    :: params
-        class(builder),    intent(inout) :: build
-        call dealloc_imgarr(build%img_pad_heap)
-        call forget_ft_maps
-        call killrecvols(params, build)
-        call killimgbatch(build)
-    end subroutine finalize_rec_objs
 
 end module simple_matcher_3Drec
