@@ -6,6 +6,8 @@ usage() {
   cat <<'EOF'
 Usage:
   .codex/run-joint2d-sgd-science.sh --check
+  .codex/run-joint2d-sgd-science.sh --list-cases
+  .codex/run-joint2d-sgd-science.sh --case CASE [--case CASE ...]
   .codex/run-joint2d-sgd-science.sh --prepare-build
   .codex/run-joint2d-sgd-science.sh --prepare-betagal-extract
   .codex/run-joint2d-sgd-science.sh
@@ -27,6 +29,7 @@ Default complete matrix (`profile=all`):
 
 The narrower `activation` and `hyperparameters` profiles remain available for
 targeted reruns. Every hyperparameter case uses `sgd_stage4_mode=alternate`.
+Repeat --case to rerun any subset; case selection overrides the profile matrix.
 
 Environment overrides:
   JOINT2D_SGD_PROJECTS_HOME        Defaults to ~/Projects.
@@ -62,6 +65,67 @@ case	replicate	profile	mode	stage4_mode	log_file	run_dir	project	ncls	mskdiam	nt
 EOF
 }
 
+science_all_cases=(
+  baseline
+  stage4_off
+  stage4_alternate
+  stage4_on
+  joint_topk1_equiv
+  joint_default
+  latent_eta_0p1
+  latent_eta_1p0
+  cavg_eta_0p05
+  cavg_eta_0p25
+  balance_0p05
+)
+science_activation_cases=( baseline stage4_off stage4_alternate stage4_on )
+science_hyperparameter_cases=(
+  baseline
+  joint_topk1_equiv
+  joint_default
+  latent_eta_0p1
+  latent_eta_1p0
+  cavg_eta_0p05
+  cavg_eta_0p25
+  balance_0p05
+)
+
+list_cases() {
+  printf '%s\n' "${science_all_cases[@]}"
+}
+
+add_selected_case() {
+  local requested="$1"
+  local known selected
+  for known in "${science_all_cases[@]}"; do
+    if [[ "$requested" == "$known" ]]; then
+      for selected in "${selected_cases[@]}"; do
+        [[ "$requested" == "$selected" ]] && return 0
+      done
+      selected_cases+=( "$requested" )
+      return 0
+    fi
+  done
+  fail "unknown science case '$requested'; use --list-cases"
+}
+
+set_action() {
+  local requested="$1"
+  if [[ -n "$action" && "$action" != "$requested" ]]; then
+    fail "actions --$action and --$requested cannot be combined"
+  fi
+  action="$requested"
+}
+
+remember_failed_case() {
+  local case_name="$1"
+  local remembered
+  for remembered in "${failed_case_names[@]}"; do
+    [[ "$case_name" == "$remembered" ]] && return 0
+  done
+  failed_case_names+=( "$case_name" )
+}
+
 record_manifest() {
   local case_name="$1"
   local rep="$2"
@@ -77,7 +141,7 @@ record_manifest() {
   local status="${12}"
 
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$case_name" "$rep" "$profile" "$mode" "$stage4_mode" "$log_file" "$run_dir" "$project_path" \
+    "$case_name" "$rep" "$manifest_profile" "$mode" "$stage4_mode" "$log_file" "$run_dir" "$project_path" \
     "$ncls" "$mskdiam" "$nthr" "$topk" "$eta_latent" "$eta_cavg" \
     "$balance_weight" "$params" "$status" >> "$manifest"
 }
@@ -124,36 +188,53 @@ run_case() {
   else
     failed_cases=$((failed_cases + 1))
     failed_case_list+=( "$case_id:$status:$log_file" )
+    remember_failed_case "$case_name"
     echo "Continuing after $case_id failed with status $status; log: $log_file" >&2
   fi
 }
 
-run_activation_matrix() {
-  local rep="$1"
-  local stage4_mode case_name
-  for stage4_mode in off alternate on; do
-    case_name="$(joint2d_sgd_stage4_case_name "$stage4_mode")"
-    joint2d_sgd_make_joint_args "$stage4_mode" 3 0.5 0.1 0.0
-    run_case "$case_name" "$rep" joint "$stage4_mode" 3 0.5 0.1 0.0 "${joint2d_sgd_case_args[@]}"
-  done
-}
-
-run_hyperparameter_matrix() {
-  local rep="$1"
-  run_case joint_topk1_equiv "$rep" joint alternate 1 0.5 1.0 0.0 \
-    sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=1 sgd_eta_cavg=1.0 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
-  run_case joint_default "$rep" joint alternate 3 0.5 0.1 0.0 \
-    sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
-  run_case latent_eta_0p1 "$rep" joint alternate 3 0.1 0.1 0.0 \
-    sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.1 sgd_balance_weight=0.0 sgd_diag=yes
-  run_case latent_eta_1p0 "$rep" joint alternate 3 1.0 0.1 0.0 \
-    sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=1.0 sgd_balance_weight=0.0 sgd_diag=yes
-  run_case cavg_eta_0p05 "$rep" joint alternate 3 0.5 0.05 0.0 \
-    sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.05 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
-  run_case cavg_eta_0p25 "$rep" joint alternate 3 0.5 0.25 0.0 \
-    sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.25 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
-  run_case balance_0p05 "$rep" joint alternate 3 0.5 0.1 0.05 \
-    sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=0.05 sgd_diag=yes
+run_selected_case() {
+  local case_name="$1"
+  local rep="$2"
+  local stage4_mode
+  case "$case_name" in
+    baseline)
+      run_case baseline "$rep" baseline off NA NA NA NA sgd=no
+      ;;
+    stage4_off|stage4_alternate|stage4_on)
+      stage4_mode="${case_name#stage4_}"
+      joint2d_sgd_make_joint_args "$stage4_mode" 3 0.5 0.1 0.0
+      run_case "$case_name" "$rep" joint "$stage4_mode" 3 0.5 0.1 0.0 "${joint2d_sgd_case_args[@]}"
+      ;;
+    joint_topk1_equiv)
+      run_case joint_topk1_equiv "$rep" joint alternate 1 0.5 1.0 0.0 \
+        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=1 sgd_eta_cavg=1.0 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
+      ;;
+    joint_default)
+      run_case joint_default "$rep" joint alternate 3 0.5 0.1 0.0 \
+        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
+      ;;
+    latent_eta_0p1)
+      run_case latent_eta_0p1 "$rep" joint alternate 3 0.1 0.1 0.0 \
+        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.1 sgd_balance_weight=0.0 sgd_diag=yes
+      ;;
+    latent_eta_1p0)
+      run_case latent_eta_1p0 "$rep" joint alternate 3 1.0 0.1 0.0 \
+        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=1.0 sgd_balance_weight=0.0 sgd_diag=yes
+      ;;
+    cavg_eta_0p05)
+      run_case cavg_eta_0p05 "$rep" joint alternate 3 0.5 0.05 0.0 \
+        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.05 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
+      ;;
+    cavg_eta_0p25)
+      run_case cavg_eta_0p25 "$rep" joint alternate 3 0.5 0.25 0.0 \
+        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.25 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
+      ;;
+    balance_0p05)
+      run_case balance_0p05 "$rep" joint alternate 3 0.5 0.1 0.05 \
+        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=0.05 sgd_diag=yes
+      ;;
+  esac
 }
 
 joint2d_sgd_runner_label="joint2D-SGD science runner"
@@ -166,12 +247,55 @@ joint2d_sgd_common_init
 checker="$script_dir/check-joint2d-sgd-science-log.sh"
 summarizer="$script_dir/summarize-joint2d-sgd-science.sh"
 
-case "${1:-}" in
-  -h|--help)
+action=""
+selected_cases=()
+case_filter_requested=no
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      set_action help
+      shift
+      ;;
+    --check)
+      set_action check
+      shift
+      ;;
+    --list-cases)
+      set_action list-cases
+      shift
+      ;;
+    --case)
+      [[ $# -ge 2 ]] || fail "--case requires a case name"
+      case_filter_requested=yes
+      add_selected_case "$2"
+      shift 2
+      ;;
+    --prepare-build)
+      set_action prepare-build
+      shift
+      ;;
+    --prepare-betagal-extract)
+      set_action prepare-betagal-extract
+      shift
+      ;;
+    *)
+      fail "unknown argument '$1'; use --help"
+      ;;
+  esac
+done
+action="${action:-run}"
+
+case "$action" in
+  help)
     usage
     exit 0
     ;;
-  --prepare-build)
+  list-cases)
+    list_cases
+    exit 0
+    ;;
+  prepare-build)
+    [[ "$case_filter_requested" == no ]] || fail "--case cannot be combined with --prepare-build"
     prepare_build_copy
     exit 0
     ;;
@@ -179,18 +303,24 @@ esac
 
 setup_simple_path
 
-if [[ "${1:-}" == "--prepare-betagal-extract" ]]; then
+if [[ "$action" == "prepare-betagal-extract" ]]; then
+  [[ "$case_filter_requested" == no ]] || fail "--case cannot be combined with --prepare-betagal-extract"
   prepare_betagal_extract JOINT2D_SGD_SCIENCE_ROOT JOINT2D_SGD_SCIENCE_PROJECT .codex/run-joint2d-sgd-science.sh JOINT_SGD_SCIENCE_ROOT
   exit 0
 fi
 
 common_project_probe JOINT2D_SGD_SCIENCE_PROJECT JOINT_SGD_SCIENCE_PROJECT
 
-if [[ "${1:-}" == "--check" ]]; then
+if [[ "$action" == "check" ]]; then
   print_common_check "Default science root: $projects_home/simple_joint2d_sgd_science_<timestamp>"
   echo "Replicates: $(env_or_legacy JOINT2D_SGD_SCIENCE_REPS JOINT_SGD_SCIENCE_REPS 1)"
   echo "Science threads: $(env_or_legacy JOINT2D_SGD_SCIENCE_NTHR JOINT_SGD_SCIENCE_NTHR 64)"
   echo "Profile: $(env_or_legacy JOINT2D_SGD_SCIENCE_PROFILE JOINT_SGD_SCIENCE_PROFILE all)"
+  if [[ "$case_filter_requested" == yes ]]; then
+    echo "Selected science cases: ${selected_cases[*]}"
+  else
+    echo "Selected science cases: profile matrix"
+  fi
   cat <<'EOF'
 All profile: baseline plus the complete activation and 015 hyperparameter matrices.
 Activation profile: baseline, stage4_off, stage4_alternate, stage4_on.
@@ -213,6 +343,7 @@ ncls="$(env_or_legacy JOINT2D_SGD_SCIENCE_NCLS JOINT_SGD_SCIENCE_NCLS 100)"
 mskdiam="$(env_or_legacy JOINT2D_SGD_SCIENCE_MSKDIAM JOINT_SGD_SCIENCE_MSKDIAM 190)"
 nthr="$(env_or_legacy JOINT2D_SGD_SCIENCE_NTHR JOINT_SGD_SCIENCE_NTHR 64)"
 profile="$(env_or_legacy JOINT2D_SGD_SCIENCE_PROFILE JOINT_SGD_SCIENCE_PROFILE all)"
+manifest_profile="$profile"
 manifest="$scratch_root/science_runs.tsv"
 
 [[ "$reps" =~ ^[0-9]+$ && "$reps" -ge 1 ]] || fail "JOINT2D_SGD_SCIENCE_REPS must be a positive integer"
@@ -221,32 +352,34 @@ case "$profile" in
   *) fail "JOINT2D_SGD_SCIENCE_PROFILE must be all, activation, or hyperparameters" ;;
 esac
 
+if [[ "$case_filter_requested" == yes ]]; then
+  manifest_profile=selected
+else
+  case "$profile" in
+    all) selected_cases=( "${science_all_cases[@]}" ) ;;
+    activation) selected_cases=( "${science_activation_cases[@]}" ) ;;
+    hyperparameters) selected_cases=( "${science_hyperparameter_cases[@]}" ) ;;
+  esac
+fi
+
 mkdir -p "$scratch_root"
 write_manifest_header
 total_cases=0
 failed_cases=0
 failed_case_list=()
+failed_case_names=()
 
 echo "Science root: $scratch_root"
 echo "Source project: $project_path"
 echo "Workflow root: $workflow_root"
 echo "Project relative path: $project_rel"
 echo "ncls=$ncls mskdiam=$mskdiam nthr=$nthr reps=$reps profile=$profile"
+echo "Selected science cases: ${selected_cases[*]}"
 
 for rep in $(seq 1 "$reps"); do
-  run_case baseline "$rep" baseline off NA NA NA NA sgd=no
-  case "$profile" in
-    all)
-      run_activation_matrix "$rep"
-      run_hyperparameter_matrix "$rep"
-      ;;
-    activation)
-      run_activation_matrix "$rep"
-      ;;
-    hyperparameters)
-      run_hyperparameter_matrix "$rep"
-      ;;
-  esac
+  for case_name in "${selected_cases[@]}"; do
+    run_selected_case "$case_name" "$rep"
+  done
 done
 
 "$summarizer" "$scratch_root"
@@ -254,8 +387,16 @@ echo "joint2D-SGD scientific validation complete: $scratch_root"
 echo "Cases completed: $total_cases"
 echo "Cases failed: $failed_cases"
 if [[ "$failed_cases" -gt 0 ]]; then
+  rerun_command=( "$0" )
+  for case_name in "${failed_case_names[@]}"; do
+    rerun_command+=( --case "$case_name" )
+  done
   echo "Failed cases:" >&2
   printf '  %s\n' "${failed_case_list[@]}" >&2
+  echo "Rerun only the failed case types:" >&2
+  printf '  JOINT2D_SGD_SCIENCE_REPS=%q' "$reps" >&2
+  printf ' %q' "${rerun_command[@]}" >&2
+  printf '\n' >&2
   echo "Science root with logs and summary: $scratch_root" >&2
   exit 1
 fi
