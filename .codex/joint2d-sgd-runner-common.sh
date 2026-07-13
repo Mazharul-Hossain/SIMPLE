@@ -55,12 +55,49 @@ joint2d_sgd_common_init() {
   testing_home="${SIMPLE_DATA_TESTING_HOME:-${simple_home}_data_testing}"
   projects_home="$(env_or_legacy JOINT2D_SGD_PROJECTS_HOME JOINT_SGD_PROJECTS_HOME "$HOME/Projects")"
   build_copy="$(env_or_legacy JOINT2D_SGD_BUILD_COPY JOINT_SGD_BUILD_COPY "$projects_home/SIMPLE_joint2d_sgd_build")"
-  build_jobs="$(env_or_legacy JOINT2D_SGD_BUILD_JOBS JOINT_SGD_BUILD_JOBS 32)"
+  build_jobs="$(env_or_legacy JOINT2D_SGD_BUILD_JOBS JOINT_SGD_BUILD_JOBS 4)"
   cmake_build_type="$(env_or_legacy JOINT2D_SGD_CMAKE_BUILD_TYPE JOINT_SGD_CMAKE_BUILD_TYPE Debug)"
   betagal_data="$(env_or_legacy JOINT2D_SGD_BETAGAL_DATA JOINT_SGD_BETAGAL_DATA /mnt/beegfs/elmlund/testing-datasets/betagal)"
   betagal_sample_count="$(env_or_legacy JOINT2D_SGD_BETAGAL_SAMPLE_COUNT JOINT_SGD_BETAGAL_SAMPLE_COUNT "")"
   prep_nparts="$(env_or_legacy JOINT2D_SGD_PREP_NPARTS JOINT_SGD_PREP_NPARTS 5)"
   prep_nthr="$(env_or_legacy JOINT2D_SGD_PREP_NTHR JOINT_SGD_PREP_NTHR 8)"
+}
+
+joint2d_sgd_validate_stage4_mode() {
+  case "${1:-}" in
+    off|alternate|on) ;;
+    *) fail "stage-4 mode must be off, alternate, or on (got: ${1:-empty})" ;;
+  esac
+}
+
+joint2d_sgd_stage4_case_name() {
+  joint2d_sgd_validate_stage4_mode "$1"
+  printf 'stage4_%s\n' "$1"
+}
+
+joint2d_sgd_make_joint_args() {
+  local stage4_mode="$1"
+  local topk="${2:-3}"
+  local eta_latent="${3:-0.5}"
+  local eta_cavg="${4:-0.1}"
+  local balance_weight="${5:-0.0}"
+  joint2d_sgd_validate_stage4_mode "$stage4_mode"
+  joint2d_sgd_case_args=(
+    sgd=yes
+    sgd_mode=joint
+    sgd_stage4_mode="$stage4_mode"
+    sgd_topk="$topk"
+    sgd_eta_latent="$eta_latent"
+    sgd_eta_cavg="$eta_cavg"
+    sgd_balance_weight="$balance_weight"
+    sgd_diag=yes
+  )
+}
+
+joint2d_sgd_print_stage_policy() {
+  local stage4_mode="$1"
+  joint2d_sgd_validate_stage4_mode "$stage4_mode"
+  echo "Joint SGD stage policy: stages 1-3 off; stage 4 ${stage4_mode}; stages 5+ on; terminal off"
 }
 
 resolve_simple_install_root() {

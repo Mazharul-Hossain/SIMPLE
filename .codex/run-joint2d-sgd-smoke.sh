@@ -14,9 +14,8 @@ Workstation layout:
   Build copy:  ~/Projects/SIMPLE_joint2d_sgd_build
   Test runs:   ~/Projects/simple_joint2d_sgd_smoke_<timestamp>
 
-Joint cases automatically use the compiled iteration schedule:
-  1-10 legacy likelihood; 11-20 alternate joint/legacy; 21+ joint.
-No additional schedule parameter is required.
+The smoke matrix runs the baseline plus stage-4 off, alternate, and on. Joint
+SGD is always off in stages 1-3, on in stages 5+, and off in the terminal pass.
 
 Environment overrides:
   JOINT2D_SGD_PROJECTS_HOME       Defaults to ~/Projects.
@@ -47,7 +46,8 @@ EOF
 run_case() {
   local case_name="$1"
   local mode="$2"
-  shift 2
+  local stage4_mode="$3"
+  shift 3
   local log_file="$scratch_root/${case_name}.log"
 
   copy_case_root "$case_name"
@@ -57,7 +57,7 @@ run_case() {
     simple_exec prg=abinitio2D ncls="$ncls" mskdiam="$mskdiam" nthr="$nthr" projfile="$project_rel" "$@"
   ) >"$log_file" 2>&1
 
-  "$checker" "$mode" "$log_file" "$case_root"
+  "$checker" "$mode" "$log_file" "$stage4_mode" "$case_root"
   echo "Log: $log_file"
 }
 
@@ -92,7 +92,8 @@ common_project_probe JOINT2D_SGD_SMOKE_PROJECT JOINT_SGD_SMOKE_PROJECT
 
 if [[ "${1:-}" == "--check" ]]; then
   print_common_check "Default smoke root: $projects_home/simple_joint2d_sgd_smoke_<timestamp>"
-  echo "Joint schedule: automatic (1-10 legacy likelihood; 11-20 alternate; 21+ joint)"
+  echo "Smoke cases: baseline, stage4_off, stage4_alternate, stage4_on"
+  joint2d_sgd_print_stage_policy alternate
   exit 0
 fi
 
@@ -114,10 +115,14 @@ echo "Source project: $project_path"
 echo "Workflow root: $workflow_root"
 echo "Project relative path: $project_rel"
 echo "ncls=$ncls mskdiam=$mskdiam nthr=$nthr"
-echo "Joint schedule: automatic (1-10 legacy likelihood; 11-20 alternate; 21+ joint)"
+echo "Smoke cases: baseline, stage4_off, stage4_alternate, stage4_on"
 
-run_case baseline baseline sgd=no
-run_case joint_topk1 joint sgd=yes sgd_mode=joint sgd_topk=1 sgd_eta_cavg=1.0 sgd_diag=yes
-run_case joint_topk3 joint sgd=yes sgd_mode=joint sgd_topk=3 sgd_eta_cavg=0.1 sgd_diag=yes
+run_case baseline baseline off sgd=no
+for stage4_mode in off alternate on; do
+  case_name="$(joint2d_sgd_stage4_case_name "$stage4_mode")"
+  joint2d_sgd_make_joint_args "$stage4_mode" 3 0.5 0.1 0.0
+  joint2d_sgd_print_stage_policy "$stage4_mode"
+  run_case "$case_name" joint "$stage4_mode" "${joint2d_sgd_case_args[@]}"
+done
 
 echo "joint2D-SGD smoke validation complete: $scratch_root"

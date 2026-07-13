@@ -38,13 +38,76 @@ check_normal_stop() {
   require_contains 'SIMPLE_ABINITIO2D NORMAL STOP' 'abinitio2D normal stop marker'
 }
 
+check_abinitio_stage_matrix() {
+  local stage4_mode="$1"
+  local late_mode="$2"
+  require_contains 'ABINITIO2D SGD STAGE: stage=1 refine=snhc_smpl prob_assign=inactive ml_reg=no activation=off' 'stage-1 baseline policy'
+  require_contains 'ABINITIO2D SGD STAGE: stage=2 refine=snhc_smpl prob_assign=inactive ml_reg=yes activation=off' 'stage-2 baseline policy'
+  require_contains 'ABINITIO2D SGD STAGE: stage=3 refine=prob_snhc prob_assign=likelihood ml_reg=yes activation=off' 'stage-3 baseline policy'
+  require_contains "ABINITIO2D SGD STAGE: stage=4 refine=prob_snhc prob_assign=likelihood ml_reg=yes activation=${stage4_mode}" 'stage-4 policy'
+  require_contains "ABINITIO2D SGD STAGE: stage=5 refine=prob_snhc prob_assign=likelihood ml_reg=yes activation=${late_mode}" 'stage-5 policy'
+  require_contains "ABINITIO2D SGD STAGE: stage=6 refine=prob prob_assign=likelihood ml_reg=yes activation=${late_mode}" 'stage-6 policy'
+  if grep -Fq 'ABINITIO2D SGD STAGE: stage=terminal' "$log_file"; then
+    require_contains 'ABINITIO2D SGD STAGE: stage=terminal refine=prob prob_assign=likelihood ml_reg=yes activation=off' 'terminal SGD-off policy'
+  fi
+}
+
+check_no_joint_outside_late_stages() {
+  if ! awk '
+    /ABINITIO2D SGD STAGE: stage=terminal/ { stage = 99; next }
+    /ABINITIO2D SGD STAGE: stage=[0-9]+/ {
+      line = $0
+      sub(/^.*stage=/, "", line)
+      sub(/ .*/, "", line)
+      stage = line + 0
+      next
+    }
+    /JOINT2D SGD (SCHEDULE|TOPK|LATENT|WINNER|INPL|SHIFT|BALANCE|REFS)/ {
+      if ((stage >= 1 && stage <= 3) || stage == 99) exit 1
+    }
+  ' "$log_file"; then
+    fail 'joint-SGD diagnostic found in stages 1-3 or the terminal pass'
+  fi
+}
+
+check_stage4_iteration_policy() {
+  local stage4_mode="$1"
+  local count=0
+  local line stage_iter actual expected
+  case "$stage4_mode" in
+    off)
+      return 0
+      ;;
+    alternate|on) ;;
+    *) fail "unsupported expected stage-4 mode: $stage4_mode" ;;
+  esac
+  while IFS= read -r line; do
+    stage_iter="$(sed -n 's/.*stage_iter=\([0-9][0-9]*\).*/\1/p' <<<"$line")"
+    actual="$(sed -n 's/.*mode=\([^[:space:]]*\).*/\1/p' <<<"$line")"
+    [[ -n "$stage_iter" && -n "$actual" ]] || fail "unparseable stage-4 schedule line: $line"
+    if [[ "$stage4_mode" == "on" || $((stage_iter % 2)) -eq 0 ]]; then
+      expected="joint"
+    else
+      expected="sgd_off"
+    fi
+    [[ "$actual" == "$expected" ]] || fail "stage-4 ${stage4_mode} iteration ${stage_iter}: expected ${expected}, got ${actual}"
+    count=$((count + 1))
+  done < <(grep -F 'JOINT2D SGD SCHEDULE:' "$log_file" | grep -F "policy=${stage4_mode}" || true)
+  [[ "$count" -gt 0 ]] || fail "no stage-4 ${stage4_mode} schedule diagnostics found"
+}
+
 check_baseline_log() {
+  check_abinitio_stage_matrix off off
   reject_contains 'JOINT 2D SGD' 'joint2D-SGD marker in baseline log'
   reject_contains 'JOINT2D SGD' 'joint top-K marker in baseline log'
   reject_contains 'CAVG SGD UPDATE' 'joint CAVG update marker in baseline log'
 }
 
 check_smoke_joint_log() {
+  local stage4_mode="${1:-alternate}"
+  check_abinitio_stage_matrix "$stage4_mode" on
+  check_no_joint_outside_late_stages
+  check_stage4_iteration_policy "$stage4_mode"
   require_contains 'JOINT2D SGD TOPK: prob_align2D' 'prob_align2D top-K diagnostics'
   require_contains 'JOINT2D SGD TOPK: cluster2D' 'cluster2D top-K diagnostics'
   require_contains 'JOINT2D SGD LATENT' 'latent diagnostics'

@@ -4,8 +4,8 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  .codex/check-joint2d-sgd-smoke-log.sh baseline <LOG> [RUN_DIR]
-  .codex/check-joint2d-sgd-smoke-log.sh joint    <LOG> [RUN_DIR]
+  .codex/check-joint2d-sgd-smoke-log.sh baseline <LOG> [STAGE4_MODE] [RUN_DIR]
+  .codex/check-joint2d-sgd-smoke-log.sh joint    <LOG> <STAGE4_MODE> [RUN_DIR]
 
 Checks the shared-memory joint2D-SGD smoke logs produced by
 .codex/run-joint2d-sgd-smoke.sh. RUN_DIR is optional; when provided, the checker
@@ -25,7 +25,8 @@ fi
 
 mode="$1"
 log_file="$2"
-run_dir="${3:-}"
+stage4_mode="${3:-alternate}"
+run_dir="${4:-}"
 
 [[ -f "$log_file" ]] || fail "log file does not exist: $log_file"
 
@@ -37,7 +38,7 @@ case "$mode" in
     check_baseline_log
     ;;
   joint)
-    check_smoke_joint_log
+    check_smoke_joint_log "$stage4_mode"
     ;;
   *)
     fail "mode must be baseline or joint"
