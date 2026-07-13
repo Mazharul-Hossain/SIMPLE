@@ -32,8 +32,8 @@ Environment overrides:
   JOINT2D_SGD_SCIENCE_PROFILE      activation or hyperparameters. Defaults to activation.
   JOINT2D_SGD_SCIENCE_NCLS         abinitio2D ncls. Defaults to 100.
   JOINT2D_SGD_SCIENCE_MSKDIAM      abinitio2D mskdiam. Defaults to 190.
-  JOINT2D_SGD_SCIENCE_NTHR         abinitio2D nthr. Defaults to 32.
-  JOINT2D_SGD_BUILD_JOBS           Build jobs for --prepare-build. Defaults to 4.
+  JOINT2D_SGD_SCIENCE_NTHR         abinitio2D nthr. Defaults to 64.
+  JOINT2D_SGD_BUILD_JOBS           Build jobs for --prepare-build. Defaults to 32.
   JOINT2D_SGD_CMAKE_BUILD_TYPE     CMake build type. Defaults to Debug.
   JOINT2D_SGD_REWRITE_BUILD        Use yes to refresh an existing build copy without prompting.
   JOINT2D_SGD_PREP_NPARTS          Betagal prep parts. Defaults to 5.
@@ -156,6 +156,7 @@ common_project_probe JOINT2D_SGD_SCIENCE_PROJECT JOINT_SGD_SCIENCE_PROJECT
 if [[ "${1:-}" == "--check" ]]; then
   print_common_check "Default science root: $projects_home/simple_joint2d_sgd_science_<timestamp>"
   echo "Replicates: $(env_or_legacy JOINT2D_SGD_SCIENCE_REPS JOINT_SGD_SCIENCE_REPS 1)"
+  echo "Science threads: $(env_or_legacy JOINT2D_SGD_SCIENCE_NTHR JOINT_SGD_SCIENCE_NTHR 64)"
   echo "Profile: $(env_or_legacy JOINT2D_SGD_SCIENCE_PROFILE JOINT_SGD_SCIENCE_PROFILE activation)"
   cat <<'EOF'
 Activation profile: baseline, stage4_off, stage4_alternate, stage4_on.
@@ -176,7 +177,7 @@ scratch_root="$(env_or_legacy JOINT2D_SGD_SCIENCE_ROOT JOINT_SGD_SCIENCE_ROOT "$
 reps="$(env_or_legacy JOINT2D_SGD_SCIENCE_REPS JOINT_SGD_SCIENCE_REPS 1)"
 ncls="$(env_or_legacy JOINT2D_SGD_SCIENCE_NCLS JOINT_SGD_SCIENCE_NCLS 100)"
 mskdiam="$(env_or_legacy JOINT2D_SGD_SCIENCE_MSKDIAM JOINT_SGD_SCIENCE_MSKDIAM 190)"
-nthr="$(env_or_legacy JOINT2D_SGD_SCIENCE_NTHR JOINT_SGD_SCIENCE_NTHR 32)"
+nthr="$(env_or_legacy JOINT2D_SGD_SCIENCE_NTHR JOINT_SGD_SCIENCE_NTHR 64)"
 profile="$(env_or_legacy JOINT2D_SGD_SCIENCE_PROFILE JOINT_SGD_SCIENCE_PROFILE activation)"
 manifest="$scratch_root/science_runs.tsv"
 

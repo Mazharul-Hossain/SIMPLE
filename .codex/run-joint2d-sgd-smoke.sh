@@ -14,8 +14,8 @@ Workstation layout:
   Build copy:  ~/Projects/SIMPLE_joint2d_sgd_build
   Test runs:   ~/Projects/simple_joint2d_sgd_smoke_<timestamp>
 
-The smoke matrix runs the baseline plus stage-4 off, alternate, and on. Joint
-SGD is always off in stages 1-3, on in stages 5+, and off in the terminal pass.
+The server smoke matrix runs baseline, stage-4 off with K=1, and stage-4
+alternate with K=3. The complete activation matrix remains in the science runner.
 
 Environment overrides:
   JOINT2D_SGD_PROJECTS_HOME       Defaults to ~/Projects.
@@ -24,8 +24,8 @@ Environment overrides:
   JOINT2D_SGD_SMOKE_PROJECT       Existing extracted .simple project for smoke tests.
   JOINT2D_SGD_SMOKE_NCLS          abinitio2D ncls. Defaults to 100.
   JOINT2D_SGD_SMOKE_MSKDIAM       abinitio2D mskdiam. Defaults to 190.
-  JOINT2D_SGD_SMOKE_NTHR          abinitio2D nthr. Defaults to 32.
-  JOINT2D_SGD_BUILD_JOBS          Build jobs for --prepare-build. Defaults to 4.
+  JOINT2D_SGD_SMOKE_NTHR          abinitio2D nthr. Defaults to 64.
+  JOINT2D_SGD_BUILD_JOBS          Build jobs for --prepare-build. Defaults to 32.
   JOINT2D_SGD_CMAKE_BUILD_TYPE    CMake build type. Defaults to Debug.
   JOINT2D_SGD_REWRITE_BUILD       Use yes to refresh an existing build copy without prompting.
   JOINT2D_SGD_PREP_NPARTS         Betagal prep parts. Defaults to 5.
@@ -45,9 +45,7 @@ EOF
 
 run_case() {
   local case_name="$1"
-  local mode="$2"
-  local stage4_mode="$3"
-  shift 3
+  shift
   local log_file="$scratch_root/${case_name}.log"
 
   copy_case_root "$case_name"
@@ -57,7 +55,7 @@ run_case() {
     simple_exec prg=abinitio2D ncls="$ncls" mskdiam="$mskdiam" nthr="$nthr" projfile="$project_rel" "$@"
   ) >"$log_file" 2>&1
 
-  "$checker" "$mode" "$log_file" "$stage4_mode" "$case_root"
+  "$checker" "$case_name" "$log_file" "$case_root"
   echo "Log: $log_file"
 }
 
@@ -92,7 +90,8 @@ common_project_probe JOINT2D_SGD_SMOKE_PROJECT JOINT_SGD_SMOKE_PROJECT
 
 if [[ "${1:-}" == "--check" ]]; then
   print_common_check "Default smoke root: $projects_home/simple_joint2d_sgd_smoke_<timestamp>"
-  echo "Smoke cases: baseline, stage4_off, stage4_alternate, stage4_on"
+  echo "Smoke threads: $(env_or_legacy JOINT2D_SGD_SMOKE_NTHR JOINT_SGD_SMOKE_NTHR 64)"
+  echo "Smoke cases: baseline, stage4_off (K=1), stage4_alternate (K=3)"
   joint2d_sgd_print_stage_policy alternate
   exit 0
 fi
@@ -106,7 +105,7 @@ timestamp="$(date +%Y%m%d_%H%M%S)"
 scratch_root="$(env_or_legacy JOINT2D_SGD_SMOKE_ROOT JOINT_SGD_SMOKE_ROOT "$projects_home/simple_joint2d_sgd_smoke_${timestamp}")"
 ncls="$(env_or_legacy JOINT2D_SGD_SMOKE_NCLS JOINT_SGD_SMOKE_NCLS 100)"
 mskdiam="$(env_or_legacy JOINT2D_SGD_SMOKE_MSKDIAM JOINT_SGD_SMOKE_MSKDIAM 190)"
-nthr="$(env_or_legacy JOINT2D_SGD_SMOKE_NTHR JOINT_SGD_SMOKE_NTHR 32)"
+nthr="$(env_or_legacy JOINT2D_SGD_SMOKE_NTHR JOINT_SGD_SMOKE_NTHR 64)"
 
 mkdir -p "$scratch_root"
 
@@ -115,14 +114,14 @@ echo "Source project: $project_path"
 echo "Workflow root: $workflow_root"
 echo "Project relative path: $project_rel"
 echo "ncls=$ncls mskdiam=$mskdiam nthr=$nthr"
-echo "Smoke cases: baseline, stage4_off, stage4_alternate, stage4_on"
+echo "Smoke cases: baseline, stage4_off (K=1), stage4_alternate (K=3)"
 
-run_case baseline baseline off sgd=no
-for stage4_mode in off alternate on; do
-  case_name="$(joint2d_sgd_stage4_case_name "$stage4_mode")"
-  joint2d_sgd_make_joint_args "$stage4_mode" 3 0.5 0.1 0.0
-  joint2d_sgd_print_stage_policy "$stage4_mode"
-  run_case "$case_name" joint "$stage4_mode" "${joint2d_sgd_case_args[@]}"
-done
+run_case baseline sgd=no
+joint2d_sgd_make_joint_args off 1 0.5 1.0 0.0
+joint2d_sgd_print_stage_policy off
+run_case stage4_off "${joint2d_sgd_case_args[@]}"
+joint2d_sgd_make_joint_args alternate 3 0.5 0.1 0.0
+joint2d_sgd_print_stage_policy alternate
+run_case stage4_alternate "${joint2d_sgd_case_args[@]}"
 
 echo "joint2D-SGD smoke validation complete: $scratch_root"
