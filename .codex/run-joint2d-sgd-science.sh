@@ -14,14 +14,19 @@ Workstation layout:
   Build copy:  ~/Projects/SIMPLE_joint2d_sgd_build
   Test runs:   ~/Projects/simple_joint2d_sgd_science_<timestamp>
 
-Default activation matrix:
+Default complete matrix (`profile=all`):
   baseline:          sgd=no
   stage4_off:        stage 4 off; stages 5+ on
   stage4_alternate:  stage 4 off/on by local iteration; stages 5+ on
   stage4_on:         stage 4 on; stages 5+ on
+  joint_topk1_equiv: K=1 equivalence anchor with stage 4 alternate
+  joint_default:     K=3 default optimizer with stage 4 alternate
+  latent_eta_0p1 / latent_eta_1p0
+  cavg_eta_0p05 / cavg_eta_0p25
+  balance_0p05
 
-The optional hyperparameters profile retains the 015 optimizer sweep with
-sgd_stage4_mode=alternate.
+The narrower `activation` and `hyperparameters` profiles remain available for
+targeted reruns. Every hyperparameter case uses `sgd_stage4_mode=alternate`.
 
 Environment overrides:
   JOINT2D_SGD_PROJECTS_HOME        Defaults to ~/Projects.
@@ -29,7 +34,7 @@ Environment overrides:
   JOINT2D_SGD_SCIENCE_ROOT         Defaults to ~/Projects/simple_joint2d_sgd_science_<timestamp>.
   JOINT2D_SGD_SCIENCE_PROJECT      Existing extracted .simple project for validation.
   JOINT2D_SGD_SCIENCE_REPS         Number of replicates. Defaults to 1; recommended 3.
-  JOINT2D_SGD_SCIENCE_PROFILE      activation or hyperparameters. Defaults to activation.
+  JOINT2D_SGD_SCIENCE_PROFILE      all, activation, or hyperparameters. Defaults to all.
   JOINT2D_SGD_SCIENCE_NCLS         abinitio2D ncls. Defaults to 100.
   JOINT2D_SGD_SCIENCE_MSKDIAM      abinitio2D mskdiam. Defaults to 190.
   JOINT2D_SGD_SCIENCE_NTHR         abinitio2D nthr. Defaults to 64.
@@ -123,6 +128,34 @@ run_case() {
   fi
 }
 
+run_activation_matrix() {
+  local rep="$1"
+  local stage4_mode case_name
+  for stage4_mode in off alternate on; do
+    case_name="$(joint2d_sgd_stage4_case_name "$stage4_mode")"
+    joint2d_sgd_make_joint_args "$stage4_mode" 3 0.5 0.1 0.0
+    run_case "$case_name" "$rep" joint "$stage4_mode" 3 0.5 0.1 0.0 "${joint2d_sgd_case_args[@]}"
+  done
+}
+
+run_hyperparameter_matrix() {
+  local rep="$1"
+  run_case joint_topk1_equiv "$rep" joint alternate 1 0.5 1.0 0.0 \
+    sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=1 sgd_eta_cavg=1.0 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
+  run_case joint_default "$rep" joint alternate 3 0.5 0.1 0.0 \
+    sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
+  run_case latent_eta_0p1 "$rep" joint alternate 3 0.1 0.1 0.0 \
+    sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.1 sgd_balance_weight=0.0 sgd_diag=yes
+  run_case latent_eta_1p0 "$rep" joint alternate 3 1.0 0.1 0.0 \
+    sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=1.0 sgd_balance_weight=0.0 sgd_diag=yes
+  run_case cavg_eta_0p05 "$rep" joint alternate 3 0.5 0.05 0.0 \
+    sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.05 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
+  run_case cavg_eta_0p25 "$rep" joint alternate 3 0.5 0.25 0.0 \
+    sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.25 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
+  run_case balance_0p05 "$rep" joint alternate 3 0.5 0.1 0.05 \
+    sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=0.05 sgd_diag=yes
+}
+
 joint2d_sgd_runner_label="joint2D-SGD science runner"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 simple_home="$(cd -- "$script_dir/.." && pwd -P)"
@@ -157,8 +190,9 @@ if [[ "${1:-}" == "--check" ]]; then
   print_common_check "Default science root: $projects_home/simple_joint2d_sgd_science_<timestamp>"
   echo "Replicates: $(env_or_legacy JOINT2D_SGD_SCIENCE_REPS JOINT_SGD_SCIENCE_REPS 1)"
   echo "Science threads: $(env_or_legacy JOINT2D_SGD_SCIENCE_NTHR JOINT_SGD_SCIENCE_NTHR 64)"
-  echo "Profile: $(env_or_legacy JOINT2D_SGD_SCIENCE_PROFILE JOINT_SGD_SCIENCE_PROFILE activation)"
+  echo "Profile: $(env_or_legacy JOINT2D_SGD_SCIENCE_PROFILE JOINT_SGD_SCIENCE_PROFILE all)"
   cat <<'EOF'
+All profile: baseline plus the complete activation and 015 hyperparameter matrices.
 Activation profile: baseline, stage4_off, stage4_alternate, stage4_on.
 Hyperparameters profile: the 015 sweep with stage4_alternate.
 Failure policy: each case/replicate is independent; failed cases are recorded and later cases continue.
@@ -178,13 +212,13 @@ reps="$(env_or_legacy JOINT2D_SGD_SCIENCE_REPS JOINT_SGD_SCIENCE_REPS 1)"
 ncls="$(env_or_legacy JOINT2D_SGD_SCIENCE_NCLS JOINT_SGD_SCIENCE_NCLS 100)"
 mskdiam="$(env_or_legacy JOINT2D_SGD_SCIENCE_MSKDIAM JOINT_SGD_SCIENCE_MSKDIAM 190)"
 nthr="$(env_or_legacy JOINT2D_SGD_SCIENCE_NTHR JOINT_SGD_SCIENCE_NTHR 64)"
-profile="$(env_or_legacy JOINT2D_SGD_SCIENCE_PROFILE JOINT_SGD_SCIENCE_PROFILE activation)"
+profile="$(env_or_legacy JOINT2D_SGD_SCIENCE_PROFILE JOINT_SGD_SCIENCE_PROFILE all)"
 manifest="$scratch_root/science_runs.tsv"
 
 [[ "$reps" =~ ^[0-9]+$ && "$reps" -ge 1 ]] || fail "JOINT2D_SGD_SCIENCE_REPS must be a positive integer"
 case "$profile" in
-  activation|hyperparameters) ;;
-  *) fail "JOINT2D_SGD_SCIENCE_PROFILE must be activation or hyperparameters" ;;
+  all|activation|hyperparameters) ;;
+  *) fail "JOINT2D_SGD_SCIENCE_PROFILE must be all, activation, or hyperparameters" ;;
 esac
 
 mkdir -p "$scratch_root"
@@ -201,28 +235,18 @@ echo "ncls=$ncls mskdiam=$mskdiam nthr=$nthr reps=$reps profile=$profile"
 
 for rep in $(seq 1 "$reps"); do
   run_case baseline "$rep" baseline off NA NA NA NA sgd=no
-  if [[ "$profile" == "activation" ]]; then
-    for stage4_mode in off alternate on; do
-      case_name="$(joint2d_sgd_stage4_case_name "$stage4_mode")"
-      joint2d_sgd_make_joint_args "$stage4_mode" 3 0.5 0.1 0.0
-      run_case "$case_name" "$rep" joint "$stage4_mode" 3 0.5 0.1 0.0 "${joint2d_sgd_case_args[@]}"
-    done
-  else
-    run_case joint_topk1_equiv "$rep" joint alternate 1 0.5 1.0 0.0 \
-      sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=1 sgd_eta_cavg=1.0 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
-    run_case joint_default "$rep" joint alternate 3 0.5 0.1 0.0 \
-      sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
-    run_case latent_eta_0p1 "$rep" joint alternate 3 0.1 0.1 0.0 \
-      sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.1 sgd_balance_weight=0.0 sgd_diag=yes
-    run_case latent_eta_1p0 "$rep" joint alternate 3 1.0 0.1 0.0 \
-      sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=1.0 sgd_balance_weight=0.0 sgd_diag=yes
-    run_case cavg_eta_0p05 "$rep" joint alternate 3 0.5 0.05 0.0 \
-      sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.05 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
-    run_case cavg_eta_0p25 "$rep" joint alternate 3 0.5 0.25 0.0 \
-      sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.25 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
-    run_case balance_0p05 "$rep" joint alternate 3 0.5 0.1 0.05 \
-      sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=0.05 sgd_diag=yes
-  fi
+  case "$profile" in
+    all)
+      run_activation_matrix "$rep"
+      run_hyperparameter_matrix "$rep"
+      ;;
+    activation)
+      run_activation_matrix "$rep"
+      ;;
+    hyperparameters)
+      run_hyperparameter_matrix "$rep"
+      ;;
+  esac
 done
 
 "$summarizer" "$scratch_root"
