@@ -319,6 +319,8 @@ type :: parameters
     character(len=STDLEN)     :: sgd_eta_decay='const' !< stochastic class-average learning-rate schedule(const){const}
     character(len=STDLEN)     :: sgd_latent='st_topk' !< joint-SGD latent relaxation(st_topk|soft_topk|sample_topk){st_topk}
     character(len=STDLEN)     :: sgd_mode='joint'     !< SGD optimizer mode(joint|cavg_only){joint}
+    character(len=STDLEN)     :: sgd_activation='auto' !< internal SGD activation policy(auto|off|alternate|on){auto}
+    character(len=STDLEN)     :: sgd_stage4_mode='alternate' !< abinitio2D stage-4 SGD mode(off|alternate|on){alternate}
     character(len=STDLEN)     :: sigma_est='group'    !< sigma estimation kind (group|global){group}
     character(len=STDLEN)     :: sort=''              !< key to sort oris on
     character(len=STDLEN)     :: speckind='sqrt'      !< power spectrum kind(real|power|sqrt|log|phase){sqrt}

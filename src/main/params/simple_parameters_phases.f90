@@ -699,6 +699,16 @@ contains
             case DEFAULT
                 THROW_HARD('sgd_mode must be joint or cavg_only')
         end select
+        select case(trim(self%sgd_activation))
+            case('auto','off','alternate','on')
+            case DEFAULT
+                THROW_HARD('sgd_activation must be auto, off, alternate, or on')
+        end select
+        select case(trim(self%sgd_stage4_mode))
+            case('off','alternate','on')
+            case DEFAULT
+                THROW_HARD('sgd_stage4_mode must be off, alternate, or on')
+        end select
         select case(trim(self%sgd_latent))
             case('st_topk','soft_topk','sample_topk')
             case DEFAULT

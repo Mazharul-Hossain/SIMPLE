@@ -106,10 +106,6 @@ contains
             endif
             ! parameters update
             call set_cline_cluster2D_stage(cline_cluster2D, cline, params, stage_parms, maxits, istage)
-            if( params%l_sgd .and. trim(params%sgd_mode) == 'joint' )then
-                call cline_cluster2D%set('refine',      'prob')
-                call cline_cluster2D%set('prob_assign', 'likelihood')
-            endif
             ! classify
             call execute_cluster2D
         enddo
@@ -342,10 +338,17 @@ contains
             call cline_cluster2D%set('maxits',      1)
             call cline_cluster2D%set('extr_iter',   params%extr_lim + 1)
             call cline_cluster2D%set('refine',      'prob')
+            call cline_cluster2D%set('prob_assign', 'likelihood')
+            call cline_cluster2D%set('ml_reg',      params%ml_reg)
+            call cline_cluster2D%set('sgd',         'no')
+            call cline_cluster2D%set('sgd_activation', 'off')
             call cline_cluster2D%set('restore_cavgs', 'yes')
             call cline_cluster2D%delete('update_frac')
             call cline_cluster2D%delete('fillin')
             call cline_cluster2D%delete('endit')
+            write(logfhandle,'(A)')&
+                &'>>> ABINITIO2D SGD STAGE: stage=terminal refine=prob prob_assign=likelihood ml_reg='//&
+                &trim(params%ml_reg)//' activation=off'
             call execute_cluster2D('terminal_prob', nstages + 1)
             call terminal_refs%kill
         end subroutine execute_terminal_prob_pass

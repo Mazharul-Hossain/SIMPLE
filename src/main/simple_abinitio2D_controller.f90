@@ -39,6 +39,7 @@ end type stage_params
 
 type cluster2D_stage_cfg
     type(string) :: refine, center, objfun, refs, gauref, ml_reg
+    type(string) :: prob_assign, sgd, sgd_activation
     integer      :: iphase=0, iter=0, imaxits=0, minits=0, extr_iter=0
     real         :: trs=0., gaufreq=0.
     logical      :: l_write_prior = .false.
@@ -122,6 +123,7 @@ contains
         call set_cluster2D_stage_phase_policy( cfg, istage )
         call set_cluster2D_stage_reference_policy( cfg, cline, params, stage_parms, maxits, istage )
         call set_cluster2D_stage_search_policy( cfg, params, istage, size(stage_parms) )
+        call set_cluster2D_stage_sgd_policy( cfg, params, istage )
     end subroutine build_cluster2D_stage_cfg
 
     subroutine set_cluster2D_stage_objfun_policy( cfg, params )
@@ -272,6 +274,32 @@ contains
         cfg%l_write_prior = (trim(params%refine) == 'prob_prior') .and. (istage == PROB_PRIOR_STAGE - 1)
     end subroutine set_cluster2D_stage_search_policy
 
+    subroutine set_cluster2D_stage_sgd_policy( cfg, params, istage )
+        use simple_joint2D_sgd_schedule, only: joint2D_sgd_activation_for_stage
+        type(cluster2D_stage_cfg), intent(inout) :: cfg
+        class(parameters),         intent(in)    :: params
+        integer,                   intent(in)    :: istage
+        character(len=9) :: activation
+        if( istage < PROBREFINE_STAGE )then
+            cfg%prob_assign = 'inactive'
+        else
+            cfg%prob_assign = trim(params%prob_assign)
+        endif
+        if( params%l_sgd .and. trim(params%sgd_mode) == 'joint' )then
+            activation = joint2D_sgd_activation_for_stage(.true., istage, params%sgd_stage4_mode, .false.)
+        else if( params%l_sgd )then
+            activation = 'auto'
+        else
+            activation = 'off'
+        endif
+        cfg%sgd_activation = trim(activation)
+        if( trim(activation) == 'off' )then
+            cfg%sgd = 'no'
+        else
+            cfg%sgd = 'yes'
+        endif
+    end subroutine set_cluster2D_stage_sgd_policy
+
     logical function cluster2D_stage_requires_full_assignment( cfg, stage_parms, istage ) result( l_required )
         type(cluster2D_stage_cfg), intent(in) :: cfg
         type(stage_params),        intent(in) :: stage_parms(:)
@@ -315,6 +343,8 @@ contains
         call cline_cluster2D%set('objfun',    cfg%objfun)
         call cline_cluster2D%set('trs',       cfg%trs)
         call cline_cluster2D%set('center',    cfg%center)
+        call cline_cluster2D%set('sgd',       cfg%sgd)
+        call cline_cluster2D%set('sgd_activation', cfg%sgd_activation)
         call cline_cluster2D%set('restore_cavgs', 'yes')
         call cline_cluster2D%set('box_crop',  stage_parms(istage)%box_crop)
         call cline_cluster2D%set('smpd_crop', stage_parms(istage)%smpd_crop)
@@ -336,6 +366,12 @@ contains
             call cline_cluster2D%delete('write_prior')
         endif
         call cline_cluster2D%delete('endit')
+        write(logfhandle,'(A,I0,1X,A,A,1X,A,A,1X,A,A,1X,A,A)')&
+            &'>>> ABINITIO2D SGD STAGE: stage=', istage,&
+            &'refine=', trim(cfg%refine%to_char()),&
+            &'prob_assign=', trim(cfg%prob_assign%to_char()),&
+            &'ml_reg=', trim(cfg%ml_reg%to_char()),&
+            &'activation=', trim(cfg%sgd_activation%to_char())
     end subroutine emit_cluster2D_stage_cfg
 
 end module simple_abinitio2D_controller

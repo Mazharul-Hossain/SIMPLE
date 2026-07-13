@@ -197,6 +197,8 @@ contains
         call reg%add_char('sgd_eta_decay', self%sgd_eta_decay)
         call reg%add_char('sgd_latent', self%sgd_latent)
         call reg%add_char('sgd_mode', self%sgd_mode)
+        call reg%add_char('sgd_activation', self%sgd_activation)
+        call reg%add_char('sgd_stage4_mode', self%sgd_stage4_mode)
         call reg%add_char('shbarrier', self%shbarrier)
         call reg%add_char('skip_rejection', self%skip_rejection)
         call reg%add_char('sigma_est', self%sigma_est)

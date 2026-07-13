@@ -34,7 +34,7 @@ contains
     !> Single entrypoint (shared-memory OR distributed master), driven by a strategy.
     subroutine exec_cluster2D( self, cline )
         use simple_cluster2D_strategy
-        use simple_joint2D_sgd_schedule, only: joint2D_sgd_active_for_iteration,&
+        use simple_joint2D_sgd_schedule, only: joint2D_sgd_active_for_policy,&
             &JOINT2D_SGD_WARMUP_ITS, JOINT2D_SGD_ALTERNATE_UNTIL
         class(commander_cluster2D), intent(inout) :: self
         class(cmdline),             intent(inout) :: cline
@@ -76,7 +76,8 @@ contains
             params%extr_iter  = params%extr_iter  + 1
             ! Only the joint optimizer is scheduled; refine=prob and prob_assign=likelihood stay active.
             l_sgd_active = l_sgd_requested
-            if( l_sgd_schedule ) l_sgd_active = joint2D_sgd_active_for_iteration(params%which_iter)
+            if( l_sgd_schedule ) l_sgd_active = joint2D_sgd_active_for_policy(&
+                &params%sgd_activation, niters, params%which_iter)
             params%l_sgd = l_sgd_active
             if( l_sgd_active )then
                 params%sgd = 'yes'
@@ -86,9 +87,11 @@ contains
                 call cline%set('sgd', 'no')
             endif
             if( l_sgd_schedule )then
-                write(logfhandle,'(A,I0,1X,A,A,1X,A,I0,1X,A,I0)')&
+                write(logfhandle,'(A,I0,1X,A,I0,1X,A,A,1X,A,A,1X,A,I0,1X,A,I0)')&
                     &'>>> JOINT2D SGD SCHEDULE: iteration=', params%which_iter,&
-                    &'mode=', merge('joint            ', 'legacy_likelihood', l_sgd_active),&
+                    &'stage_iter=', niters,&
+                    &'policy=', trim(params%sgd_activation),&
+                    &'mode=', merge('joint  ', 'sgd_off', l_sgd_active),&
                     &'warmup_through=', JOINT2D_SGD_WARMUP_ITS,&
                     &'alternate_through=', JOINT2D_SGD_ALTERNATE_UNTIL
             endif
