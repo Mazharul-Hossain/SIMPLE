@@ -338,7 +338,7 @@ contains
             call cline_cluster2D%set('maxits',      1)
             call cline_cluster2D%set('extr_iter',   params%extr_lim + 1)
             call cline_cluster2D%set('refine',      'prob')
-            call cline_cluster2D%set('prob_assign', 'likelihood')
+            call cline_cluster2D%set('prob_assign', params%prob_assign)
             call cline_cluster2D%set('ml_reg',      params%ml_reg)
             call cline_cluster2D%set('sgd',         'no')
             call cline_cluster2D%set('sgd_activation', 'off')
@@ -347,8 +347,8 @@ contains
             call cline_cluster2D%delete('fillin')
             call cline_cluster2D%delete('endit')
             write(logfhandle,'(A)')&
-                &'>>> ABINITIO2D SGD STAGE: stage=terminal refine=prob prob_assign=likelihood ml_reg='//&
-                &trim(params%ml_reg)//' activation=off'
+                &'>>> ABINITIO2D SGD STAGE: stage=terminal refine=prob prob_assign='//trim(params%prob_assign)//&
+                &' ml_reg='//trim(params%ml_reg)//' activation=off'
             call execute_cluster2D('terminal_prob', nstages + 1)
             call terminal_refs%kill
         end subroutine execute_terminal_prob_pass
