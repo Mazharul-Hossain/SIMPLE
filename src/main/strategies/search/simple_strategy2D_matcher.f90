@@ -193,9 +193,9 @@ contains
         enddo
         if( ctrl%l_joint_topk )then
             call finalize_joint_topk_reliability()
-            ! The final reliability mask is global to the outer SGD batch. Stream the
-            ! particle images a second time so no class-average sums are committed before
-            ! the one allowed emergency-fallback decision.
+            ! Final soft reliability and reduced uncertain support are global to the
+            ! outer SGD batch. Stream the particle images a second time so no
+            ! class-average sums are committed before those weights are finalized.
             do ibatch = 1, nbatches
                 batch_start = batches(ibatch,1)
                 batch_end   = batches(ibatch,2)
@@ -373,7 +373,8 @@ contains
                 THROW_HARD('joint 2D top-K candidate table particle count does not match cluster2D batch set')
             endif
             if( count(joint_topk_candidates%accepted) == 0 )then
-                write(logfhandle,'(A)') '>>> JOINT2D SGD: initial reliability gate accepted zero particles; refinement will use final fallback'
+                write(logfhandle,'(A)')&
+                    &'>>> JOINT2D SGD: provisional soft acceptance is zero; refining all eligible particles'
             endif
             do iptcl_map = 1, nptcls2update
                 if( joint_topk_candidates%pinds(iptcl_map) > 0 )then
@@ -388,7 +389,7 @@ contains
                     THROW_HARD('joint 2D top-K candidate table does not match sampled particle order')
                 endif
             end do
-            call joint_topk_candidates%write_diag('cluster2D', iteration=p_ptr%which_iter)
+            call joint_topk_candidates%write_diag('cluster2D provisional reliability', iteration=p_ptr%which_iter)
         end subroutine read_joint_topk_candidates
 
         subroutine write_refined_joint_topk_candidates()
@@ -415,7 +416,7 @@ contains
             real    :: loss_delta_sum_t(nthr_glob), loss_delta_max_t(nthr_glob)
             real    :: angle_delta_sum_t(nthr_glob), angle_delta_max_t(nthr_glob)
             integer :: iloc, iptcl_map, iptcl, irank, ithr, nc, nrots, old_inpl, new_inpl
-            integer :: accepted_batch, cand_batch, hard_before, hard_after
+            integer :: eligible_batch, cand_batch, hard_before, hard_after
             integer :: nonfinite_total, invalid_total, changed_total, cand_total, hard_churn_total, negative_total
             real    :: cand_shift(2), score_shift(2), rotmat(2,2), refined_dist, old_dist, loss_delta
             real    :: mean_loss_delta, mean_angle_delta, angle_delta
@@ -427,16 +428,16 @@ contains
             endif
             nrots = b_ptr%pftc%get_nrots()
             if( nrots < 1 ) THROW_HARD('joint 2D in-plane refinement requires initialized PFTC rotations')
-            accepted_batch = 0
+            eligible_batch = 0
             cand_batch     = 0
             do iptcl_map = batch_start, batch_end
-                if( .not. joint_topk_candidates%accepted(iptcl_map) ) cycle
-                accepted_batch = accepted_batch + 1
+                if( joint_topk_candidates%ncand(iptcl_map) < 1 ) cycle
+                eligible_batch = eligible_batch + 1
                 cand_batch     = cand_batch + joint_topk_candidates%ncand(iptcl_map)
             end do
             if( cand_batch < 1 )then
                 write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
-                    &'>>> JOINT2D SGD INPL:', 'batch=', ibatch, 'accepted=', accepted_batch,&
+                    &'>>> JOINT2D SGD INPL:', 'batch=', ibatch, 'eligible=', eligible_batch,&
                     &'candidates=', cand_batch, 'changed=', 0
                 return
             endif
@@ -459,7 +460,6 @@ contains
                 ithr = omp_get_thread_num() + 1
                 iptcl_map = batch_start + iloc - 1
                 iptcl     = pinds(iptcl_map)
-                if( .not. joint_topk_candidates%accepted(iptcl_map) ) cycle
                 nc = joint_topk_candidates%ncand(iptcl_map)
                 if( nc < 1 ) cycle
                 hard_before = joint_topk_candidates%hard_rank(iptcl_map)
@@ -532,7 +532,7 @@ contains
             endif
             deallocate(inpl_scores, inpl_dists)
             write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
-                &'>>> JOINT2D SGD INPL:', 'batch=', ibatch, 'accepted=', accepted_batch,&
+                &'>>> JOINT2D SGD INPL:', 'batch=', ibatch, 'eligible=', eligible_batch,&
                 &'candidates=', cand_total, 'changed=', changed_total, 'invalid=', invalid_total,&
                 &'nonfinite=', nonfinite_total, 'negative_delta=', negative_total
             write(logfhandle,'(A,1X,A,ES12.4,1X,A,ES12.4)')&
@@ -554,7 +554,7 @@ contains
             real    :: loss_delta_max_t(nthr_glob), winner_shift_sum_t(nthr_glob), winner_shift_max_t(nthr_glob)
             real    :: lims(2,2), lims_init(2,2), mean_step, mean_loss_delta, mean_winner_shift
             integer :: iloc, iptcl_map, iptcl, irank, ithr, nc, irot, hard_before, hard_after
-            integer :: accepted_batch, cand_batch, refined_total, nonfinite_total, ithr_init
+            integer :: eligible_batch, cand_batch, refined_total, nonfinite_total, ithr_init
             integer :: invalid_total, no_better_total, hard_churn_total
             real    :: cxy(3), old_shift(2), old_shift_opt(2), opt_shift(2), damped_shift(2)
             real    :: score_shift(2), rotmat(2,2), refined_corr, refined_dist, old_dist, step
@@ -565,22 +565,22 @@ contains
             if( .not. allocated(joint_topk_candidates%ncand) )then
                 THROW_HARD('joint 2D shift refinement requested before top-K table was read')
             endif
-            accepted_batch = 0
+            eligible_batch = 0
             cand_batch     = 0
             do iptcl_map = batch_start, batch_end
-                if( .not. joint_topk_candidates%accepted(iptcl_map) ) cycle
-                accepted_batch = accepted_batch + 1
+                if( joint_topk_candidates%ncand(iptcl_map) < 1 ) cycle
+                eligible_batch = eligible_batch + 1
                 cand_batch     = cand_batch + joint_topk_candidates%ncand(iptcl_map)
             end do
             if( cand_batch < 1 )then
                 write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
-                    &'>>> JOINT2D SGD SHIFT:', 'batch=', ibatch, 'accepted=', accepted_batch,&
+                    &'>>> JOINT2D SGD SHIFT:', 'batch=', ibatch, 'eligible=', eligible_batch,&
                     &'candidates=', cand_batch, 'refined=', 0
                 return
             endif
             if( .not. p_ptr%l_doshift )then
                 write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
-                    &'>>> JOINT2D SGD SHIFT:', 'batch=', ibatch, 'accepted=', accepted_batch,&
+                    &'>>> JOINT2D SGD SHIFT:', 'batch=', ibatch, 'eligible=', eligible_batch,&
                     &'candidates=', cand_batch, 'refined=', 0
                 write(logfhandle,'(A,1X,A)') '>>> JOINT2D SGD SHIFT HARD:', 'shift search disabled'
                 return
@@ -615,7 +615,6 @@ contains
                 ithr = omp_get_thread_num() + 1
                 iptcl_map = batch_start + iloc - 1
                 iptcl     = pinds(iptcl_map)
-                if( .not. joint_topk_candidates%accepted(iptcl_map) ) cycle
                 nc = joint_topk_candidates%ncand(iptcl_map)
                 if( nc < 1 ) cycle
                 hard_before = joint_topk_candidates%hard_rank(iptcl_map)
@@ -695,9 +694,9 @@ contains
                 mean_step       = sum(step_sum_t) / real(refined_total)
                 mean_loss_delta = sum(loss_delta_sum_t) / real(refined_total)
             endif
-            if( accepted_batch > 0 ) mean_winner_shift = sum(winner_shift_sum_t) / real(accepted_batch)
+            if( eligible_batch > 0 ) mean_winner_shift = sum(winner_shift_sum_t) / real(eligible_batch)
             write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
-                &'>>> JOINT2D SGD SHIFT:', 'batch=', ibatch, 'accepted=', accepted_batch,&
+                &'>>> JOINT2D SGD SHIFT:', 'batch=', ibatch, 'eligible=', eligible_batch,&
                 &'candidates=', sum(cand_count_t), 'refined=', refined_total, 'no_better=', no_better_total,&
                 &'invalid=', invalid_total, 'nonfinite=', nonfinite_total
             write(logfhandle,'(A,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4)')&
@@ -711,18 +710,6 @@ contains
             endif
         end subroutine refine_joint_topk_shifts_for_batch
 
-        subroutine apply_joint_balance_prior_for_batch()
-            type(joint2D_balance_diag) :: balance_diag
-
-            if( .not. ctrl%l_joint_topk ) return
-            if( .not. allocated(joint_topk_candidates%ncand) )then
-                THROW_HARD('joint 2D class-balance prior requested before top-K table was read')
-            endif
-            call joint_topk_candidates%apply_balance_prior(p_ptr%ncls, p_ptr%sgd_balance_weight,&
-                &balance_diag, first_ptcl=batch_start, last_ptcl=batch_end)
-            call joint_topk_candidates%write_balance_diag('cluster2D batch', balance_diag)
-        end subroutine apply_joint_balance_prior_for_batch
-
         subroutine sync_joint_hard_assignments( first_ptcl, last_ptcl )
             integer, intent(in) :: first_ptcl, last_ptcl
             integer :: iptcl_map, iptcl, hard
@@ -730,7 +717,7 @@ contains
 
             do iptcl_map = first_ptcl, last_ptcl
                 iptcl     = pinds(iptcl_map)
-                if( .not. joint_topk_candidates%accepted(iptcl_map) ) cycle
+                if( joint_topk_candidates%particle_weight(iptcl_map) <= 0. ) cycle
                 hard = joint_topk_candidates%hard_rank(iptcl_map)
                 if( hard < 1 ) cycle
                 cand_shift = 0.
@@ -820,22 +807,31 @@ contains
             if( .not. ctrl%l_joint_topk ) return
             call refine_joint_topk_inpls_for_batch()
             call refine_joint_topk_shifts_for_batch()
-            call apply_joint_balance_prior_for_batch()
         end subroutine refine_joint_topk_for_batch
 
         subroutine finalize_joint_topk_reliability()
+            type(joint2D_balance_diag) :: balance_diag
             logical :: fallback_used
+
+            ! Candidate refinements reset logits from their new distances. Re-run
+            ! the latent optimizer on the fully refined table, then apply one
+            ! balance prior before making the only behavior-controlling gate.
+            call joint_topk_candidates%optimize_logits(p_ptr%sgd_inner_its, p_ptr%sgd_eta_latent)
+            call joint_topk_candidates%apply_balance_prior(p_ptr%ncls, p_ptr%sgd_balance_weight, balance_diag)
+            call joint_topk_candidates%write_balance_diag('cluster2D final', balance_diag)
             call joint_topk_candidates%evaluate_reliability(p_ptr%sgd_cavg_min_cands,&
                 &p_ptr%sgd_cavg_max_entropy)
             call joint_topk_candidates%activate_hard_fallback(fallback_used)
-            if( count(joint_topk_candidates%accepted) == 0 )then
-                THROW_HARD('joint 2D final reliability boundary has no nonempty candidate support')
+            if( count(joint_topk_candidates%particle_weight > 0.) /=&
+                &count(joint_topk_candidates%ncand > 0) )then
+                THROW_HARD('joint 2D final reliability boundary has missing candidate support')
             endif
             call sync_joint_hard_assignments(1, nptcls2update)
             call joint_topk_candidates%write_diag('cluster2D final reliability', iteration=p_ptr%which_iter)
-            write(logfhandle,'(A,1X,A,L1,1X,A,I0,1X,A,I0)')&
+            write(logfhandle,'(A,1X,A,L1,1X,A,I0,1X,A,I0,1X,A,I0)')&
                 &'>>> JOINT2D SGD FINAL UPDATE:', 'fallback=', fallback_used,&
-                &'accepted=', count(joint_topk_candidates%accepted), 'sampled=', nptcls2update
+                &'soft_accepted=', count(joint_topk_candidates%accepted),&
+                &'contributing=', count(joint_topk_candidates%particle_weight > 0.), 'sampled=', nptcls2update
         end subroutine finalize_joint_topk_reliability
 
         subroutine accumulate_class_averages_for_batch()

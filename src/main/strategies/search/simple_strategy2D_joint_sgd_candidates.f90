@@ -37,8 +37,8 @@ type :: joint2D_balance_diag
     integer :: nclasses = 0
     integer :: active_classes = 0
     integer :: zero_support_classes = 0
-    integer :: accepted_particles = 0
-    integer :: rejected_particles = 0
+    integer :: eligible_particles = 0
+    integer :: empty_particles = 0
     integer :: candidates = 0
     integer :: winner_churn = 0
     integer :: nonfinite = 0
@@ -66,9 +66,9 @@ type :: joint2D_candidate_table
     real,                    allocatable :: expected_loss(:) !< current expected candidate loss
     real,                    allocatable :: initial_expected_loss(:) !< expected loss before optimization
     real,                    allocatable :: loss_delta(:)    !< initial_expected_loss - expected_loss
-    real,                    allocatable :: particle_weight(:) !< effective particle weight after gates
+    real,                    allocatable :: particle_weight(:) !< total class-average support; independent of soft acceptance
     real,                    allocatable :: base_shift(:,:)  !< pre-assignment/base shift (2,nptcls)
-    logical,                 allocatable :: accepted(:)      !< reliability gate result
+    logical,                 allocatable :: accepted(:)      !< true only for a reliable soft top-K assignment
 contains
     procedure :: build_from_loc_tab
     procedure :: set_base_shifts
@@ -208,8 +208,8 @@ contains
         local_diag%balance_weight = balance_weight
 
         do iptcl = first, last
-            if( .not. self%accepted(iptcl) ) cycle
-            local_diag%accepted_particles = local_diag%accepted_particles + 1
+            if( self%ncand(iptcl) < 1 ) cycle
+            local_diag%eligible_particles = local_diag%eligible_particles + 1
             local_diag%entropy_before = local_diag%entropy_before + self%entropy(iptcl)
             nc = self%ncand(iptcl)
             if( nc < 1 ) cycle
@@ -225,7 +225,7 @@ contains
                 support(icls) = support(icls) + self%cand(irank,iptcl)%weight
             end do
         end do
-        local_diag%rejected_particles = (last - first + 1) - local_diag%accepted_particles
+        local_diag%empty_particles = (last - first + 1) - local_diag%eligible_particles
 
         support_total = 0.
         do k = 1, nclasses
@@ -260,7 +260,7 @@ contains
 
         if( balance_weight > 0. .and. local_diag%active_classes > 0 )then
             do iptcl = first, last
-                if( .not. self%accepted(iptcl) ) cycle
+                if( self%ncand(iptcl) < 1 ) cycle
                 nc = self%ncand(iptcl)
                 if( nc < 1 ) cycle
                 hard_before = self%hard_rank(iptcl)
@@ -282,12 +282,12 @@ contains
         endif
 
         do iptcl = first, last
-            if( .not. self%accepted(iptcl) ) cycle
+            if( self%ncand(iptcl) < 1 ) cycle
             local_diag%entropy_after = local_diag%entropy_after + self%entropy(iptcl)
         end do
-        if( local_diag%accepted_particles > 0 )then
-            local_diag%entropy_before = local_diag%entropy_before / real(local_diag%accepted_particles)
-            local_diag%entropy_after  = local_diag%entropy_after  / real(local_diag%accepted_particles)
+        if( local_diag%eligible_particles > 0 )then
+            local_diag%entropy_before = local_diag%entropy_before / real(local_diag%eligible_particles)
+            local_diag%entropy_after  = local_diag%entropy_after  / real(local_diag%eligible_particles)
         endif
         if( local_diag%active_classes == 0 )then
             local_diag%prior_min = 0.
@@ -447,31 +447,40 @@ contains
         class(joint2D_candidate_table), intent(inout) :: self
         logical, optional,              intent(out)   :: fallback_used
         integer :: iptcl, irank, nc, hard, fallback_count
+        real    :: reduced_weight
 
         call require_allocated(self, 'hard fallback requested before build/read')
         if( present(fallback_used) ) fallback_used = .false.
-        if( count(self%accepted) > 0 .or. count(self%ncand > 0) == 0 ) return
+        if( count(self%ncand > 0) == 0 ) return
+
+        ! Reliability remains a soft-assignment property.  Every uncertain but
+        ! otherwise valid particle still contributes through its hard winner,
+        ! downweighted by the posterior winner probability.  This avoids the
+        ! discontinuity where a mixed batch discarded uncertain particles while
+        ! an all-uncertain batch promoted all of them to unit support.
+        if( present(fallback_used) ) fallback_used = count(self%accepted) == 0
 
         fallback_count = 0
         do iptcl = 1, size(self%ncand)
             nc = self%ncand(iptcl)
-            if( nc < 1 ) cycle
+            if( nc < 1 .or. self%accepted(iptcl) ) cycle
             hard = self%hard_rank(iptcl)
             if( hard < 1 .or. hard > nc ) cycle
-            self%accepted(iptcl)        = .true.
-            self%particle_weight(iptcl) = 1.
+            reduced_weight = self%winner_weight(iptcl)
+            if( .not. finite_real(reduced_weight) .or. reduced_weight <= 0. ) cycle
+            self%particle_weight(iptcl) = reduced_weight
             do irank = 1, nc
                 self%cand(irank,iptcl)%eff_weight = 0.
             end do
-            self%cand(hard,iptcl)%eff_weight = 1.
+            self%cand(hard,iptcl)%eff_weight = reduced_weight
             fallback_count = fallback_count + 1
         end do
-        if( present(fallback_used) ) fallback_used = fallback_count > 0
-        write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
-            &'>>> JOINT2D SGD TOPK FINAL FALLBACK:', 'hard_winner=', fallback_count,&
+        write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,L1)')&
+            &'>>> JOINT2D SGD TOPK UNCERTAIN SUPPORT:', 'hard_winner=', fallback_count,&
             &'nonempty=', count(self%ncand > 0),&
             &'too_few=', count(self%reject_reason == RELIABILITY_TOO_FEW),&
-            &'high_entropy=', count(self%reject_reason == RELIABILITY_HIGH_ENTROPY)
+            &'high_entropy=', count(self%reject_reason == RELIABILITY_HIGH_ENTROPY),&
+            &'global=', count(self%accepted) == 0
     end subroutine activate_hard_fallback
 
     subroutine apply_reliability( self, min_cands, max_entropy, hard_fallback_when_empty )
@@ -729,7 +738,7 @@ contains
             iptcl = first_ptcl + iloc - 1
             nc = self%ncand(iptcl)
             ncands(iloc) = nc
-            if( nc < 1 .or. .not. self%accepted(iptcl) ) cycle
+            if( nc < 1 .or. self%particle_weight(iptcl) <= 0. ) cycle
             do irank = 1, nc
                 refs(irank,iloc) = ref_from_candidate(self, irank, iptcl)
                 weights(irank,iloc) = self%cand(irank,iptcl)%eff_weight
@@ -742,16 +751,17 @@ contains
         character(len=*),               intent(in) :: label
         integer, optional,               intent(in) :: iteration
         integer :: nptcls, topk, nonempty, empty_count, accepted_count, too_few_count, entropy_count
-        integer :: fallback_count, soft_accepted_count, winner_churn_count, diag_iteration
+        integer :: fallback_count, soft_accepted_count, contributing_count, winner_churn_count, diag_iteration
         integer :: iptcl, irank, nc, gap21_count, gap31_count, logit_range_count
         integer :: rank_weight_count, softmax_nonfinite
         real    :: avg_ncand, avg_entropy, avg_initial_entropy, avg_norm_entropy, avg_winner_weight
         real    :: avg_initial_loss, avg_expected_loss, avg_loss_delta
         real    :: accepted_fraction, entropy_min, entropy_max, norm_entropy_min, norm_entropy_max
-        real    :: winner_weight_min, winner_weight_max, fallback_fraction
+        real    :: winner_weight_min, winner_weight_max, fallback_fraction, effective_support
         real    :: dist1, dist2, dist3, cand_dist, logit_min, logit_max, weight_sum, rank_weight_mean
         real    :: gap21_q(3), gap31_q(3), logit_range_q(3), norm_entropy_q(3), winner_weight_q(3)
-        real    :: weight_sum_q(3), rank_weight_q(3)
+        real    :: weight_sum_q(3), rank_weight_q(3), particle_weight_q(3)
+        logical :: global_fallback
         real, allocatable :: gap21_vals(:), gap31_vals(:), logit_range_vals(:)
         real, allocatable :: weight_sum_vals(:), rank_weight_vals(:)
 
@@ -766,8 +776,11 @@ contains
         accepted_count = count(self%accepted)
         too_few_count  = count(self%reject_reason == RELIABILITY_TOO_FEW)
         entropy_count  = count(self%reject_reason == RELIABILITY_HIGH_ENTROPY)
-        fallback_count = count(self%accepted .and. self%reject_reason /= RELIABILITY_OK)
+        fallback_count = count((self%particle_weight > 0.) .and. self%reject_reason /= RELIABILITY_OK)
         soft_accepted_count = count(self%accepted .and. self%reject_reason == RELIABILITY_OK)
+        contributing_count = count(self%particle_weight > 0.)
+        effective_support = sum(self%particle_weight)
+        global_fallback = nonempty > 0 .and. soft_accepted_count == 0 .and. fallback_count > 0
         winner_churn_count = count((self%ncand > 0) .and. (self%initial_hard_rank /= self%hard_rank))
         diag_iteration = -1
         if( present(iteration) ) diag_iteration = iteration
@@ -794,6 +807,7 @@ contains
         winner_weight_q = 0.
         weight_sum_q = 0.
         rank_weight_q = 0.
+        particle_weight_q = 0.
         gap21_count = 0
         gap31_count = 0
         logit_range_count = 0
@@ -864,6 +878,8 @@ contains
         call diagnostic_quantiles(pack(self%norm_entropy, self%ncand > 0), nonempty, norm_entropy_q)
         call diagnostic_quantiles(pack(self%winner_weight, self%ncand > 0), nonempty, winner_weight_q)
         call diagnostic_quantiles(weight_sum_vals, logit_range_count, weight_sum_q)
+        call diagnostic_quantiles(pack(self%particle_weight, self%particle_weight > 0.),&
+            &contributing_count, particle_weight_q)
         write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
             &'>>> JOINT2D SGD TOPK:', trim(label), 'topk=', topk, 'nptcls=', nptcls, 'empty=', empty_count,&
             &'accepted=', accepted_count, 'too_few=', too_few_count, 'high_entropy=', entropy_count,&
@@ -883,10 +899,14 @@ contains
         write(logfhandle,'(A,1X,A,1X,A,F7.3,1X,A,F7.3)')&
             &'>>> JOINT2D SGD WINNER:', trim(label), 'weight_min=', winner_weight_min,&
             &'weight_max=', winner_weight_max
-        write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,F8.5)')&
+        write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,F8.5,1X,A,L1)')&
             &'>>> JOINT2D SGD RELIABILITY:', trim(label), 'iteration=', diag_iteration,&
             &'soft_accepted=', soft_accepted_count, 'accepted=', accepted_count,&
-            &'fallback=', fallback_count, 'fallback_frac=', fallback_fraction
+            &'eligible=', nonempty, 'contributing=', contributing_count, 'fallback=', fallback_count,&
+            &'fallback_frac=', fallback_fraction, 'global_fallback=', global_fallback
+        write(logfhandle,'(A,1X,A,1X,A,ES12.4,1X,A,F8.5,1X,A,F8.5,1X,A,F8.5)')&
+            &'>>> JOINT2D SGD PARTICLE SUPPORT:', trim(label), 'effective=', effective_support,&
+            &'p10=', particle_weight_q(1), 'p50=', particle_weight_q(2), 'p90=', particle_weight_q(3)
         write(logfhandle,'(A,1X,A,1X,A,A,1X,A,I0,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4)')&
             &'>>> JOINT2D SGD DIST GAP QUANTILES:', trim(label), 'gap=', 'd2-d1', 'samples=', gap21_count,&
             &'p10=', gap21_q(1), 'p50=', gap21_q(2), 'p90=', gap21_q(3)
@@ -955,7 +975,7 @@ contains
         endif
         write(logfhandle,'(A,1X,A,1X,A,ES12.4,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
             &'>>> JOINT2D SGD BALANCE:', trim(label), 'weight=', diag%balance_weight,&
-            &'accepted=', diag%accepted_particles, 'rejected=', diag%rejected_particles,&
+            &'eligible=', diag%eligible_particles, 'empty=', diag%empty_particles,&
             &'candidates=', diag%candidates, 'winner_churn=', diag%winner_churn
         write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,I0,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4)')&
             &'>>> JOINT2D SGD BALANCE SUPPORT:', trim(label), 'active_classes=', diag%active_classes,&
@@ -1007,7 +1027,7 @@ contains
         character(len=*),               intent(in) :: label
         integer, optional,              intent(in) :: part
         integer, optional,              intent(in) :: nparts
-        integer :: ipart, nparts_eff, nptcls, accepted_count, cand_count
+        integer :: ipart, nparts_eff, nptcls, accepted_count, contributing_count, cand_count
         real    :: support_sum
 
         if( .not. allocated(self%ncand) )then
@@ -1020,15 +1040,17 @@ contains
         if( present(nparts) ) nparts_eff = nparts
         nptcls = size(self%ncand)
         accepted_count = count(self%accepted)
+        contributing_count = count(self%particle_weight > 0.)
         cand_count = sum(self%ncand)
         support_sum = 0.
         if( nptcls > 0 ) support_sum = sum(self%particle_weight)
         write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
             &'>>> JOINT2D SGD DISTR:', trim(label), 'part=', ipart, 'nparts=', nparts_eff,&
             &'nptcls=', nptcls, 'topk=', size(self%cand, 1)
-        write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,ES12.4,1X,A,I0)')&
+        write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,ES12.4,1X,A,I0)')&
             &'>>> JOINT2D SGD DISTR PARTS:', trim(label), 'accepted=', accepted_count,&
-            &'candidates=', cand_count, 'checksum=', self%checksum(), 'support=', support_sum,&
+            &'contributing=', contributing_count, 'candidates=', cand_count,&
+            &'checksum=', self%checksum(), 'support=', support_sum,&
             &'nonfinite=', count_nonfinite_records(self)
     end subroutine write_distributed_diag
 

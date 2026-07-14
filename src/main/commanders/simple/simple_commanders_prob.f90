@@ -469,10 +469,10 @@ contains
             call joint_candidates%apply_balance_prior(params%ncls, params%sgd_balance_weight, balance_diag)
             call joint_candidates%evaluate_reliability(params%sgd_cavg_min_cands, params%sgd_cavg_max_entropy)
             if( count(joint_candidates%accepted) == 0 )then
-                write(logfhandle,'(A)') '>>> JOINT2D SGD: candidate generation accepted zero particles; deferring emergency fallback to final update boundary'
+                write(logfhandle,'(A)') '>>> JOINT2D SGD: provisional candidate reliability accepted zero soft particles'
             endif
             call joint_candidates%write_balance_diag('prob_align2D', balance_diag)
-            call joint_candidates%write_diag('prob_align2D', iteration=params%which_iter)
+            call joint_candidates%write_diag('prob_align2D provisional reliability', iteration=params%which_iter)
             call joint_candidates%write_table(JOINT2D_CANDIDATES_FNAME)
             if( params%nparts > 1 .and. allocated(qenv%parts) )then
                 do ipart = 1, params%nparts

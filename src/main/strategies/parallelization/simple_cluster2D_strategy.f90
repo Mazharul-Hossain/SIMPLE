@@ -282,6 +282,7 @@ contains
                                                      array=L_USE_SLURM_ARR, &
                                                      extra_params=params)
         call terminate_stream(params, 'SIMPLE_DISTR_CLUSTER2D HARD STOP 1')
+        call write_joint_sgd_distributed_aggregate(params)
         ! Merge alignment docs
         call build%spproj%merge_algndocs(params%nptcls, params%nparts, 'ptcl2D', ALGN_FBODY)
         ! Assemble class averages
@@ -357,6 +358,37 @@ contains
     end subroutine distr_finalize_run
 
     ! private helpers
+
+    subroutine write_joint_sgd_distributed_aggregate( params )
+        use simple_strategy2D_joint_sgd_candidates, only: joint2D_candidate_table
+        type(parameters), intent(in) :: params
+        type(joint2D_candidate_table) :: part_tab
+        integer :: ipart, eligible, soft_accepted, contributing, uncertain_hard
+        real    :: effective_support
+
+        if( .not. params%l_sgd .or. trim(params%sgd_mode) /= 'joint' .or.&
+            &.not. params%l_prob_align_mode ) return
+        eligible         = 0
+        soft_accepted    = 0
+        contributing     = 0
+        uncertain_hard   = 0
+        effective_support = 0.
+        do ipart = 1, params%nparts
+            call part_tab%read_part_table(ipart, params%numlen, refined=.true.)
+            eligible       = eligible + count(part_tab%ncand > 0)
+            soft_accepted  = soft_accepted + count(part_tab%accepted)
+            contributing   = contributing + count(part_tab%particle_weight > 0.)
+            uncertain_hard = uncertain_hard + count((part_tab%particle_weight > 0.) .and.&
+                &(.not. part_tab%accepted))
+            effective_support = effective_support + sum(part_tab%particle_weight)
+            call part_tab%kill
+        end do
+        write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,ES12.4,1X,A,L1)')&
+            &'>>> JOINT2D SGD DISTR FINAL AGGREGATE:', 'parts=', params%nparts, 'eligible=', eligible,&
+            &'soft_accepted=', soft_accepted, 'contributing=', contributing,&
+            &'fallback=', uncertain_hard, 'effective_support=', effective_support,&
+            &'global_fallback=', eligible > 0 .and. soft_accepted == 0
+    end subroutine write_joint_sgd_distributed_aggregate
 
     !> Initialize references for cluster2D (used by inmem and distr modes).
     subroutine init_cluster2D_refs( cline, params, build )

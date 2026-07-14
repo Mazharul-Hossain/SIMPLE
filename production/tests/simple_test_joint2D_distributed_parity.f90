@@ -12,6 +12,7 @@ type(joint2D_candidate_table) :: hard_global, hard_part
 type(joint2D_candidate_table) :: parts(2)
 integer :: pinds(5), part1_pinds(3), part2_pinds(2)
 real    :: shared_support(4), part_support(4), rejected_support(4)
+logical :: fallback_used
 
 pinds       = [11, 12, 13, 14, 15]
 part1_pinds = [11, 13, 15]
@@ -54,6 +55,18 @@ call require_close(maxval(abs(part_support - shared_support)), 0.0, 1.0e-6,&
 call global_tab%apply_reliability(3, 1.0)
 call accumulate_support(global_tab, rejected_support)
 call require_close(sum(rejected_support), 0.0, 1.0e-6, 'rejected candidates contribute zero support')
+call global_tab%activate_hard_fallback(fallback_used)
+call require_true(fallback_used, 'all-rejected global table reports global fallback')
+call require_true(count(global_tab%accepted) == 0, 'global fallback preserves soft-rejected flags')
+call accumulate_support(global_tab, shared_support)
+call require_true(sum(shared_support) > 0.0, 'all nonempty particles retain reduced hard support')
+call global_tab%extract_by_pinds(part1_pinds, part1)
+call global_tab%extract_by_pinds(part2_pinds, part2)
+call accumulate_support(part1, part_support)
+call accumulate_support(part2, rejected_support)
+part_support = part_support + rejected_support
+call require_close(maxval(abs(part_support - shared_support)), 0.0, 1.0e-6,&
+    &'partitioned reduced fallback support equals shared support')
 call global_tab%apply_reliability(2, 1.0)
 
 call hard_global%build_from_loc_tab(loc_tab, 1, pinds=pinds)
@@ -112,7 +125,7 @@ contains
         integer :: iptcl, irank, icls
         support = 0.0
         do iptcl = 1, size(tab%ncand)
-            if( .not. tab%accepted(iptcl) ) cycle
+            if( tab%particle_weight(iptcl) <= 0.0 ) cycle
             do irank = 1, tab%ncand(iptcl)
                 icls = tab%cand(irank,iptcl)%icls
                 if( icls >= 1 .and. icls <= size(support) )then

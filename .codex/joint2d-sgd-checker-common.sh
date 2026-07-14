@@ -97,9 +97,14 @@ check_stage4_iteration_policy() {
 }
 
 check_soft_acceptance_observed() {
-  require_contains 'JOINT2D SGD RELIABILITY:' 'joint SGD reliability diagnostics'
-  if ! grep -Eq 'JOINT2D SGD RELIABILITY:.*soft_accepted=[[:space:]]*[1-9][0-9]*' "$log_file"; then
-    fail 'no soft-accepted particles observed; every joint SGD reliability diagnostic used zero soft assignments'
+  require_contains 'JOINT2D SGD RELIABILITY: cluster2D final reliability' \
+    'final joint SGD reliability diagnostics'
+  if ! grep -Eq 'JOINT2D SGD RELIABILITY: cluster2D final reliability.*soft_accepted=[[:space:]]*[1-9][0-9]*' "$log_file"; then
+    fail 'no soft-accepted particles observed at any final joint SGD update boundary'
+  fi
+  if grep -Fq 'DISTRIBUTED EXECUTION' "$log_file"; then
+    require_contains 'JOINT2D SGD DISTR FINAL AGGREGATE:' \
+      'distributed final reliability aggregate'
   fi
 }
 
@@ -116,23 +121,23 @@ check_smoke_joint_log() {
   check_abinitio_stage_matrix "$stage4_mode" on
   check_no_joint_outside_late_stages
   check_stage4_iteration_policy "$stage4_mode"
-  require_contains "JOINT2D SGD TOPK: prob_align2D topk=${expected_topk}" \
+  require_contains "JOINT2D SGD TOPK: prob_align2D provisional reliability topk=${expected_topk}" \
     "prob_align2D top-K=${expected_topk} runtime diagnostics"
-  require_contains "JOINT2D SGD TOPK: cluster2D topk=${expected_topk}" \
+  require_contains "JOINT2D SGD TOPK: cluster2D provisional reliability topk=${expected_topk}" \
     "cluster2D top-K=${expected_topk} runtime diagnostics"
+  require_contains "JOINT2D SGD TOPK: cluster2D final reliability topk=${expected_topk}" \
+    "final cluster2D top-K=${expected_topk} runtime diagnostics"
   require_contains 'JOINT2D SGD LATENT' 'latent diagnostics'
   require_contains 'JOINT2D SGD TOPK RANGES' 'top-K range diagnostics'
   require_contains 'JOINT2D SGD SOFTMAX:' 'SoftMax normalization diagnostics'
   require_contains 'JOINT2D SGD WEIGHTS:' 'rank-wise SoftMax weight diagnostics'
+  require_contains 'JOINT2D SGD PARTICLE SUPPORT:' 'particle-support diagnostics'
   require_contains 'CAVG SGD UPDATE' 'CAVG update diagnostics'
   require_contains 'CAVG SGD NORMS' 'CAVG norm diagnostics'
   require_contains 'CAVG SGD RESTORE' 'CAVG restoration diagnostics'
   check_soft_acceptance_observed
   if grep -Eq 'nonfinite=[[:space:]]*[1-9][0-9]*' "$log_file"; then
     fail "nonzero nonfinite diagnostic found"
-  fi
-  if grep -Eiq 'zero accepted|accepted=[[:space:]]*0([^0-9]|$)' "$log_file"; then
-    fail "zero accepted top-K diagnostic found"
   fi
 }
 
@@ -142,13 +147,15 @@ check_science_joint_log() {
   check_abinitio_stage_matrix "$stage4_mode" on
   check_no_joint_outside_late_stages
   check_stage4_iteration_policy "$stage4_mode"
-  require_contains 'JOINT2D SGD TOPK: prob_align2D' 'prob_align2D top-K diagnostics'
-  require_contains 'JOINT2D SGD TOPK: cluster2D' 'cluster2D top-K diagnostics'
+  require_contains 'JOINT2D SGD TOPK: prob_align2D provisional reliability' 'prob_align2D provisional diagnostics'
+  require_contains 'JOINT2D SGD TOPK: cluster2D provisional reliability' 'cluster2D provisional diagnostics'
+  require_contains 'JOINT2D SGD TOPK: cluster2D final reliability' 'cluster2D final diagnostics'
   require_contains 'JOINT2D SGD LATENT' 'latent-logit diagnostics'
   require_contains 'JOINT2D SGD TOPK RANGES' 'top-K range diagnostics'
   require_contains 'JOINT2D SGD WINNER' 'top-K winner diagnostics'
   require_contains 'JOINT2D SGD SOFTMAX:' 'SoftMax normalization diagnostics'
   require_contains 'JOINT2D SGD WEIGHTS:' 'rank-wise SoftMax weight diagnostics'
+  require_contains 'JOINT2D SGD PARTICLE SUPPORT:' 'particle-support diagnostics'
   require_contains 'JOINT2D SGD INPL' 'in-plane refinement diagnostics'
   require_contains 'JOINT2D SGD INPL LOSSES' 'in-plane loss diagnostics'
   require_contains 'JOINT2D SGD SHIFT' 'shift refinement diagnostics'
@@ -162,10 +169,6 @@ check_science_joint_log() {
   require_contains 'CAVG SGD RESTORE' 'CAVG restoration diagnostics'
   require_contains 'CAVG SGD RESTORE FRC' 'CAVG restoration FRC diagnostics'
   check_soft_acceptance_observed
-  if grep -E 'JOINT2D SGD (TOPK|BALANCE|INPL|SHIFT)' "$log_file" |
-      grep -Eq 'accepted=[[:space:]]*0([^0-9]|$)'; then
-    fail "zero accepted joint diagnostic found for case ${case_name}"
-  fi
 }
 
 check_run_outputs() {

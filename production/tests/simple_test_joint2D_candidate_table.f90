@@ -19,6 +19,7 @@ integer :: i, diag_checksum
 integer :: old_inpl
 real    :: base_shifts(2,4), weight_sum, expected_weight
 real    :: p4_initial_weight, p4_initial_loss, p4_initial_entropy
+real    :: refined_logit
 real    :: old_shift(2), new_shift(2), step_norm
 real    :: balance_range_before, balance_range_after, zero_logit, zero_weight
 logical :: updated, fallback_used
@@ -95,10 +96,13 @@ call tab%apply_reliability(2, 0.50)
 call require_true(.not. tab%accepted(1), 'high-entropy particle is rejected')
 call require_true(tab%accepted(4), 'reliability gates use post-optimization entropy')
 call tab%activate_hard_fallback(fallback_used)
-call require_true(.not. fallback_used, 'fallback remains inactive when any particle passes')
-call require_true(.not. tab%accepted(1), 'fallback does not hard-accept an individually rejected particle')
+call require_true(.not. fallback_used, 'global fallback remains inactive when any particle passes')
+call require_true(.not. tab%accepted(1), 'uncertain support does not mark a rejected particle soft-accepted')
 call tab%export_batch(1, 4, batch_refs, batch_weights, batch_ncands)
-call require_close(sum(batch_weights(:,1)), 0.0, 1.0e-6, 'high-entropy export has zero support')
+call require_close(sum(batch_weights(:,1)), tab%winner_weight(1), 1.0e-6,&
+    &'high-entropy export uses reduced winner-weight support')
+call require_close(batch_weights(tab%hard_rank(1),1), tab%winner_weight(1), 1.0e-6,&
+    &'uncertain particle contributes only through its hard winner')
 call tab%apply_reliability(2, 0.95)
 
 call tab%export_batch(1, 4, batch_refs, batch_weights, batch_ncands)
@@ -137,13 +141,21 @@ call tab_inpl%apply_reliability(2, 0.50)
 call require_true(tab_inpl%accepted(4), 'reliability gates use post-in-plane-refinement entropy')
 call tab_inpl%apply_inpl_refinement(1, 1, 20, 1.0, old_inpl=old_inpl, updated=updated)
 call require_true(tab_inpl%hard_rank(1) == 1, 'equal-distance in-plane refinement remains deterministic')
+refined_logit = tab_inpl%cand(1,4)%logit
+call tab_inpl%optimize_logits(2, 0.5)
+call require_true(abs(tab_inpl%cand(1,4)%logit - refined_logit) > 1.0e-6,&
+    &'post-refinement latent pass updates logits from refined distances')
 call tab_inpl%kill
 
 call tab_balance_zero%build_from_loc_tab(balance_loc_tab, 2)
-call tab_balance_zero%apply_reliability(2, 1.0)
+call tab_balance_zero%apply_reliability(2, 0.0)
+call require_true(count(tab_balance_zero%accepted) == 0,&
+    &'provisional gate can reject every balance-test particle')
 zero_logit = tab_balance_zero%cand(1,1)%logit
 zero_weight = tab_balance_zero%cand(1,1)%weight
 call tab_balance_zero%apply_balance_prior(4, 0.0, zero_diag)
+call require_true(zero_diag%eligible_particles == 3,&
+    &'balance prior includes every nonempty particle despite provisional rejection')
 call require_close(tab_balance_zero%cand(1,1)%logit, zero_logit, 1.0e-6,&
     &'zero balance weight leaves logits unchanged')
 call require_close(tab_balance_zero%cand(1,1)%weight, zero_weight, 1.0e-6,&
@@ -170,11 +182,14 @@ call tab_balance%evaluate_reliability(2, 0.0)
 call require_true(count(tab_balance%accepted) == 0, 'reliability evaluation can preserve a globally empty result')
 call tab_balance%activate_hard_fallback(fallback_used)
 call require_true(fallback_used, 'final-boundary fallback reports that it was activated')
-call require_true(tab_balance%accepted(1), 'global-empty reliability fallback accepts hard winner')
-call require_close(tab_balance%cand(tab_balance%hard_rank(1),1)%eff_weight, 1.0, 1.0e-6,&
-    &'global-empty reliability fallback gives hard winner unit support')
-call require_close(sum(tab_balance%cand(1:tab_balance%ncand(1),1)%eff_weight), 1.0, 1.0e-6,&
-    &'global-empty reliability fallback keeps particle support normalized')
+call require_true(.not. tab_balance%accepted(1),&
+    &'global-empty reliability fallback preserves the soft-rejected state')
+call require_close(tab_balance%cand(tab_balance%hard_rank(1),1)%eff_weight,&
+    &tab_balance%winner_weight(1), 1.0e-6,&
+    &'global-empty reliability fallback uses reduced winner-weight support')
+call require_close(sum(tab_balance%cand(1:tab_balance%ncand(1),1)%eff_weight),&
+    &tab_balance%winner_weight(1), 1.0e-6,&
+    &'global-empty reliability fallback does not promote support to one')
 call tab_balance%apply_reliability(2, 1.0)
 call del_file(ROUNDTRIP_FNAME)
 call tab_balance%write_table(ROUNDTRIP_FNAME)
