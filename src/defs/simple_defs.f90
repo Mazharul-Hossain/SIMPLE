@@ -62,6 +62,7 @@ real,             parameter   :: HPLIM_GUINIER        = 20.       !< high-pass l
 ! general parameters
 real,    parameter    :: PRUNE_FRAC                   = 0.3       !< fraction of particles after which a project is automatically pruned
 integer, parameter    :: BUFSZ_DEFAULT                = 1024      !< Default stack_io buffer size
+integer, parameter    :: NSAMPLE_DEFAULT_2D           = 200000    !< Default absolute particle cap for 2D sampled updates
 integer, parameter    :: DIFFMAP_GRAPH_KNN_DEFAULT    = 10        !< Default kNN for diffusion-map graph workflows
 integer, parameter    :: DIFFMAP_NEIGS_SCAN_DEFAULT   = 200       !< Default eigenspectrum scan upper bound before ICM rank selection
 integer, parameter    :: DIFFMAP_NEIGS_AUTO_SCAN_MAX  = 50        !< Maximum scan size when neigs=0 asks for auto sizing

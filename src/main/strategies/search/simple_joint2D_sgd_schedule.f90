@@ -8,8 +8,20 @@ integer, parameter, public :: JOINT2D_SGD_ALTERNATE_UNTIL = 20
 integer, parameter :: SGD_ACTIVATION_LEN = 9
 public :: joint2D_sgd_active_for_iteration, joint2D_sgd_active_for_policy
 public :: joint2D_sgd_activation_for_stage, joint2D_sgd_activation_valid
+public :: joint2D_sgd_batch_size
 
 contains
+
+    pure integer function joint2D_sgd_batch_size( nactive, batch_frac, max_samples ) result( batch_size )
+        integer, intent(in) :: nactive, max_samples
+        real,    intent(in) :: batch_frac
+        if( nactive <= 0 )then
+            batch_size = 0
+            return
+        endif
+        batch_size = min(nactive, max(1, nint(batch_frac * real(nactive))))
+        if( max_samples > 0 ) batch_size = min(batch_size, max_samples)
+    end function joint2D_sgd_batch_size
 
     pure logical function joint2D_sgd_active_for_iteration( which_iter ) result( active )
         integer, intent(in) :: which_iter

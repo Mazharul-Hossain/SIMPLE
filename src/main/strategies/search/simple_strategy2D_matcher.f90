@@ -274,6 +274,7 @@ contains
         end subroutine init_ctrl
 
         subroutine sample_particles_for_update()
+            integer :: nactive
             if( allocated(pinds) ) deallocate(pinds)
             if( ctrl%l_prob_align )then
                 ! prob_align2D owns the outer subset sampling in probabilistic mode;
@@ -281,6 +282,10 @@ contains
                 call b_ptr%spproj_field%sample4update_reprod([p_ptr%fromp,p_ptr%top], nptcls2update, pinds)
             else
                 call sample_ptcls4update2D(p_ptr, b_ptr, [p_ptr%fromp,p_ptr%top], ctrl%l_sample_updates, nptcls2update, pinds)
+            endif
+            if( ctrl%l_joint_topk )then
+                nactive = b_ptr%spproj_field%count_state_gt_zero()
+                if( nactive > 0 ) p_ptr%update_frac = real(nptcls2update) / real(nactive)
             endif
         end subroutine sample_particles_for_update
 

@@ -253,7 +253,8 @@ contains
     end subroutine sample_ptcls4missing3D
 
     subroutine sample_ptcls4update2D( params, build, pfromto, l_updatefrac, nptcls, pinds, &
-        &update_frac_override, force_resample )
+        &update_frac_override, force_resample, max_samples_override )
+        use simple_joint2D_sgd_schedule, only: joint2D_sgd_batch_size
         class(parameters),    intent(in)    :: params
         class(builder),       intent(inout) :: build
         logical,              intent(in)    :: l_updatefrac
@@ -262,8 +263,10 @@ contains
         integer, allocatable, intent(inout) :: pinds(:)
         real, optional,       intent(in)    :: update_frac_override
         logical, optional,    intent(in)    :: force_resample
+        integer, optional,    intent(in)    :: max_samples_override
         real    :: update_frac_eff
         logical :: l_has_been_sampled, l_force_resample, l_fractional
+        integer :: iptcl, nactive, batch_size
         l_has_been_sampled = build%spproj_field%has_been_sampled()
         update_frac_eff    = params%update_frac
         if( present(update_frac_override) ) update_frac_eff = update_frac_override
@@ -273,6 +276,18 @@ contains
         if( l_fractional )then
             if( update_frac_eff <= 0.0 .or. update_frac_eff >= 1.0 )then
                 THROW_HARD('fractional 2D particle sampling requires a fraction > 0 and < 1')
+            endif
+            if( present(max_samples_override) )then
+                if( max_samples_override < 1 ) THROW_HARD('maximum 2D particle sample must be >= 1')
+                nactive = 0
+                do iptcl = pfromto(1), pfromto(2)
+                    if( build%spproj_field%get_state(iptcl) > 0 ) nactive = nactive + 1
+                end do
+                if( nactive < 1 ) THROW_HARD('no active particles to sample')
+                batch_size = joint2D_sgd_batch_size(nactive, update_frac_eff, max_samples_override)
+                ! sample4update_* accepts a fraction, so convert the capped integer
+                ! target back to the exact fraction that rounds to that target.
+                if( batch_size < nactive ) update_frac_eff = real(batch_size) / real(nactive)
             endif
             if( l_force_resample )then
                 ! Joint SGD draws one new outer mini-batch here. Downstream phases use

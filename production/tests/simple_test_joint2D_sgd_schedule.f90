@@ -1,7 +1,8 @@
 program simple_test_joint2D_sgd_schedule
 use simple_joint2D_sgd_schedule, only: joint2D_sgd_active_for_iteration,&
     &joint2D_sgd_active_for_policy, joint2D_sgd_activation_for_stage,&
-    &joint2D_sgd_activation_valid, JOINT2D_SGD_WARMUP_ITS, JOINT2D_SGD_ALTERNATE_UNTIL
+    &joint2D_sgd_activation_valid, joint2D_sgd_batch_size,&
+    &JOINT2D_SGD_WARMUP_ITS, JOINT2D_SGD_ALTERNATE_UNTIL
 implicit none
 
 integer :: iter
@@ -63,6 +64,17 @@ end do
 call require_true(.not. joint2D_sgd_active_for_policy('off', 2, 22), 'off policy stays off')
 call require_true(joint2D_sgd_active_for_policy('on', 1, 1), 'on policy starts immediately')
 call require_true(joint2D_sgd_active_for_policy('auto', 1, 21), 'auto preserves standalone global schedule')
+
+call require_true(joint2D_sgd_batch_size(1000, 0.60, 200000) == 600,&
+    &'batch fraction applies below the absolute cap')
+call require_true(joint2D_sgd_batch_size(1000000, 0.60, 200000) == 200000,&
+    &'nsample caps a large joint-SGD batch')
+call require_true(joint2D_sgd_batch_size(10, 0.60, 4) == 4,&
+    &'a user nsample override lowers the joint-SGD cap')
+call require_true(joint2D_sgd_batch_size(1, 0.60, 200000) == 1,&
+    &'a nonempty active set always samples at least one particle')
+call require_true(joint2D_sgd_batch_size(0, 0.60, 200000) == 0,&
+    &'an empty active set yields an empty batch')
 
 write(*,'(A)') 'simple_test_joint2D_sgd_schedule complete'
 

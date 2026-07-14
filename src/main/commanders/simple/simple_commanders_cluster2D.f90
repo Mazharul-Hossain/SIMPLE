@@ -35,7 +35,7 @@ contains
     subroutine exec_cluster2D( self, cline )
         use simple_cluster2D_strategy
         use simple_joint2D_sgd_schedule, only: joint2D_sgd_active_for_policy,&
-            &JOINT2D_SGD_WARMUP_ITS, JOINT2D_SGD_ALTERNATE_UNTIL
+            &joint2D_sgd_batch_size, JOINT2D_SGD_WARMUP_ITS, JOINT2D_SGD_ALTERNATE_UNTIL
         class(commander_cluster2D), intent(inout) :: self
         class(cmdline),             intent(inout) :: cline
         class(cluster2D_strategy), allocatable    :: strategy
@@ -45,7 +45,7 @@ contains
         logical                :: converged, l_sgd_requested, l_sgd_schedule, l_sgd_active
         logical                :: l_update_frac_requested
         real                   :: update_frac_requested
-        integer                :: niters
+        integer                :: niters, nactive, batch_size
         ! local defaults (kept consistent with previous distributed master)
         call cline%set('prg', 'cluster2D')
         call set_cluster2D_defaults(cline)
@@ -88,8 +88,10 @@ contains
             if( l_sgd_active .and. trim(params%sgd_mode) == 'joint' )then
                 ! Expose the actual SGD sample fraction to convergence and distributed
                 ! orchestration. prob_align2D remains the sole owner of drawing the sample.
+                nactive = build%spproj_field%count_state_gt_zero()
+                batch_size = joint2D_sgd_batch_size(nactive, params%sgd_batch_frac, params%nsample)
                 params%l_update_frac = .true.
-                params%update_frac   = params%sgd_batch_frac
+                if( nactive > 0 ) params%update_frac = real(batch_size) / real(nactive)
             endif
             if( l_sgd_active )then
                 params%sgd = 'yes'

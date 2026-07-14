@@ -415,9 +415,10 @@ contains
         ! by prob_tab2D/cluster2D_exec, but it is redrawn on later iterations.
         if( params%l_sgd .and. trim(params%sgd_mode) == 'joint' )then
             call sample_ptcls4update2D(params, build, [params%fromp,params%top], .true., nptcls, pinds,&
-                &update_frac_override=params%sgd_batch_frac, force_resample=.true.)
-            write(logfhandle,'(A,F6.3,A,I0)') '>>> JOINT2D SGD MINI-BATCH: fraction=',&
-                &params%sgd_batch_frac, ' sampled=', nptcls
+                &update_frac_override=params%sgd_batch_frac, force_resample=.true.,&
+                &max_samples_override=params%nsample)
+            write(logfhandle,'(A,F6.3,A,I0,A,I0)') '>>> JOINT2D SGD MINI-BATCH: fraction=',&
+                &params%sgd_batch_frac, ' cap=', params%nsample, ' sampled=', nptcls
         else
             call sample_ptcls4update2D(params, build, [params%fromp,params%top], params%l_update_frac, nptcls, pinds)
         endif
