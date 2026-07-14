@@ -406,6 +406,9 @@ infer_workflow_root() {
 }
 
 prepare_build_copy() {
+  local source_git_commit=""
+  source_git_commit="$(git -C "$simple_home" rev-parse --short HEAD)" ||
+    fail "could not determine source checkout commit: $simple_home"
   mkdir -p "$projects_home"
   if [[ -e "$build_copy" ]]; then
     [[ -d "$build_copy" ]] || fail "build copy path exists but is not a directory: $build_copy"
@@ -438,11 +441,19 @@ prepare_build_copy() {
 
   (
     cd "$build_copy"
+    # Refreshes deliberately preserve the build copy's .git directory. Pass the
+    # source checkout revision explicitly so the executable does not retain the
+    # stale revision recorded by that preserved Git metadata.
+    export SIMPLE_GIT_COMMIT_HASH="$source_git_commit"
+    echo "Embedding source checkout commit: $SIMPLE_GIT_COMMIT_HASH"
     mkdir -p build-debug
     echo "Configuring CMake build type: $cmake_build_type"
     cmake -S . -B build-debug -DCMAKE_BUILD_TYPE="$cmake_build_type" 2>&1 | tee build-debug/configure.log
     echo "Building with verbose output; logs: $build_copy/build-debug/build.log"
     cmake --build build-debug --parallel "$build_jobs" --verbose 2>&1 | tee build-debug/build.log
+    grep -Fq "simple_print_git_version('${source_git_commit}')" production/simple_exec.f90 ||
+      fail "built source does not contain expected Git commit: $source_git_commit"
+    echo "Verified executable source commit: $source_git_commit"
   )
   echo "Build copy ready: $build_copy"
 }

@@ -8,7 +8,10 @@ chomp($dir);
 my $simple_exec    = `readlink -f ../../production/simple_exec.f90`;
 my $single_exec    = `readlink -f ../../production/single_exec.f90`;
 my $stream_exec    = `readlink -f ../../production/simple_stream.f90`;
-my $git_commit_tag = `git rev-parse --short HEAD`;
+my $git_commit_tag = $ENV{'SIMPLE_GIT_COMMIT_HASH'};
+if( !defined($git_commit_tag) || $git_commit_tag eq '' ){
+    $git_commit_tag = `git rev-parse --short HEAD`;
+}
 chomp($simple_exec);
 chomp($single_exec);
 chomp($stream_exec);

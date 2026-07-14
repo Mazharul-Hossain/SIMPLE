@@ -354,7 +354,7 @@ contains
                     THROW_HARD('joint 2D top-K candidate table does not match sampled particle order')
                 endif
             end do
-            call joint_topk_candidates%write_diag('cluster2D')
+            call joint_topk_candidates%write_diag('cluster2D', iteration=p_ptr%which_iter)
         end subroutine read_joint_topk_candidates
 
         subroutine write_refined_joint_topk_candidates()
@@ -516,7 +516,7 @@ contains
                 THROW_HARD('joint 2D in-plane refinement left zero accepted top-K particles')
             endif
             call sync_joint_hard_assignments_for_batch()
-            call joint_topk_candidates%write_diag('cluster2D inpl-refined')
+            call joint_topk_candidates%write_diag('cluster2D inpl-refined', iteration=p_ptr%which_iter)
         end subroutine refine_joint_topk_inpls_for_batch
 
         subroutine refine_joint_topk_shifts_for_batch()
@@ -675,7 +675,7 @@ contains
                 THROW_HARD('joint 2D shift refinement left zero accepted top-K particles')
             endif
             call sync_joint_hard_assignments_for_batch()
-            call joint_topk_candidates%write_diag('cluster2D shift-refined')
+            call joint_topk_candidates%write_diag('cluster2D shift-refined', iteration=p_ptr%which_iter)
             write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
                 &'>>> JOINT2D SGD SHIFT:', 'batch=', ibatch, 'accepted=', accepted_batch,&
                 &'candidates=', sum(cand_count_t), 'refined=', refined_total, 'no_better=', no_better_total,&
@@ -707,7 +707,7 @@ contains
             endif
             call sync_joint_hard_assignments_for_batch()
             call joint_topk_candidates%write_balance_diag('cluster2D batch', balance_diag)
-            call joint_topk_candidates%write_diag('cluster2D balance-refined')
+            call joint_topk_candidates%write_diag('cluster2D balance-refined', iteration=p_ptr%which_iter)
         end subroutine apply_joint_balance_prior_for_batch
 
         subroutine sync_joint_hard_assignments_for_batch()

@@ -15,7 +15,7 @@ type(joint2D_candidate_table) :: tab, tab_roundtrip, tab_shift, tab_inpl, tab_ba
 type(joint2D_balance_diag) :: balance_diag, zero_diag
 real, allocatable :: batch_weights(:,:)
 integer, allocatable :: batch_ncands(:)
-integer :: i
+integer :: i, diag_checksum
 integer :: old_inpl
 real    :: base_shifts(2,4), weight_sum, expected_weight
 real    :: p4_initial_weight, p4_initial_loss, p4_initial_entropy
@@ -49,6 +49,9 @@ call require_close(tab%cand(1,1)%weight, tab%cand(2,1)%weight, 1.0e-6,&
     &'equal-distance candidates remain tied after optimization')
 call require_true(tab%hard_rank(1) == 1, 'equal-distance hard winner remains deterministic')
 call tab%apply_reliability(2, 0.95)
+diag_checksum = tab%checksum()
+call tab%write_diag('unit-test-topk3', iteration=98)
+call require_true(tab%checksum() == diag_checksum, 'top-K=3 diagnostic logging does not mutate candidate state')
 call require_true(tab%ncand(1) == 3, 'particle 1 retains three candidates')
 call require_true(tab%cand(1,1)%icls == 2, 'particle 1 rank 1 tie-breaks to lower class')
 call require_true(tab%cand(2,1)%icls == 3, 'particle 1 rank 2 keeps next tied class')
@@ -269,7 +272,9 @@ call require_true(tab%cand(1,1)%inpl == 7, 'topk=1 in-plane refinement updates i
 call require_close(tab%cand(1,1)%weight, 1.0, 1.0e-6, 'topk=1 in-plane refinement keeps unit weight')
 call require_true(tab%hard_rank(1) == 1, 'topk=1 in-plane refinement keeps hard rank one')
 
-call tab%write_diag('unit-test')
+diag_checksum = tab%checksum()
+call tab%write_diag('unit-test', iteration=99)
+call require_true(tab%checksum() == diag_checksum, 'diagnostic logging does not mutate candidate state')
 call tab%kill
 write(logfhandle,'(A)') 'simple_test_joint2D_candidate_table complete'
 

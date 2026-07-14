@@ -109,9 +109,10 @@ check_smoke_joint_log() {
   check_abinitio_stage_matrix "$stage4_mode" on
   check_no_joint_outside_late_stages
   check_stage4_iteration_policy "$stage4_mode"
-  require_contains "sgd_topk       : ${expected_topk}" "joint SGD top-K=${expected_topk} configuration"
-  require_contains 'JOINT2D SGD TOPK: prob_align2D' 'prob_align2D top-K diagnostics'
-  require_contains 'JOINT2D SGD TOPK: cluster2D' 'cluster2D top-K diagnostics'
+  require_contains "JOINT2D SGD TOPK: prob_align2D topk=${expected_topk}" \
+    "prob_align2D top-K=${expected_topk} runtime diagnostics"
+  require_contains "JOINT2D SGD TOPK: cluster2D topk=${expected_topk}" \
+    "cluster2D top-K=${expected_topk} runtime diagnostics"
   require_contains 'JOINT2D SGD LATENT' 'latent diagnostics'
   require_contains 'JOINT2D SGD TOPK RANGES' 'top-K range diagnostics'
   require_contains 'CAVG SGD UPDATE' 'CAVG update diagnostics'

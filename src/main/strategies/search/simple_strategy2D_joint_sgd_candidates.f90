@@ -719,16 +719,20 @@ contains
         end do
     end subroutine export_batch
 
-    subroutine write_diag( self, label )
+    subroutine write_diag( self, label, iteration )
         class(joint2D_candidate_table), intent(in) :: self
         character(len=*),               intent(in) :: label
+        integer, optional,               intent(in) :: iteration
         integer :: nptcls, topk, nonempty, empty_count, accepted_count, too_few_count, entropy_count
-        integer :: fallback_count
-        integer :: winner_churn_count
+        integer :: fallback_count, soft_accepted_count, winner_churn_count, diag_iteration
+        integer :: iptcl, irank, nc, gap21_count, gap31_count, logit_range_count
         real    :: avg_ncand, avg_entropy, avg_initial_entropy, avg_norm_entropy, avg_winner_weight
         real    :: avg_initial_loss, avg_expected_loss, avg_loss_delta
         real    :: accepted_fraction, entropy_min, entropy_max, norm_entropy_min, norm_entropy_max
-        real    :: winner_weight_min, winner_weight_max
+        real    :: winner_weight_min, winner_weight_max, fallback_fraction
+        real    :: dist1, dist2, dist3, cand_dist, logit_min, logit_max
+        real    :: gap21_q(3), gap31_q(3), logit_range_q(3), norm_entropy_q(3), winner_weight_q(3)
+        real, allocatable :: gap21_vals(:), gap31_vals(:), logit_range_vals(:)
 
         if( .not. allocated(self%ncand) )then
             write(logfhandle,'(A,1X,A)') '>>> JOINT2D SGD TOPK:', trim(label)//' table not allocated'
@@ -742,7 +746,10 @@ contains
         too_few_count  = count(self%reject_reason == RELIABILITY_TOO_FEW)
         entropy_count  = count(self%reject_reason == RELIABILITY_HIGH_ENTROPY)
         fallback_count = count(self%accepted .and. self%reject_reason /= RELIABILITY_OK)
+        soft_accepted_count = count(self%accepted .and. self%reject_reason == RELIABILITY_OK)
         winner_churn_count = count((self%ncand > 0) .and. (self%initial_hard_rank /= self%hard_rank))
+        diag_iteration = -1
+        if( present(iteration) ) diag_iteration = iteration
         avg_ncand = 0.
         avg_entropy = 0.
         avg_initial_entropy = 0.
@@ -758,8 +765,19 @@ contains
         norm_entropy_max = 0.
         winner_weight_min = 0.
         winner_weight_max = 0.
+        fallback_fraction = 0.
+        gap21_q = 0.
+        gap31_q = 0.
+        logit_range_q = 0.
+        norm_entropy_q = 0.
+        winner_weight_q = 0.
+        gap21_count = 0
+        gap31_count = 0
+        logit_range_count = 0
+        allocate(gap21_vals(nptcls), gap31_vals(nptcls), logit_range_vals(nptcls), source=0.)
         if( nptcls > 0 ) avg_ncand = real(sum(self%ncand)) / real(nptcls)
         if( nptcls > 0 ) accepted_fraction = real(accepted_count) / real(nptcls)
+        if( nonempty > 0 ) fallback_fraction = real(fallback_count) / real(nonempty)
         if( nonempty > 0 )then
             avg_entropy       = sum(self%entropy,       mask=self%ncand > 0) / real(nonempty)
             avg_initial_entropy = sum(self%initial_entropy, mask=self%ncand > 0) / real(nonempty)
@@ -775,6 +793,45 @@ contains
             winner_weight_min = minval(self%winner_weight, mask=self%ncand > 0)
             winner_weight_max = maxval(self%winner_weight, mask=self%ncand > 0)
         endif
+        do iptcl = 1, nptcls
+            nc = self%ncand(iptcl)
+            if( nc < 1 ) cycle
+            dist1 = huge(1.0)
+            dist2 = huge(1.0)
+            dist3 = huge(1.0)
+            logit_min = huge(1.0)
+            logit_max = -huge(1.0)
+            do irank = 1, nc
+                cand_dist = self%cand(irank,iptcl)%dist
+                if( cand_dist < dist1 )then
+                    dist3 = dist2
+                    dist2 = dist1
+                    dist1 = cand_dist
+                else if( cand_dist < dist2 )then
+                    dist3 = dist2
+                    dist2 = cand_dist
+                else if( cand_dist < dist3 )then
+                    dist3 = cand_dist
+                endif
+                logit_min = min(logit_min, self%cand(irank,iptcl)%logit)
+                logit_max = max(logit_max, self%cand(irank,iptcl)%logit)
+            end do
+            logit_range_count = logit_range_count + 1
+            logit_range_vals(logit_range_count) = logit_max - logit_min
+            if( nc >= 2 )then
+                gap21_count = gap21_count + 1
+                gap21_vals(gap21_count) = dist2 - dist1
+            endif
+            if( nc >= 3 )then
+                gap31_count = gap31_count + 1
+                gap31_vals(gap31_count) = dist3 - dist1
+            endif
+        end do
+        call diagnostic_quantiles(gap21_vals, gap21_count, gap21_q)
+        call diagnostic_quantiles(gap31_vals, gap31_count, gap31_q)
+        call diagnostic_quantiles(logit_range_vals, logit_range_count, logit_range_q)
+        call diagnostic_quantiles(pack(self%norm_entropy, self%ncand > 0), nonempty, norm_entropy_q)
+        call diagnostic_quantiles(pack(self%winner_weight, self%ncand > 0), nonempty, winner_weight_q)
         write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
             &'>>> JOINT2D SGD TOPK:', trim(label), 'topk=', topk, 'nptcls=', nptcls, 'empty=', empty_count,&
             &'accepted=', accepted_count, 'too_few=', too_few_count, 'high_entropy=', entropy_count,&
@@ -794,7 +851,44 @@ contains
         write(logfhandle,'(A,1X,A,1X,A,F7.3,1X,A,F7.3)')&
             &'>>> JOINT2D SGD WINNER:', trim(label), 'weight_min=', winner_weight_min,&
             &'weight_max=', winner_weight_max
+        write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,F8.5)')&
+            &'>>> JOINT2D SGD RELIABILITY:', trim(label), 'iteration=', diag_iteration,&
+            &'soft_accepted=', soft_accepted_count, 'accepted=', accepted_count,&
+            &'fallback=', fallback_count, 'fallback_frac=', fallback_fraction
+        write(logfhandle,'(A,1X,A,1X,A,A,1X,A,I0,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4)')&
+            &'>>> JOINT2D SGD DIST GAP QUANTILES:', trim(label), 'gap=', 'd2-d1', 'samples=', gap21_count,&
+            &'p10=', gap21_q(1), 'p50=', gap21_q(2), 'p90=', gap21_q(3)
+        write(logfhandle,'(A,1X,A,1X,A,A,1X,A,I0,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4)')&
+            &'>>> JOINT2D SGD DIST GAP QUANTILES:', trim(label), 'gap=', 'd3-d1', 'samples=', gap31_count,&
+            &'p10=', gap31_q(1), 'p50=', gap31_q(2), 'p90=', gap31_q(3)
+        write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4)')&
+            &'>>> JOINT2D SGD LOGIT RANGE QUANTILES:', trim(label), 'samples=', logit_range_count,&
+            &'p10=', logit_range_q(1), 'p50=', logit_range_q(2), 'p90=', logit_range_q(3)
+        write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,F8.5,1X,A,F8.5,1X,A,F8.5,1X,A,F8.5,1X,A,F8.5,1X,A,F8.5)')&
+            &'>>> JOINT2D SGD ENTROPY QUANTILES:', trim(label), 'samples=', nonempty,&
+            &'norm_p10=', norm_entropy_q(1), 'norm_p50=', norm_entropy_q(2), 'norm_p90=', norm_entropy_q(3),&
+            &'winner_p10=', winner_weight_q(1), 'winner_p50=', winner_weight_q(2), 'winner_p90=', winner_weight_q(3)
+        deallocate(gap21_vals, gap31_vals, logit_range_vals)
     end subroutine write_diag
+
+    subroutine diagnostic_quantiles( vals, nvals, quantiles )
+        real,              intent(in)  :: vals(:)
+        integer,           intent(in)  :: nvals
+        real,              intent(out) :: quantiles(3)
+        real, allocatable :: sorted(:)
+        integer :: idx10, idx50, idx90
+
+        quantiles = 0.
+        if( nvals < 1 ) return
+        if( nvals > size(vals) ) THROW_HARD('joint2D_candidate_table: diagnostic quantile size mismatch')
+        allocate(sorted(nvals), source=vals(1:nvals))
+        call hpsort(sorted)
+        idx10 = 1 + int(0.10 * real(nvals - 1))
+        idx50 = 1 + int(0.50 * real(nvals - 1))
+        idx90 = 1 + int(0.90 * real(nvals - 1))
+        quantiles = [sorted(idx10), sorted(idx50), sorted(idx90)]
+        deallocate(sorted)
+    end subroutine diagnostic_quantiles
 
     subroutine write_balance_diag( self, label, diag )
         class(joint2D_candidate_table), intent(in) :: self

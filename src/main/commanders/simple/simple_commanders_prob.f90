@@ -466,7 +466,7 @@ contains
                 THROW_HARD('joint 2D top-K reliability rejected all particles')
             endif
             call joint_candidates%write_balance_diag('prob_align2D', balance_diag)
-            call joint_candidates%write_diag('prob_align2D')
+            call joint_candidates%write_diag('prob_align2D', iteration=params%which_iter)
             call joint_candidates%write_table(JOINT2D_CANDIDATES_FNAME)
             if( params%nparts > 1 .and. allocated(qenv%parts) )then
                 do ipart = 1, params%nparts
