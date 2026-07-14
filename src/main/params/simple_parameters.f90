@@ -145,6 +145,7 @@ type :: parameters
     character(len=3)          :: ring='no'            !< whether to use ring in interactive stream pick
     character(len=3)          :: roavg='no'           !< rotationally average images in stack
     character(len=3)          :: transp_pca='no'
+    character(len=3)          :: trust_header='no'    !< whether to trust the header information in the input files(yes|no){no}
     character(len=3)          :: script='no'          !< do not execute but generate a script for submission to the queue
     character(len=3)          :: sgd='no'             !< stochastic class-average update(yes|no){no}
     character(len=3)          :: sgd_diag='yes'       !< diagnostic output for stochastic class-average update(yes|no){yes}
