@@ -96,6 +96,13 @@ check_stage4_iteration_policy() {
   [[ "$count" -gt 0 ]] || fail "no stage-4 ${stage4_mode} schedule diagnostics found"
 }
 
+check_soft_acceptance_observed() {
+  require_contains 'JOINT2D SGD RELIABILITY:' 'joint SGD reliability diagnostics'
+  if ! grep -Eq 'JOINT2D SGD RELIABILITY:.*soft_accepted=[[:space:]]*[1-9][0-9]*' "$log_file"; then
+    fail 'no soft-accepted particles observed; every joint SGD reliability diagnostic used zero soft assignments'
+  fi
+}
+
 check_baseline_log() {
   check_abinitio_stage_matrix off off
   reject_contains 'JOINT 2D SGD' 'joint2D-SGD marker in baseline log'
@@ -118,6 +125,7 @@ check_smoke_joint_log() {
   require_contains 'CAVG SGD UPDATE' 'CAVG update diagnostics'
   require_contains 'CAVG SGD NORMS' 'CAVG norm diagnostics'
   require_contains 'CAVG SGD RESTORE' 'CAVG restoration diagnostics'
+  check_soft_acceptance_observed
   if grep -Eq 'nonfinite=[[:space:]]*[1-9][0-9]*' "$log_file"; then
     fail "nonzero nonfinite diagnostic found"
   fi
@@ -149,6 +157,7 @@ check_science_joint_log() {
   require_contains 'CAVG SGD NORMS' 'CAVG norm diagnostics'
   require_contains 'CAVG SGD RESTORE' 'CAVG restoration diagnostics'
   require_contains 'CAVG SGD RESTORE FRC' 'CAVG restoration FRC diagnostics'
+  check_soft_acceptance_observed
   if grep -E 'JOINT2D SGD (TOPK|BALANCE|INPL|SHIFT)' "$log_file" |
       grep -Eq 'accepted=[[:space:]]*0([^0-9]|$)'; then
     fail "zero accepted joint diagnostic found for case ${case_name}"
