@@ -122,6 +122,8 @@ check_smoke_joint_log() {
     "cluster2D top-K=${expected_topk} runtime diagnostics"
   require_contains 'JOINT2D SGD LATENT' 'latent diagnostics'
   require_contains 'JOINT2D SGD TOPK RANGES' 'top-K range diagnostics'
+  require_contains 'JOINT2D SGD SOFTMAX:' 'SoftMax normalization diagnostics'
+  require_contains 'JOINT2D SGD WEIGHTS:' 'rank-wise SoftMax weight diagnostics'
   require_contains 'CAVG SGD UPDATE' 'CAVG update diagnostics'
   require_contains 'CAVG SGD NORMS' 'CAVG norm diagnostics'
   require_contains 'CAVG SGD RESTORE' 'CAVG restoration diagnostics'
@@ -145,6 +147,8 @@ check_science_joint_log() {
   require_contains 'JOINT2D SGD LATENT' 'latent-logit diagnostics'
   require_contains 'JOINT2D SGD TOPK RANGES' 'top-K range diagnostics'
   require_contains 'JOINT2D SGD WINNER' 'top-K winner diagnostics'
+  require_contains 'JOINT2D SGD SOFTMAX:' 'SoftMax normalization diagnostics'
+  require_contains 'JOINT2D SGD WEIGHTS:' 'rank-wise SoftMax weight diagnostics'
   require_contains 'JOINT2D SGD INPL' 'in-plane refinement diagnostics'
   require_contains 'JOINT2D SGD INPL LOSSES' 'in-plane loss diagnostics'
   require_contains 'JOINT2D SGD SHIFT' 'shift refinement diagnostics'
