@@ -38,3 +38,35 @@ class TemplateIntegrationTests(SimpleTestCase):
         self.assertIn('onclick="openClassicFileBrowser(this, \'dir\')"', classic_newjob)
         self.assertIn('onclick="openClassicFileBrowser(this, \'file\')"', classic_newjob)
         self.assertIn('new URLSearchParams({ selectedpath: selectedPath })', classic_newjob)
+
+    def test_file_browser_openers_share_last_directory(self):
+        filebrowser = self._read_template("filebrowser.html")
+        jobbuilder = self._read_template("jobbuilder.html")
+        newproject = self._read_template("newproject.html")
+        classic_newjob = self._read_template("nice_classic/newjob.html")
+
+        self.assertIn('localStorage.setItem(FILE_BROWSER_LAST_DIRECTORY_KEY, directoryToRemember)', filebrowser)
+        for opener in (jobbuilder, newproject, classic_newjob):
+            self.assertIn('localStorage.getItem("niceFileBrowserLastDirectory")', opener)
+            self.assertIn('params.set("remembered", "1")', opener)
+
+    def test_batch_program_selectors_have_search_filters(self):
+        jobbuilder = self._read_template("jobbuilder.html")
+
+        self.assertIn('id="simple_program_search"', jobbuilder)
+        self.assertIn('placeholder="search simple programs"', jobbuilder)
+        self.assertIn('oninput="filterSimplePrograms(this.value)"', jobbuilder)
+        self.assertIn('data-simple-program-search=', jobbuilder)
+        self.assertIn('id="simple_program_no_results"', jobbuilder)
+        self.assertIn('function filterSimplePrograms(query)', jobbuilder)
+
+        self.assertNotIn("select a single program", jobbuilder)
+        self.assertIn('id="single_program_search"', jobbuilder)
+        self.assertIn('placeholder="search single programs"', jobbuilder)
+        self.assertIn('oninput="filterSinglePrograms(this.value)"', jobbuilder)
+        self.assertIn('data-single-program-search=', jobbuilder)
+        self.assertIn('id="single_program_no_results"', jobbuilder)
+        self.assertIn('function filterSinglePrograms(query)', jobbuilder)
+
+        self.assertGreaterEqual(jobbuilder.count('absolute right-2'), 2)
+        self.assertIn('program.classList.toggle("hidden", !matches)', jobbuilder)

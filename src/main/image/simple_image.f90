@@ -202,6 +202,7 @@ contains
     procedure          :: bp
     procedure          :: lp_background
     procedure          :: bpgau2D, bpgau3D
+    procedure          :: gabor_filter2D
     procedure          :: tophat
     procedure          :: phase_rand
     procedure          :: ran_phases_below_noise_power
@@ -1292,6 +1293,12 @@ interface
         real,         intent(in)    :: hp, lp
     end subroutine bpgau3D
 
+    module subroutine gabor_filter2D( self, freqs, angstep, img_out )
+        class(image),   intent(inout) :: self
+        real,           intent(in)    :: freqs(:), angstep
+        class(image),   intent(inout) :: img_out
+    end subroutine gabor_filter2D
+
     module subroutine tophat( self, shell, halfwidth )
         class(image),   intent(inout) :: self
         integer,        intent(in)    :: shell
@@ -2091,7 +2098,8 @@ interface
         type(ctfparams),  intent(in)    :: ctfparms !< CTF parameters
     end subroutine apply_ctf
 
-    module subroutine gen_fplane4rec( self, kfromto,  smpd_crop, ctfparms, shift, fplane, sig2arr, store_transfer )
+    module subroutine gen_fplane4rec( self, kfromto,  smpd_crop, ctfparms, shift, fplane, sig2arr, &
+        &store_transfer, observation_model )
         class(image),      intent(inout) :: self
         integer,           intent(in)    :: kfromto(2)
         real,              intent(in)    :: smpd_crop
@@ -2100,6 +2108,7 @@ interface
         type(fplane_type), intent(out)   :: fplane
         real, optional,    intent(in)    :: sig2arr(kfromto(1):kfromto(2))
         logical, optional, intent(in)    :: store_transfer
+        logical, optional, intent(in)    :: observation_model
     end subroutine gen_fplane4rec
 
     module subroutine calc_ice_frac( self, tfun, ctfparms, score )
