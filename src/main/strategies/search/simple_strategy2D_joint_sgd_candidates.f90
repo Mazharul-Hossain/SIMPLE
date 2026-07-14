@@ -76,6 +76,8 @@ contains
     procedure :: apply_balance_prior
     procedure :: apply_inpl_refinement
     procedure :: apply_shift_refinement
+    procedure :: evaluate_reliability
+    procedure :: activate_hard_fallback
     procedure :: apply_reliability
     procedure :: write_hard_assignments
     procedure :: write_table
@@ -392,23 +394,18 @@ contains
         if( present(updated)   ) updated   = .true.
     end subroutine apply_shift_refinement
 
-    subroutine apply_reliability( self, min_cands, max_entropy, hard_fallback_when_empty )
+    subroutine evaluate_reliability( self, min_cands, max_entropy )
         class(joint2D_candidate_table), intent(inout) :: self
         integer,                        intent(in)    :: min_cands
         real,                           intent(in)    :: max_entropy
-        logical, optional,              intent(in)    :: hard_fallback_when_empty
-        integer :: iptcl, irank, min_cands_eff, nc, topk, hard, fallback_count
+        integer :: iptcl, irank, min_cands_eff, nc, topk
         real    :: norm_h
-        logical :: l_hard_fallback_when_empty
 
         call require_allocated(self, 'reliability requested before build/read')
         if( min_cands < 1 ) THROW_HARD('joint2D_candidate_table: min_cands must be >= 1')
         if( max_entropy < 0. .or. max_entropy > 1. )then
             THROW_HARD('joint2D_candidate_table: max_entropy must be between 0 and 1')
         endif
-        l_hard_fallback_when_empty = .false.
-        if( present(hard_fallback_when_empty) ) l_hard_fallback_when_empty = hard_fallback_when_empty
-
         topk = size(self%cand, 1)
         min_cands_eff = min_cands
         if( topk == 1 ) min_cands_eff = 1
@@ -444,29 +441,50 @@ contains
                 self%cand(irank,iptcl)%eff_weight = self%cand(irank,iptcl)%weight
             end do
         end do
+    end subroutine evaluate_reliability
 
-        if( l_hard_fallback_when_empty .and. count(self%accepted) == 0 .and. count(self%ncand > 0) > 0 )then
-            fallback_count = 0
-            do iptcl = 1, size(self%ncand)
-                nc = self%ncand(iptcl)
-                if( nc < 1 ) cycle
-                hard = self%hard_rank(iptcl)
-                if( hard < 1 .or. hard > nc ) cycle
-                self%accepted(iptcl)        = .true.
-                self%particle_weight(iptcl) = 1.
-                do irank = 1, nc
-                    self%cand(irank,iptcl)%eff_weight = 0.
-                end do
-                self%cand(hard,iptcl)%eff_weight = 1.
-                fallback_count = fallback_count + 1
+    subroutine activate_hard_fallback( self, fallback_used )
+        class(joint2D_candidate_table), intent(inout) :: self
+        logical, optional,              intent(out)   :: fallback_used
+        integer :: iptcl, irank, nc, hard, fallback_count
+
+        call require_allocated(self, 'hard fallback requested before build/read')
+        if( present(fallback_used) ) fallback_used = .false.
+        if( count(self%accepted) > 0 .or. count(self%ncand > 0) == 0 ) return
+
+        fallback_count = 0
+        do iptcl = 1, size(self%ncand)
+            nc = self%ncand(iptcl)
+            if( nc < 1 ) cycle
+            hard = self%hard_rank(iptcl)
+            if( hard < 1 .or. hard > nc ) cycle
+            self%accepted(iptcl)        = .true.
+            self%particle_weight(iptcl) = 1.
+            do irank = 1, nc
+                self%cand(irank,iptcl)%eff_weight = 0.
             end do
-            write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,F7.3)')&
-                &'>>> JOINT2D SGD TOPK FALLBACK:', 'hard_winner=', fallback_count,&
-                &'nonempty=', count(self%ncand > 0),&
-                &'too_few=', count(self%reject_reason == RELIABILITY_TOO_FEW),&
-                &'high_entropy=', count(self%reject_reason == RELIABILITY_HIGH_ENTROPY),&
-                &'max_entropy=', max_entropy
-        endif
+            self%cand(hard,iptcl)%eff_weight = 1.
+            fallback_count = fallback_count + 1
+        end do
+        if( present(fallback_used) ) fallback_used = fallback_count > 0
+        write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
+            &'>>> JOINT2D SGD TOPK FINAL FALLBACK:', 'hard_winner=', fallback_count,&
+            &'nonempty=', count(self%ncand > 0),&
+            &'too_few=', count(self%reject_reason == RELIABILITY_TOO_FEW),&
+            &'high_entropy=', count(self%reject_reason == RELIABILITY_HIGH_ENTROPY)
+    end subroutine activate_hard_fallback
+
+    subroutine apply_reliability( self, min_cands, max_entropy, hard_fallback_when_empty )
+        class(joint2D_candidate_table), intent(inout) :: self
+        integer,                        intent(in)    :: min_cands
+        real,                           intent(in)    :: max_entropy
+        logical, optional,              intent(in)    :: hard_fallback_when_empty
+        logical :: l_hard_fallback_when_empty
+
+        call self%evaluate_reliability(min_cands, max_entropy)
+        l_hard_fallback_when_empty = .false.
+        if( present(hard_fallback_when_empty) ) l_hard_fallback_when_empty = hard_fallback_when_empty
+        if( l_hard_fallback_when_empty ) call self%activate_hard_fallback()
     end subroutine apply_reliability
 
     subroutine write_hard_assignments( self, assgn_map, empty_is_error )

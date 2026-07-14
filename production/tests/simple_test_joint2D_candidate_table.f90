@@ -21,7 +21,7 @@ real    :: base_shifts(2,4), weight_sum, expected_weight
 real    :: p4_initial_weight, p4_initial_loss, p4_initial_entropy
 real    :: old_shift(2), new_shift(2), step_norm
 real    :: balance_range_before, balance_range_after, zero_logit, zero_weight
-logical :: updated
+logical :: updated, fallback_used
 
 call init_loc_tab(loc_tab)
 call init_balance_loc_tab(balance_loc_tab)
@@ -94,6 +94,9 @@ call require_close(sum(batch_weights(:,4)), 0.0, 1.0e-6, 'too-few-candidate expo
 call tab%apply_reliability(2, 0.50)
 call require_true(.not. tab%accepted(1), 'high-entropy particle is rejected')
 call require_true(tab%accepted(4), 'reliability gates use post-optimization entropy')
+call tab%activate_hard_fallback(fallback_used)
+call require_true(.not. fallback_used, 'fallback remains inactive when any particle passes')
+call require_true(.not. tab%accepted(1), 'fallback does not hard-accept an individually rejected particle')
 call tab%export_batch(1, 4, batch_refs, batch_weights, batch_ncands)
 call require_close(sum(batch_weights(:,1)), 0.0, 1.0e-6, 'high-entropy export has zero support')
 call tab%apply_reliability(2, 0.95)
@@ -163,14 +166,15 @@ call require_true(balance_diag%prior_max > 0.0, 'balance prior boosts underrepre
 call require_true(balance_range_after < balance_range_before, 'balance prior moves support toward uniform active classes')
 call require_close(tab_balance%norm_entropy(1), tab_balance%entropy(1) / log(real(tab_balance%ncand(1))),&
     &1.0e-6, 'balance reliability uses post-prior entropy')
-call tab_balance%apply_reliability(2, 0.0)
-call require_true(.not. tab_balance%accepted(1), 'post-balance high-entropy candidate is rejected')
-call tab_balance%apply_reliability(2, 0.0, hard_fallback_when_empty=.true.)
-call require_true(tab_balance%accepted(1), 'opt-in empty reliability fallback accepts hard winner')
+call tab_balance%evaluate_reliability(2, 0.0)
+call require_true(count(tab_balance%accepted) == 0, 'reliability evaluation can preserve a globally empty result')
+call tab_balance%activate_hard_fallback(fallback_used)
+call require_true(fallback_used, 'final-boundary fallback reports that it was activated')
+call require_true(tab_balance%accepted(1), 'global-empty reliability fallback accepts hard winner')
 call require_close(tab_balance%cand(tab_balance%hard_rank(1),1)%eff_weight, 1.0, 1.0e-6,&
-    &'opt-in empty reliability fallback gives hard winner unit support')
+    &'global-empty reliability fallback gives hard winner unit support')
 call require_close(sum(tab_balance%cand(1:tab_balance%ncand(1),1)%eff_weight), 1.0, 1.0e-6,&
-    &'opt-in empty reliability fallback keeps particle support normalized')
+    &'global-empty reliability fallback keeps particle support normalized')
 call tab_balance%apply_reliability(2, 1.0)
 call del_file(ROUNDTRIP_FNAME)
 call tab_balance%write_table(ROUNDTRIP_FNAME)

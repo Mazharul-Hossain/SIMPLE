@@ -413,7 +413,14 @@ contains
         ! Mirror the 3D workflow: sampled-update is active from the first stage onward.
         ! In probabilistic mode the sampled subset is reused within the current iteration
         ! by prob_tab2D/cluster2D_exec, but it is redrawn on later iterations.
-        call sample_ptcls4update2D(params, build, [params%fromp,params%top], params%l_update_frac, nptcls, pinds)
+        if( params%l_sgd .and. trim(params%sgd_mode) == 'joint' )then
+            call sample_ptcls4update2D(params, build, [params%fromp,params%top], .true., nptcls, pinds,&
+                &update_frac_override=params%sgd_batch_frac, force_resample=.true.)
+            write(logfhandle,'(A,F6.3,A,I0)') '>>> JOINT2D SGD MINI-BATCH: fraction=',&
+                &params%sgd_batch_frac, ' sampled=', nptcls
+        else
+            call sample_ptcls4update2D(params, build, [params%fromp,params%top], params%l_update_frac, nptcls, pinds)
+        endif
         write(logfhandle,'(A,I0,A,I0,A,I0)') '>>> PROB_ALIGN2D: sampled ', nptcls, ' particles over ', params%nparts, ' part(s)'
         call flush(logfhandle)
         ! write sampling to project
@@ -457,13 +464,11 @@ contains
             end do
             call joint_candidates%set_base_shifts(base_shifts)
             call joint_candidates%optimize_logits(params%sgd_inner_its, params%sgd_eta_latent)
-            call joint_candidates%apply_reliability(params%sgd_cavg_min_cands, params%sgd_cavg_max_entropy,&
-                &hard_fallback_when_empty=.true.)
+            call joint_candidates%evaluate_reliability(params%sgd_cavg_min_cands, params%sgd_cavg_max_entropy)
             call joint_candidates%apply_balance_prior(params%ncls, params%sgd_balance_weight, balance_diag)
-            call joint_candidates%apply_reliability(params%sgd_cavg_min_cands, params%sgd_cavg_max_entropy,&
-                &hard_fallback_when_empty=.true.)
+            call joint_candidates%evaluate_reliability(params%sgd_cavg_min_cands, params%sgd_cavg_max_entropy)
             if( count(joint_candidates%accepted) == 0 )then
-                THROW_HARD('joint 2D top-K reliability rejected all particles')
+                write(logfhandle,'(A)') '>>> JOINT2D SGD: candidate generation accepted zero particles; deferring emergency fallback to final update boundary'
             endif
             call joint_candidates%write_balance_diag('prob_align2D', balance_diag)
             call joint_candidates%write_diag('prob_align2D', iteration=params%which_iter)

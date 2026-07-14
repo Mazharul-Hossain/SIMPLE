@@ -516,6 +516,7 @@ contains
         call reg%add_real('res_target', self%res_target)
         call reg%add_real('res_threshold', self%res_threshold)
         call reg%add_real('scale', self%scale)
+        call reg%add_real('sgd_batch_frac', self%sgd_batch_frac)
         call reg%add_real('sgd_balance_weight', self%sgd_balance_weight)
         call reg%add_real('sgd_cavg_max_entropy', self%sgd_cavg_max_entropy)
         call reg%add_real('sgd_eta_cavg', self%sgd_eta_cavg)

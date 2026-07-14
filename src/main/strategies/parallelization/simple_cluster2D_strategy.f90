@@ -412,7 +412,8 @@ contains
         call del_files('joint2D_topk_candidates_refined_part', params%nparts, ext='.dat')
         call del_file(DIST_FBODY//'.dat')
         call del_file(ASSIGNMENT_FBODY//'.dat')
-        if( trim(params%restore_cavgs) == 'yes' .and. (params%startit <= 1 .or. .not. params%l_update_frac) )then
+        if( trim(params%restore_cavgs) == 'yes' .and. (params%startit <= 1 .or. .not. params%l_update_frac .or.&
+            &(params%l_sgd .and. trim(params%sgd_mode) == 'joint')) )then
             call del_files('cavgs_even_part',     params%nparts, ext=MRC_EXT)
             call del_files('cavgs_odd_part',      params%nparts, ext=MRC_EXT)
             call del_files('ctfsqsums_even_part', params%nparts, ext=MRC_EXT)

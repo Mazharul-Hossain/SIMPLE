@@ -43,6 +43,8 @@ contains
         type(builder)          :: build
         type(simple_nice_comm) :: nice_comm
         logical                :: converged, l_sgd_requested, l_sgd_schedule, l_sgd_active
+        logical                :: l_update_frac_requested
+        real                   :: update_frac_requested
         integer                :: niters
         ! local defaults (kept consistent with previous distributed master)
         call cline%set('prg', 'cluster2D')
@@ -52,6 +54,8 @@ contains
         call strategy%initialize(params, build, cline)
         l_sgd_requested = params%l_sgd
         l_sgd_schedule  = l_sgd_requested .and. trim(params%sgd_mode) == 'joint'
+        l_update_frac_requested = params%l_update_frac
+        update_frac_requested   = params%update_frac
         if( params%l_nonuniform ) THROW_HARD('2D nonuniform filtering has been removed; exec_cluster2D')
         ! Nice communicator
         call nice_comm%init(params%niceprocid, params%niceserver)
@@ -79,6 +83,14 @@ contains
             if( l_sgd_schedule ) l_sgd_active = joint2D_sgd_active_for_policy(&
                 &params%sgd_activation, niters, params%which_iter)
             params%l_sgd = l_sgd_active
+            params%l_update_frac = l_update_frac_requested
+            params%update_frac   = update_frac_requested
+            if( l_sgd_active .and. trim(params%sgd_mode) == 'joint' )then
+                ! Expose the actual SGD sample fraction to convergence and distributed
+                ! orchestration. prob_align2D remains the sole owner of drawing the sample.
+                params%l_update_frac = .true.
+                params%update_frac   = params%sgd_batch_frac
+            endif
             if( l_sgd_active )then
                 params%sgd = 'yes'
                 call cline%set('sgd', 'yes')
@@ -109,6 +121,8 @@ contains
         call strategy%finalize_run(params, build, cline)
         ! Preserve the user's requested mode for a following abinitio2D stage.
         params%l_sgd = l_sgd_requested
+        params%l_update_frac = l_update_frac_requested
+        params%update_frac   = update_frac_requested
         if( l_sgd_requested )then
             params%sgd = 'yes'
             call cline%set('sgd', 'yes')

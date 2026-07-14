@@ -184,10 +184,29 @@ contains
                 rt_align = rt_align + toc(t_align)
                 t_cavg   = tic()
             endif
-            call restore_class_averages_for_batch()
+            if( ctrl%l_joint_topk )then
+                call refine_joint_topk_for_batch()
+            else
+                call accumulate_class_averages_for_batch()
+            endif
             if( ctrl%do_bench ) rt_cavg = rt_cavg + toc(t_cavg)
         enddo
-        if( ctrl%l_joint_topk ) call write_refined_joint_topk_candidates()
+        if( ctrl%l_joint_topk )then
+            call finalize_joint_topk_reliability()
+            ! The final reliability mask is global to the outer SGD batch. Stream the
+            ! particle images a second time so no class-average sums are committed before
+            ! the one allowed emergency-fallback decision.
+            do ibatch = 1, nbatches
+                batch_start = batches(ibatch,1)
+                batch_end   = batches(ibatch,2)
+                batchsz     = batch_end - batch_start + 1
+                call build_batch_particles_local()
+                if( ctrl%do_bench ) t_cavg = tic()
+                call accumulate_class_averages_for_batch()
+                if( ctrl%do_bench ) rt_cavg = rt_cavg + toc(t_cavg)
+            enddo
+            call write_refined_joint_topk_candidates()
+        endif
         call cleanup_search_state(strategy2Dsrch, pinds, batches, eulprob_obj_part, batchsz_max, orientation)
         if( p_ptr%cc_objfun == OBJFUN_EUCLID ) call b_ptr%esig%write_sigma2
         call write_orientations()
@@ -240,6 +259,16 @@ contains
                     ctrl%l_partial_sums   = p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'cavg_only')
                 endif
                 if( trim(ctrl%refine_flag) == 'snhc' ) ctrl%refine_flag = 'snhc_smpl'
+            endif
+            if( ctrl%l_joint_topk )then
+                ! The outer sample was already drawn by prob_align2D. Mark the effective
+                ! fraction for convergence, but do not enable legacy fractional carry-over;
+                ! joint SGD captures and updates the previous references explicitly.
+                p_ptr%l_update_frac     = .true.
+                p_ptr%update_frac       = p_ptr%sgd_batch_frac
+                ctrl%l_sample_updates   = .true.
+                ctrl%l_frac_restore     = .false.
+                ctrl%l_partial_sums     = .false.
             endif
             ctrl%l_ctf = b_ptr%spproj%get_ctfflag('ptcl2D',iptcl=p_ptr%fromp) .ne. 'no'
         end subroutine init_ctrl
@@ -339,7 +368,7 @@ contains
                 THROW_HARD('joint 2D top-K candidate table particle count does not match cluster2D batch set')
             endif
             if( count(joint_topk_candidates%accepted) == 0 )then
-                THROW_HARD('joint 2D top-K candidate table has zero accepted particles')
+                write(logfhandle,'(A)') '>>> JOINT2D SGD: initial reliability gate accepted zero particles; refinement will use final fallback'
             endif
             do iptcl_map = 1, nptcls2update
                 if( joint_topk_candidates%pinds(iptcl_map) > 0 )then
@@ -510,13 +539,6 @@ contains
             if( nonfinite_total > 0 )then
                 THROW_HARD('joint 2D in-plane refinement produced nonfinite diagnostics')
             endif
-            call joint_topk_candidates%apply_reliability(p_ptr%sgd_cavg_min_cands, p_ptr%sgd_cavg_max_entropy,&
-                &hard_fallback_when_empty=.true.)
-            if( count(joint_topk_candidates%accepted) == 0 )then
-                THROW_HARD('joint 2D in-plane refinement left zero accepted top-K particles')
-            endif
-            call sync_joint_hard_assignments_for_batch()
-            call joint_topk_candidates%write_diag('cluster2D inpl-refined', iteration=p_ptr%which_iter)
         end subroutine refine_joint_topk_inpls_for_batch
 
         subroutine refine_joint_topk_shifts_for_batch()
@@ -669,13 +691,6 @@ contains
                 mean_loss_delta = sum(loss_delta_sum_t) / real(refined_total)
             endif
             if( accepted_batch > 0 ) mean_winner_shift = sum(winner_shift_sum_t) / real(accepted_batch)
-            call joint_topk_candidates%apply_reliability(p_ptr%sgd_cavg_min_cands, p_ptr%sgd_cavg_max_entropy,&
-                &hard_fallback_when_empty=.true.)
-            if( count(joint_topk_candidates%accepted) == 0 )then
-                THROW_HARD('joint 2D shift refinement left zero accepted top-K particles')
-            endif
-            call sync_joint_hard_assignments_for_batch()
-            call joint_topk_candidates%write_diag('cluster2D shift-refined', iteration=p_ptr%which_iter)
             write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
                 &'>>> JOINT2D SGD SHIFT:', 'batch=', ibatch, 'accepted=', accepted_batch,&
                 &'candidates=', sum(cand_count_t), 'refined=', refined_total, 'no_better=', no_better_total,&
@@ -700,22 +715,15 @@ contains
             endif
             call joint_topk_candidates%apply_balance_prior(p_ptr%ncls, p_ptr%sgd_balance_weight,&
                 &balance_diag, first_ptcl=batch_start, last_ptcl=batch_end)
-            call joint_topk_candidates%apply_reliability(p_ptr%sgd_cavg_min_cands, p_ptr%sgd_cavg_max_entropy,&
-                &hard_fallback_when_empty=.true.)
-            if( count(joint_topk_candidates%accepted) == 0 )then
-                THROW_HARD('joint 2D class-balance prior left zero accepted top-K particles')
-            endif
-            call sync_joint_hard_assignments_for_batch()
             call joint_topk_candidates%write_balance_diag('cluster2D batch', balance_diag)
-            call joint_topk_candidates%write_diag('cluster2D balance-refined', iteration=p_ptr%which_iter)
         end subroutine apply_joint_balance_prior_for_batch
 
-        subroutine sync_joint_hard_assignments_for_batch()
-            integer :: iloc, iptcl_map, iptcl, hard
+        subroutine sync_joint_hard_assignments( first_ptcl, last_ptcl )
+            integer, intent(in) :: first_ptcl, last_ptcl
+            integer :: iptcl_map, iptcl, hard
             real    :: cand_shift(2), total_shift(2), corr, e3
 
-            do iloc = 1, batchsz
-                iptcl_map = batch_start + iloc - 1
+            do iptcl_map = first_ptcl, last_ptcl
                 iptcl     = pinds(iptcl_map)
                 if( .not. joint_topk_candidates%accepted(iptcl_map) ) cycle
                 hard = joint_topk_candidates%hard_rank(iptcl_map)
@@ -741,7 +749,7 @@ contains
                 call b_ptr%spproj_field%set(iptcl, 'frac', 100.)
                 call b_ptr%spproj_field%set(iptcl, 'npeaks', real(joint_topk_candidates%ncand(iptcl_map)))
             end do
-        end subroutine sync_joint_hard_assignments_for_batch
+        end subroutine sync_joint_hard_assignments
 
         subroutine allocate_strategy_for_particle(iptcl, iptcl_batch)
             integer, intent(in) :: iptcl, iptcl_batch
@@ -803,11 +811,30 @@ contains
             endif
         end subroutine allocate_strategy_for_particle
 
-        subroutine restore_class_averages_for_batch()
-            integer(timer_int_kind) :: t_update
+        subroutine refine_joint_topk_for_batch()
+            if( .not. ctrl%l_joint_topk ) return
             call refine_joint_topk_inpls_for_batch()
             call refine_joint_topk_shifts_for_batch()
             call apply_joint_balance_prior_for_batch()
+        end subroutine refine_joint_topk_for_batch
+
+        subroutine finalize_joint_topk_reliability()
+            logical :: fallback_used
+            call joint_topk_candidates%evaluate_reliability(p_ptr%sgd_cavg_min_cands,&
+                &p_ptr%sgd_cavg_max_entropy)
+            call joint_topk_candidates%activate_hard_fallback(fallback_used)
+            if( count(joint_topk_candidates%accepted) == 0 )then
+                THROW_HARD('joint 2D final reliability boundary has no nonempty candidate support')
+            endif
+            call sync_joint_hard_assignments(1, nptcls2update)
+            call joint_topk_candidates%write_diag('cluster2D final reliability', iteration=p_ptr%which_iter)
+            write(logfhandle,'(A,1X,A,L1,1X,A,I0,1X,A,I0)')&
+                &'>>> JOINT2D SGD FINAL UPDATE:', 'fallback=', fallback_used,&
+                &'accepted=', count(joint_topk_candidates%accepted), 'sampled=', nptcls2update
+        end subroutine finalize_joint_topk_reliability
+
+        subroutine accumulate_class_averages_for_batch()
+            integer(timer_int_kind) :: t_update
             call export_joint_topk_for_batch()
             call cavger_transf_oridat(batchsz, pinds(batch_start:batch_end), updated_only=.true.)
             if( ctrl%do_bench ) t_update = tic()
@@ -818,7 +845,7 @@ contains
                 call cavger_update_sums(batchsz, ptcl_imgs(1:batchsz))
             endif
             if( ctrl%do_bench ) rt_cavg_interp_splat = rt_cavg_interp_splat + toc(t_update)
-        end subroutine restore_class_averages_for_batch
+        end subroutine accumulate_class_averages_for_batch
 
         subroutine cleanup_search_state(strategy2Dsrch, pinds, batches, eulprob_obj_part, batchsz_max, orientation)
             type(strategy2D_per_ptcl), allocatable, intent(inout) :: strategy2Dsrch(:)

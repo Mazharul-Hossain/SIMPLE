@@ -252,16 +252,34 @@ contains
         call build%spproj_field%sample4update_missing(pfromto, nptcls2update, pinds, l_incr_sampl)
     end subroutine sample_ptcls4missing3D
 
-    subroutine sample_ptcls4update2D( params, build, pfromto, l_updatefrac, nptcls, pinds )
+    subroutine sample_ptcls4update2D( params, build, pfromto, l_updatefrac, nptcls, pinds, &
+        &update_frac_override, force_resample )
         class(parameters),    intent(in)    :: params
         class(builder),       intent(inout) :: build
         logical,              intent(in)    :: l_updatefrac
         integer,              intent(in)    :: pfromto(2)
         integer,              intent(inout) :: nptcls
         integer, allocatable, intent(inout) :: pinds(:)
-        logical :: l_has_been_sampled
+        real, optional,       intent(in)    :: update_frac_override
+        logical, optional,    intent(in)    :: force_resample
+        real    :: update_frac_eff
+        logical :: l_has_been_sampled, l_force_resample, l_fractional
         l_has_been_sampled = build%spproj_field%has_been_sampled()
-        if( l_updatefrac )then
+        update_frac_eff    = params%update_frac
+        if( present(update_frac_override) ) update_frac_eff = update_frac_override
+        l_force_resample = .false.
+        if( present(force_resample) ) l_force_resample = force_resample
+        l_fractional = l_updatefrac .or. present(update_frac_override)
+        if( l_fractional )then
+            if( update_frac_eff <= 0.0 .or. update_frac_eff >= 1.0 )then
+                THROW_HARD('fractional 2D particle sampling requires a fraction > 0 and < 1')
+            endif
+            if( l_force_resample )then
+                ! Joint SGD draws one new outer mini-batch here. Downstream phases use
+                ! sample4update_reprod to recover this exact generation and ordering.
+                call build%spproj_field%sample4update_cnt(pfromto, update_frac_eff, nptcls, pinds, .true.)
+                return
+            endif
             ! abinitio2D controller policy:
             ! startit==1  -> sticky sampled subset stage
             ! startit>1   -> stochastic resampling biased toward low updatecnt
@@ -269,11 +287,11 @@ contains
                 if( l_has_been_sampled )then
                     call build%spproj_field%sample4update_reprod(pfromto, nptcls, pinds)
                 else
-                    call build%spproj_field%sample4update_rnd(pfromto, params%update_frac, nptcls, pinds, .true.)
+                    call build%spproj_field%sample4update_rnd(pfromto, update_frac_eff, nptcls, pinds, .true.)
                     call build%spproj_field%set_updatecnt(1, pinds)
                 endif
             else
-                call build%spproj_field%sample4update_cnt(pfromto, params%update_frac, nptcls, pinds, .true.)
+                call build%spproj_field%sample4update_cnt(pfromto, update_frac_eff, nptcls, pinds, .true.)
             endif
         else
             call build%spproj_field%sample4update_all(pfromto, nptcls, pinds, .true.)

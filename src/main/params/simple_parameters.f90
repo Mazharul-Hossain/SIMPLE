@@ -569,6 +569,7 @@ type :: parameters
     real    :: res_threshold=-1.   !< resolution threshold in A (-1 means no threshold)
     real    :: scale=1.            !< image scale factor{1}
     real    :: scale_movies=1.     !< movie scale factor
+    real    :: sgd_batch_frac=0.60 !< fraction of active particles in each joint-SGD outer update
     real    :: sgd_balance_weight=0.0 !< joint-SGD optional class-balance weight
     real    :: sgd_cavg_max_entropy=0.95 !< joint-SGD max normalized entropy for weighted class averages
     real    :: sgd_eta_cavg=0.1    !< joint-SGD class-average learning rate

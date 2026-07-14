@@ -737,6 +737,9 @@ contains
             if( self%sgd_cavg_max_entropy < 0.0 .or. self%sgd_cavg_max_entropy > 1.0 )then
                 THROW_HARD('sgd_cavg_max_entropy must be between 0 and 1')
             endif
+            if( self%sgd_batch_frac <= 0.0 .or. self%sgd_batch_frac >= 1.0 )then
+                THROW_HARD('sgd_batch_frac must be > 0 and < 1')
+            endif
             if( self%sgd_eta_cavg <= 0.0 )then
                 THROW_HARD('sgd_eta_cavg must be > 0')
             endif
