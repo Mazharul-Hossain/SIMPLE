@@ -46,7 +46,7 @@ NAS rule:
 EOF
 }
 
-smoke_cases=( baseline stage4_off stage4_alternate )
+smoke_cases=( baseline stage4_off stage4_alternate stage4_alternate_balance )
 
 list_cases() {
   printf '%s\n' "${smoke_cases[@]}"
@@ -106,6 +106,13 @@ run_selected_case() {
       joint2d_sgd_make_joint_args alternate 3 0.5 0.1 0.0
       joint2d_sgd_print_stage_policy alternate
       run_case stage4_alternate "${joint2d_sgd_case_args[@]}"
+      ;;
+    stage4_alternate_balance)
+      # A separate controlled occupancy-prior experiment.  Weight 1.0 keeps the
+      # prior in log-support units and does not rescale likelihood differences.
+      joint2d_sgd_make_joint_args alternate 3 0.5 0.1 1.0
+      joint2d_sgd_print_stage_policy alternate
+      run_case stage4_alternate_balance "${joint2d_sgd_case_args[@]}"
       ;;
   esac
 }

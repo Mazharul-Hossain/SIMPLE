@@ -25,7 +25,7 @@ Default complete matrix (`profile=all`):
   joint_default:     K=3 default optimizer with stage 4 alternate
   latent_eta_0p1 / latent_eta_1p0
   cavg_eta_0p05 / cavg_eta_0p25
-  balance_0p05
+  balance_1p0
 
 The narrower `activation` and `hyperparameters` profiles remain available for
 targeted reruns. Every hyperparameter case uses `sgd_stage4_mode=alternate`.
@@ -76,7 +76,7 @@ science_all_cases=(
   latent_eta_1p0
   cavg_eta_0p05
   cavg_eta_0p25
-  balance_0p05
+  balance_1p0
 )
 science_activation_cases=( baseline stage4_off stage4_alternate stage4_on )
 science_hyperparameter_cases=(
@@ -87,7 +87,7 @@ science_hyperparameter_cases=(
   latent_eta_1p0
   cavg_eta_0p05
   cavg_eta_0p25
-  balance_0p05
+  balance_1p0
 )
 
 list_cases() {
@@ -230,9 +230,11 @@ run_selected_case() {
       run_case cavg_eta_0p25 "$rep" joint alternate 3 0.5 0.25 0.0 \
         sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.25 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
       ;;
-    balance_0p05)
-      run_case balance_0p05 "$rep" joint alternate 3 0.5 0.1 0.05 \
-        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=0.05 sgd_diag=yes
+    balance_1p0)
+      # Unit-strength log-support prior: changes class occupancy logits without
+      # rescaling the Gaussian likelihood itself.
+      run_case balance_1p0 "$rep" joint alternate 3 0.5 0.1 1.0 \
+        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=1.0 sgd_diag=yes
       ;;
   esac
 }

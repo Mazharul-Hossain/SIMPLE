@@ -456,6 +456,10 @@ contains
             &'>>> JOINT2D SGD NLL SHADOW MODEL:', 'convention=E/2 quadrature=pi/pftsz',&
             &'pftsz=', self%b_ptr%pftc%get_pftsz(), 'scale=', 'pi*wsqsum/(2*pftsz)',&
             &'behavior=', trim(behavior)
+        write(logfhandle,'(A,1X,A,1X,A)')&
+            &'>>> JOINT2D SGD NLL CALIBRATION:',&
+            &'sigma2=variance_per_real_component estimator=sum_abs2/(2*pftsz)',&
+            &'normalized_distance=weighted_residual/wsqsum'
         write(logfhandle,'(A,1X,A,I0,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4)')&
             &'>>> JOINT2D SGD NLL SCALE QUANTILES:', 'samples=', nsamples,&
             &'p10=', scale_q(1), 'p50=', scale_q(2), 'p90=', scale_q(3)

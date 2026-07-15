@@ -193,21 +193,104 @@ check_refinement_roundtrip() {
 
 check_final_loss_scale() {
   if ! awk '
+    function value_after_key(i, prefix, value) {
+      value = $i
+      sub(prefix, "", value)
+      if (value == "" && i < NF) value = $(i + 1)
+      return value
+    }
     /JOINT2D SGD LATENT: cluster2D final reliability/ {
       seen++
       initial = final = ""
       for (i = 1; i <= NF; i++) {
-        if ($i ~ /^avg_initial_loss=/) { initial = $i; sub(/^avg_initial_loss=/, "", initial) }
-        if ($i ~ /^avg_final_loss=/)   { final   = $i; sub(/^avg_final_loss=/,   "", final) }
+        if ($i ~ /^avg_initial_loss=/) initial = value_after_key(i, "^avg_initial_loss=")
+        if ($i ~ /^avg_final_loss=/)   final   = value_after_key(i, "^avg_final_loss=")
       }
       if (initial == "" || final == "") exit 1
       initial += 0
       final += 0
       if ((initial <= 0 && final > 1.0e-6) || (initial > 0 && final > 100.0 * initial)) exit 1
+      if (min_final == "" || final < min_final) min_final = final
+      if (max_final == "" || final > max_final) max_final = final
     }
-    END { if (seen == 0) exit 1 }
+    END {
+      if (seen == 0) exit 1
+      if ((min_final <= 0 && max_final > 1.0e-6) || (min_final > 0 && max_final > 100.0 * min_final)) exit 1
+    }
   ' "$log_file"; then
-    fail 'missing final latent-loss diagnostics or final loss increased by at least two orders of magnitude'
+    fail 'missing final latent-loss diagnostics or within/across-update loss increased by at least two orders of magnitude'
+  fi
+}
+
+check_class_starvation() {
+  require_contains 'JOINT2D SGD BALANCE SUPPORT: cluster2D final' 'final class-support diagnostics'
+  if ! awk '
+    function value_after_key(i, prefix, value) {
+      value = $i
+      sub(prefix, "", value)
+      if (value == "" && i < NF) value = $(i + 1)
+      return value
+    }
+    /JOINT2D SGD BALANCE SUPPORT: cluster2D final/ {
+      active = zero = support_max = ""
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^active_classes=/)      active      = value_after_key(i, "^active_classes=")
+        if ($i ~ /^zero_support_classes=/) zero       = value_after_key(i, "^zero_support_classes=")
+        if ($i ~ /^support_max=/)         support_max = value_after_key(i, "^support_max=")
+      }
+      if (active == "" || zero == "" || support_max == "") exit 1
+      active += 0
+      zero += 0
+      support_max += 0
+      if (seen == 0) {
+        first_active = active
+        first_zero = zero
+        first_support_max = support_max
+        nclasses = active + zero
+      }
+      last_active = active
+      last_zero = zero
+      last_support_max = support_max
+      seen++
+    }
+    END {
+      if (seen == 0 || nclasses < 1 || first_active < 1) exit 1
+      zero_growth_limit = int(nclasses / 10)
+      if (zero_growth_limit < 1) zero_growth_limit = 1
+      if (100 * last_active < 80 * first_active) exit 1
+      if (last_zero > first_zero + zero_growth_limit) exit 1
+      if (first_support_max > 0 && last_support_max > 2.0 * first_support_max) exit 1
+    }
+  ' "$log_file"; then
+    fail 'class starvation detected: active support contracted, zero-support classes grew, or support concentration doubled'
+  fi
+}
+
+check_nonzero_balance_prior() {
+  require_contains 'JOINT2D SGD BALANCE: cluster2D final' 'nonzero balance-weight diagnostics'
+  if ! awk '
+    function value_after_key(i, prefix, value) {
+      value = $i
+      sub(prefix, "", value)
+      if (value == "" && i < NF) value = $(i + 1)
+      return value
+    }
+    /JOINT2D SGD BALANCE: cluster2D final/ {
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^weight=/ && value_after_key(i, "^weight=") + 0 > 0) positive_weight++
+      }
+    }
+    /JOINT2D SGD BALANCE PRIOR: cluster2D final/ {
+      prior_min = prior_max = ""
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^prior_min=/) prior_min = value_after_key(i, "^prior_min=")
+        if ($i ~ /^prior_max=/) prior_max = value_after_key(i, "^prior_max=")
+      }
+      if (prior_min != "" && prior_max != "" && (prior_min + 0 < 0 || prior_max + 0 > 0)) active_prior++
+    }
+    END { if (positive_weight == 0 || active_prior == 0) exit 1 }
+  ' "$log_file"; then
+    fail 'controlled balance case did not activate a nonzero class-occupancy prior'
   fi
 }
 
@@ -273,6 +356,8 @@ check_smoke_joint_log() {
   require_contains 'JOINT2D SGD SOFTMAX:' 'SoftMax normalization diagnostics'
   require_contains 'JOINT2D SGD WEIGHTS:' 'rank-wise SoftMax weight diagnostics'
   require_contains 'JOINT2D SGD NLL SHADOW MODEL:' 'shadow Gaussian-NLL model diagnostics'
+  require_contains 'JOINT2D SGD NLL CALIBRATION: sigma2=variance_per_real_component estimator=sum_abs2/(2*pftsz)' \
+    'derived Gaussian-NLL calibration diagnostics'
   require_contains 'JOINT2D SGD NLL SCALE QUANTILES:' 'shadow Gaussian-NLL scale diagnostics'
   require_contains 'JOINT2D SGD NLL SHADOW POSTERIOR:' 'shadow Gaussian-NLL posterior diagnostics'
   require_contains 'JOINT2D SGD PARTICLE SUPPORT:' 'particle-support diagnostics'
@@ -283,6 +368,7 @@ check_smoke_joint_log() {
   check_likelihood_unit_continuity
   check_refinement_deltas
   check_final_loss_scale
+  check_class_starvation
   check_cavg_update_trust
   check_soft_acceptance_observed
   if grep -Eq 'nonfinite=[[:space:]]*[1-9][0-9]*' "$log_file"; then
@@ -305,6 +391,8 @@ check_science_joint_log() {
   require_contains 'JOINT2D SGD SOFTMAX:' 'SoftMax normalization diagnostics'
   require_contains 'JOINT2D SGD WEIGHTS:' 'rank-wise SoftMax weight diagnostics'
   require_contains 'JOINT2D SGD NLL SHADOW MODEL:' 'shadow Gaussian-NLL model diagnostics'
+  require_contains 'JOINT2D SGD NLL CALIBRATION: sigma2=variance_per_real_component estimator=sum_abs2/(2*pftsz)' \
+    'derived Gaussian-NLL calibration diagnostics'
   require_contains 'JOINT2D SGD NLL SCALE QUANTILES:' 'shadow Gaussian-NLL scale diagnostics'
   require_contains 'JOINT2D SGD NLL SHADOW POSTERIOR:' 'shadow Gaussian-NLL posterior diagnostics'
   require_contains 'JOINT2D SGD PARTICLE SUPPORT:' 'particle-support diagnostics'
@@ -327,8 +415,12 @@ check_science_joint_log() {
   check_refinement_roundtrip
   check_refinement_deltas
   check_final_loss_scale
+  check_class_starvation
   check_cavg_update_trust
   check_soft_acceptance_observed
+  if [[ "$case_name" == balance_* ]]; then
+    check_nonzero_balance_prior
+  fi
 }
 
 check_run_outputs() {
