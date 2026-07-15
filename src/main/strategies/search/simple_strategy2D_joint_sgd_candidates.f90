@@ -2,6 +2,7 @@
 module simple_strategy2D_joint_sgd_candidates
 use simple_core_module_api
 use simple_type_defs, only: ptcl_ref
+use simple_eul_prob_tab_utils, only: materialize_seed_shift
 implicit none
 
 public :: joint2D_candidate, joint2D_balance_diag, joint2D_candidate_table, JOINT2D_CANDIDATES_FNAME
@@ -11,7 +12,11 @@ private
 #include "simple_local_flags.inc"
 
 character(len=*), parameter :: JOINT2D_CANDIDATES_FNAME = 'joint2D_topk_candidates.dat'
-integer,          parameter :: JOINT2D_CANDIDATES_VERSION = 3
+integer,          parameter :: JOINT2D_CANDIDATES_VERSION = 4
+integer,          parameter :: SHIFT_PROVENANCE_INVALID       = 0
+integer,          parameter :: SHIFT_PROVENANCE_CLASS_REFINED = 1
+integer,          parameter :: SHIFT_PROVENANCE_SEED          = 2
+integer,          parameter :: SHIFT_PROVENANCE_ZERO          = 3
 integer,          parameter :: RELIABILITY_OK           = 0
 integer,          parameter :: RELIABILITY_EMPTY        = 1
 integer,          parameter :: RELIABILITY_TOO_FEW      = 2
@@ -68,9 +73,11 @@ type :: joint2D_candidate_table
     real,                    allocatable :: loss_delta(:)    !< initial_expected_loss - expected_loss
     real,                    allocatable :: particle_weight(:) !< total class-average support; independent of soft acceptance
     real,                    allocatable :: base_shift(:,:)  !< pre-assignment/base shift (2,nptcls)
+    integer,                 allocatable :: shift_provenance(:,:) !< origin of candidate delta shift (topk,nptcls)
     logical,                 allocatable :: accepted(:)      !< true only for a reliable soft top-K assignment
 contains
     procedure :: build_from_loc_tab
+    procedure :: materialize_seed_shifts
     procedure :: set_base_shifts
     procedure :: optimize_logits
     procedure :: apply_balance_prior
@@ -92,6 +99,7 @@ contains
     procedure :: write_diag
     procedure :: write_balance_diag
     procedure :: write_distributed_diag
+    procedure :: write_shift_provenance_diag
     procedure :: kill => kill_candidate_table
 end type joint2D_candidate_table
 
@@ -141,6 +149,51 @@ contains
         call recover_column_pinds(self)
         call self%apply_reliability(1, 1.0)
     end subroutine build_from_loc_tab
+
+    subroutine materialize_seed_shifts( self, seed_shifts, seed_has_sh, l_doshift, seed_nrots )
+        class(joint2D_candidate_table), intent(inout) :: self
+        real,                           intent(in)    :: seed_shifts(:,:)
+        logical,                        intent(in)    :: seed_has_sh(:)
+        logical,                        intent(in)    :: l_doshift
+        integer,                        intent(in)    :: seed_nrots
+        type(ptcl_ref) :: ref
+        integer :: iptcl, irank
+
+        call require_allocated(self, 'seed-shift materialization requested before build/read')
+        if( size(seed_shifts,1) /= 2 .or. size(seed_shifts,2) /= size(self%ncand) .or.&
+            &size(seed_has_sh) /= size(self%ncand) )then
+            THROW_HARD('joint2D_candidate_table: seed-shift table size mismatch')
+        endif
+        if( l_doshift .and. seed_nrots < 1 )then
+            THROW_HARD('joint2D_candidate_table: seed-shift materialization requires positive rotation count')
+        endif
+
+        self%shift_provenance = SHIFT_PROVENANCE_INVALID
+        do iptcl = 1, size(self%ncand)
+            do irank = 1, self%ncand(iptcl)
+                if( self%cand(irank,iptcl)%has_sh )then
+                    self%shift_provenance(irank,iptcl) = SHIFT_PROVENANCE_CLASS_REFINED
+                else if( l_doshift .and. seed_has_sh(iptcl) )then
+                    ref = ptcl_ref()
+                    ref%inpl = self%cand(irank,iptcl)%inpl
+                    call materialize_seed_shift(ref, seed_shifts(:,iptcl), .true., .true., seed_nrots)
+                    self%cand(irank,iptcl)%x      = ref%x
+                    self%cand(irank,iptcl)%y      = ref%y
+                    self%cand(irank,iptcl)%has_sh = ref%has_sh
+                    self%shift_provenance(irank,iptcl) = SHIFT_PROVENANCE_SEED
+                else
+                    self%cand(irank,iptcl)%x      = 0.
+                    self%cand(irank,iptcl)%y      = 0.
+                    self%cand(irank,iptcl)%has_sh = .false.
+                    self%shift_provenance(irank,iptcl) = SHIFT_PROVENANCE_ZERO
+                endif
+                if( .not. finite_real(self%cand(irank,iptcl)%x) .or.&
+                    &.not. finite_real(self%cand(irank,iptcl)%y) )then
+                    THROW_HARD('joint2D_candidate_table: nonfinite materialized candidate delta shift')
+                endif
+            enddo
+        enddo
+    end subroutine materialize_seed_shifts
 
     subroutine set_base_shifts( self, base_shift )
         class(joint2D_candidate_table), intent(inout) :: self
@@ -298,7 +351,7 @@ contains
         deallocate(support, prior)
     end subroutine apply_balance_prior
 
-    subroutine apply_inpl_refinement( self, iptcl, irank, new_inpl, refined_dist, old_inpl, updated )
+    subroutine apply_inpl_refinement( self, iptcl, irank, new_inpl, refined_dist, old_inpl, updated, refined_shift )
         class(joint2D_candidate_table), intent(inout)        :: self
         integer,                        intent(in)           :: iptcl
         integer,                        intent(in)           :: irank
@@ -306,7 +359,9 @@ contains
         real,                           intent(in)           :: refined_dist
         integer,              optional, intent(out)          :: old_inpl
         logical,              optional, intent(out)          :: updated
+        real,                 optional, intent(in)           :: refined_shift(2)
         integer :: nc, prev_inpl
+        real :: old_dist, tol
 
         call require_allocated(self, 'in-plane refinement requested before build/read')
         if( present(old_inpl) ) old_inpl = 0
@@ -322,11 +377,27 @@ contains
         if( .not. finite_real(refined_dist) )then
             THROW_HARD('joint2D_candidate_table: nonfinite in-plane-refinement distance')
         endif
+        if( present(refined_shift) )then
+            if( .not. finite_real(refined_shift(1)) .or. .not. finite_real(refined_shift(2)) )then
+                THROW_HARD('joint2D_candidate_table: nonfinite in-plane-refinement delta shift')
+            endif
+        endif
 
         prev_inpl = self%cand(irank,iptcl)%inpl
+        old_dist  = self%cand(irank,iptcl)%dist
+        tol = refinement_tolerance(old_dist, refined_dist)
+        if( refined_dist >= old_dist - tol )then
+            if( present(old_inpl) ) old_inpl = prev_inpl
+            return
+        endif
         self%cand(irank,iptcl)%inpl  = new_inpl
         self%cand(irank,iptcl)%dist  = refined_dist
         self%cand(irank,iptcl)%logit = -refined_dist
+        if( present(refined_shift) )then
+            self%cand(irank,iptcl)%x      = refined_shift(1)
+            self%cand(irank,iptcl)%y      = refined_shift(2)
+            self%cand(irank,iptcl)%has_sh = .true.
+        endif
         call refresh_particle(self, iptcl)
         self%loss_delta(iptcl) = self%initial_expected_loss(iptcl) - self%expected_loss(iptcl)
 
@@ -379,6 +450,13 @@ contains
             THROW_HARD('joint2D_candidate_table: nonfinite damped candidate shift')
         endif
         step_vec = damped_shift - cur_shift
+
+        if( refined_dist >= self%cand(irank,iptcl)%dist -&
+            &refinement_tolerance(self%cand(irank,iptcl)%dist, refined_dist) )then
+            if( present(old_shift) ) old_shift = cur_shift
+            if( present(new_shift) ) new_shift = cur_shift
+            return
+        endif
 
         self%cand(irank,iptcl)%x      = damped_shift(1)
         self%cand(irank,iptcl)%y      = damped_shift(2)
@@ -543,6 +621,8 @@ contains
         call fileiochk('joint2D_candidate_table; write_table(header); file: '//trim(fname), io_stat)
         write(unit=funit, iostat=io_stat) self%cand
         call fileiochk('joint2D_candidate_table; write_table(cand); file: '//trim(fname), io_stat)
+        write(unit=funit, iostat=io_stat) self%shift_provenance
+        call fileiochk('joint2D_candidate_table; write_table(shift provenance); file: '//trim(fname), io_stat)
         write(unit=funit, iostat=io_stat) self%pinds, self%ncand, self%hard_rank, self%initial_hard_rank,&
             &self%reject_reason
         call fileiochk('joint2D_candidate_table; write_table(ints); file: '//trim(fname), io_stat)
@@ -571,7 +651,7 @@ contains
         call fileiochk('joint2D_candidate_table; read_table; file: '//trim(fname), io_stat)
         read(unit=funit, iostat=io_stat) version, topk, nptcls
         call fileiochk('joint2D_candidate_table; read_table(header); file: '//trim(fname), io_stat)
-        if( version /= JOINT2D_CANDIDATES_VERSION .and. version /= 2 )then
+        if( version /= JOINT2D_CANDIDATES_VERSION .and. version /= 3 .and. version /= 2 )then
             THROW_HARD('joint2D_candidate_table: unsupported file version')
         endif
         if( topk < 1 .or. nptcls < 1 )then
@@ -580,6 +660,10 @@ contains
         call allocate_blank_table(self, topk, nptcls)
         read(unit=funit, iostat=io_stat) self%cand
         call fileiochk('joint2D_candidate_table; read_table(cand); file: '//trim(fname), io_stat)
+        if( version >= 4 )then
+            read(unit=funit, iostat=io_stat) self%shift_provenance
+            call fileiochk('joint2D_candidate_table; read_table(shift provenance); file: '//trim(fname), io_stat)
+        endif
         if( version >= 3 )then
             read(unit=funit, iostat=io_stat) self%pinds, self%ncand, self%hard_rank, self%initial_hard_rank,&
                 &self%reject_reason
@@ -587,6 +671,7 @@ contains
             read(unit=funit, iostat=io_stat) self%ncand, self%hard_rank, self%initial_hard_rank, self%reject_reason
         endif
         call fileiochk('joint2D_candidate_table; read_table(ints); file: '//trim(fname), io_stat)
+        if( version < 4 ) call infer_legacy_shift_provenance(self)
         read(unit=funit, iostat=io_stat) self%entropy, self%initial_entropy, self%norm_entropy, self%winner_weight
         call fileiochk('joint2D_candidate_table; read_table(reals1); file: '//trim(fname), io_stat)
         read(unit=funit, iostat=io_stat) self%expected_loss, self%initial_expected_loss, self%loss_delta
@@ -706,6 +791,7 @@ contains
         if( any(abs(self%loss_delta - other%loss_delta) > rt) ) return
         if( any(abs(self%particle_weight - other%particle_weight) > rt) ) return
         if( any(abs(self%base_shift - other%base_shift) > rt) ) return
+        if( any(self%shift_provenance /= other%shift_provenance) ) return
         do iptcl = 1, size(self%ncand)
             do irank = 1, size(self%cand, 1)
                 if( .not. candidates_equal(self%cand(irank,iptcl), other%cand(irank,iptcl), rt) ) return
@@ -1017,6 +1103,7 @@ contains
             endif
             do irank = 1, size(self%cand, 1)
                 call mix_candidate(h, self%cand(irank,iptcl))
+                call mix_int64(h, self%shift_provenance(irank,iptcl))
             end do
         end do
         chksum = int(modulo(h, 2147483647_8))
@@ -1054,6 +1141,51 @@ contains
             &'nonfinite=', count_nonfinite_records(self)
     end subroutine write_distributed_diag
 
+    subroutine write_shift_provenance_diag( self, label )
+        class(joint2D_candidate_table), intent(in) :: self
+        character(len=*),               intent(in) :: label
+        integer :: class_refined, materialized_seed, genuine_zero, invalid, iptcl, irank
+        integer :: missing_shift, nonfinite_delta, nonfinite_base
+
+        call require_allocated(self, 'shift-provenance diagnostics requested before build/read')
+        class_refined      = 0
+        materialized_seed = 0
+        genuine_zero      = 0
+        invalid           = 0
+        missing_shift     = 0
+        nonfinite_delta   = 0
+        nonfinite_base    = 0
+        do iptcl = 1, size(self%ncand)
+            if( .not. finite_real(self%base_shift(1,iptcl)) .or.&
+                &.not. finite_real(self%base_shift(2,iptcl)) ) nonfinite_base = nonfinite_base + 1
+            do irank = 1, self%ncand(iptcl)
+                select case(self%shift_provenance(irank,iptcl))
+                case(SHIFT_PROVENANCE_CLASS_REFINED)
+                    class_refined = class_refined + 1
+                case(SHIFT_PROVENANCE_SEED)
+                    materialized_seed = materialized_seed + 1
+                case(SHIFT_PROVENANCE_ZERO)
+                    genuine_zero = genuine_zero + 1
+                case default
+                    invalid = invalid + 1
+                end select
+                if( self%shift_provenance(irank,iptcl) /= SHIFT_PROVENANCE_ZERO .and.&
+                    &.not. self%cand(irank,iptcl)%has_sh ) missing_shift = missing_shift + 1
+                if( .not. finite_real(self%cand(irank,iptcl)%x) .or.&
+                    &.not. finite_real(self%cand(irank,iptcl)%y) ) nonfinite_delta = nonfinite_delta + 1
+            enddo
+        enddo
+        write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
+            &'>>> JOINT2D SGD SHIFT PROVENANCE:', trim(label), 'class_refined=', class_refined,&
+            &'materialized_seed=', materialized_seed, 'genuine_zero=', genuine_zero, 'invalid=', invalid,&
+            &'missing_shift=', missing_shift, 'nonfinite_delta=', nonfinite_delta, 'nonfinite_base=', nonfinite_base
+        write(logfhandle,'(A)')&
+            &'>>> JOINT2D SGD SHIFT CONVENTION: candidate_shift=delta scoring_shift=rotate(delta) assignment_shift=base_plus_delta'
+        if( invalid > 0 .or. missing_shift > 0 .or. nonfinite_delta > 0 .or. nonfinite_base > 0 )then
+            THROW_HARD('joint2D candidate shift provenance/convention invariant failed')
+        endif
+    end subroutine write_shift_provenance_diag
+
     subroutine kill_candidate_table( self )
         class(joint2D_candidate_table), intent(inout) :: self
         if( allocated(self%cand)            ) deallocate(self%cand)
@@ -1071,8 +1203,25 @@ contains
         if( allocated(self%loss_delta)      ) deallocate(self%loss_delta)
         if( allocated(self%particle_weight) ) deallocate(self%particle_weight)
         if( allocated(self%base_shift)      ) deallocate(self%base_shift)
+        if( allocated(self%shift_provenance)) deallocate(self%shift_provenance)
         if( allocated(self%accepted)        ) deallocate(self%accepted)
     end subroutine kill_candidate_table
+
+    subroutine infer_legacy_shift_provenance( self )
+        class(joint2D_candidate_table), intent(inout) :: self
+        integer :: iptcl, irank
+
+        self%shift_provenance = SHIFT_PROVENANCE_INVALID
+        do iptcl = 1, size(self%ncand)
+            do irank = 1, self%ncand(iptcl)
+                if( self%cand(irank,iptcl)%has_sh )then
+                    self%shift_provenance(irank,iptcl) = SHIFT_PROVENANCE_CLASS_REFINED
+                else
+                    self%shift_provenance(irank,iptcl) = SHIFT_PROVENANCE_ZERO
+                endif
+            enddo
+        enddo
+    end subroutine infer_legacy_shift_provenance
 
     logical function valid_ref( ref ) result( is_valid )
         type(ptcl_ref), intent(in) :: ref
@@ -1086,6 +1235,11 @@ contains
         real, intent(in) :: val
         is_finite = (val == val) .and. (abs(val) < huge(val) / 2.0)
     end function finite_real
+
+    real function refinement_tolerance( old_dist, new_dist ) result( tol )
+        real, intent(in) :: old_dist, new_dist
+        tol = 128. * epsilon(1.0) * max(1.0, abs(old_dist), abs(new_dist))
+    end function refinement_tolerance
 
     subroutine insert_candidate( self, iptcl, topk, ref )
         class(joint2D_candidate_table), intent(inout) :: self
@@ -1107,8 +1261,11 @@ contains
         nnew = min(topk, self%ncand(iptcl) + 1)
         do j = nnew, pos + 1, -1
             self%cand(j,iptcl) = self%cand(j-1,iptcl)
+            self%shift_provenance(j,iptcl) = self%shift_provenance(j-1,iptcl)
         end do
         self%cand(pos,iptcl) = newcand
+        self%shift_provenance(pos,iptcl) = merge(SHIFT_PROVENANCE_CLASS_REFINED,&
+            &SHIFT_PROVENANCE_ZERO, newcand%has_sh)
         self%ncand(iptcl) = nnew
     end subroutine insert_candidate
 
@@ -1299,7 +1456,8 @@ contains
             &self%initial_hard_rank(nptcls), self%reject_reason(nptcls), self%entropy(nptcls),&
             &self%initial_entropy(nptcls), self%norm_entropy(nptcls), self%winner_weight(nptcls),&
             &self%expected_loss(nptcls), self%initial_expected_loss(nptcls), self%loss_delta(nptcls),&
-            &self%particle_weight(nptcls), self%base_shift(2,nptcls), self%accepted(nptcls))
+            &self%particle_weight(nptcls), self%base_shift(2,nptcls), self%shift_provenance(topk,nptcls),&
+            &self%accepted(nptcls))
         self%cand              = joint2D_candidate()
         self%pinds             = 0
         self%ncand             = 0
@@ -1315,6 +1473,7 @@ contains
         self%loss_delta        = 0.
         self%particle_weight   = 0.
         self%base_shift        = 0.
+        self%shift_provenance  = SHIFT_PROVENANCE_INVALID
         self%accepted          = .false.
     end subroutine allocate_blank_table
 
@@ -1370,6 +1529,7 @@ contains
         dst%loss_delta(dst_col)   = src%loss_delta(src_col)
         dst%particle_weight(dst_col) = src%particle_weight(src_col)
         dst%base_shift(:,dst_col) = src%base_shift(:,src_col)
+        dst%shift_provenance(:,dst_col) = src%shift_provenance(:,src_col)
         dst%accepted(dst_col)     = src%accepted(src_col)
     end subroutine copy_candidate_column
 

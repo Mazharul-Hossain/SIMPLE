@@ -369,6 +369,7 @@ contains
                 call joint_topk_candidates%read_table(JOINT2D_CANDIDATES_FNAME)
                 call joint_topk_candidates%write_distributed_diag('cluster2D read-global', 0, p_ptr%nparts)
             endif
+            call joint_topk_candidates%write_shift_provenance_diag('cluster2D provisional')
             if( size(joint_topk_candidates%ncand) /= nptcls2update )then
                 THROW_HARD('joint 2D top-K candidate table particle count does not match cluster2D batch set')
             endif
@@ -413,13 +414,18 @@ contains
             real, allocatable :: inpl_scores(:,:), inpl_dists(:,:)
             integer :: cand_count_t(nthr_glob), changed_t(nthr_glob), nonfinite_t(nthr_glob)
             integer :: hard_churn_t(nthr_glob), negative_delta_t(nthr_glob), invalid_t(nthr_glob)
+            integer :: no_better_t(nthr_glob), roundtrip_checked_t(nthr_glob), roundtrip_mismatch_t(nthr_glob)
             real    :: loss_delta_sum_t(nthr_glob), loss_delta_max_t(nthr_glob)
             real    :: angle_delta_sum_t(nthr_glob), angle_delta_max_t(nthr_glob)
+            real    :: roundtrip_error_sum_t(nthr_glob), roundtrip_error_max_t(nthr_glob)
+            real    :: roundtrip_tol_max_t(nthr_glob)
             integer :: iloc, iptcl_map, iptcl, irank, ithr, nc, nrots, old_inpl, new_inpl
             integer :: eligible_batch, cand_batch, hard_before, hard_after
             integer :: nonfinite_total, invalid_total, changed_total, cand_total, hard_churn_total, negative_total
-            real    :: cand_shift(2), score_shift(2), rotmat(2,2), refined_dist, old_dist, loss_delta
-            real    :: mean_loss_delta, mean_angle_delta, angle_delta
+            integer :: no_better_total, roundtrip_checked_total, roundtrip_mismatch_total
+            real    :: cand_shift(2), score_shift(2), refined_shift(2), rotmat(2,2), refined_dist, old_dist, loss_delta
+            real    :: mean_loss_delta, mean_angle_delta, angle_delta, roundtrip_dist, roundtrip_error, roundtrip_tol
+            real    :: roundtrip_error_mean
             logical :: updated
 
             if( .not. ctrl%l_joint_topk ) return
@@ -449,12 +455,19 @@ contains
             hard_churn_t      = 0
             negative_delta_t  = 0
             invalid_t         = 0
+            no_better_t       = 0
+            roundtrip_checked_t  = 0
+            roundtrip_mismatch_t = 0
             loss_delta_sum_t  = 0.
             loss_delta_max_t  = 0.
             angle_delta_sum_t = 0.
             angle_delta_max_t = 0.
+            roundtrip_error_sum_t = 0.
+            roundtrip_error_max_t = 0.
+            roundtrip_tol_max_t   = 0.
             !$omp parallel do private(iloc,iptcl_map,iptcl,irank,ithr,nc,hard_before,hard_after,old_inpl,new_inpl)&
-            !$omp private(cand_shift,score_shift,rotmat,refined_dist,old_dist,loss_delta,angle_delta,updated)&
+            !$omp private(cand_shift,score_shift,refined_shift,rotmat,refined_dist,old_dist,loss_delta,angle_delta,updated)&
+            !$omp private(roundtrip_dist,roundtrip_error,roundtrip_tol)&
             !$omp default(shared) schedule(static) proc_bind(close)
             do iloc = 1, batchsz
                 ithr = omp_get_thread_num() + 1
@@ -495,6 +508,17 @@ contains
                         nonfinite_t(ithr) = nonfinite_t(ithr) + 1
                         cycle
                     endif
+                    roundtrip_dist  = inpl_dists(old_inpl,ithr)
+                    roundtrip_error = abs(roundtrip_dist - old_dist)
+                    roundtrip_tol   = 128. * epsilon(1.0) * max(1.0, abs(roundtrip_dist), abs(old_dist))
+                    roundtrip_checked_t(ithr)   = roundtrip_checked_t(ithr) + 1
+                    roundtrip_error_sum_t(ithr) = roundtrip_error_sum_t(ithr) + roundtrip_error
+                    roundtrip_error_max_t(ithr) = max(roundtrip_error_max_t(ithr), roundtrip_error)
+                    roundtrip_tol_max_t(ithr)   = max(roundtrip_tol_max_t(ithr), roundtrip_tol)
+                    if( roundtrip_error > roundtrip_tol )then
+                        roundtrip_mismatch_t(ithr) = roundtrip_mismatch_t(ithr) + 1
+                        cycle
+                    endif
                     new_inpl = minloc(inpl_dists(:,ithr), dim=1)
                     if( new_inpl < 1 .or. new_inpl > nrots )then
                         invalid_t(ithr) = invalid_t(ithr) + 1
@@ -503,8 +527,15 @@ contains
                     refined_dist = inpl_dists(new_inpl,ithr)
                     angle_delta  = inpl_angle_delta(old_inpl, new_inpl)
                     loss_delta   = old_dist - refined_dist
-                    call joint_topk_candidates%apply_inpl_refinement(iptcl_map, irank, new_inpl, refined_dist,&
-                        &old_inpl=old_inpl, updated=updated)
+                    if( p_ptr%l_doshift .and. joint_topk_candidates%cand(irank,iptcl_map)%has_sh )then
+                        call rotmat2d(b_ptr%pftc%get_rot(new_inpl), rotmat)
+                        refined_shift = matmul(score_shift, rotmat)
+                        call joint_topk_candidates%apply_inpl_refinement(iptcl_map, irank, new_inpl, refined_dist,&
+                            &old_inpl=old_inpl, updated=updated, refined_shift=refined_shift)
+                    else
+                        call joint_topk_candidates%apply_inpl_refinement(iptcl_map, irank, new_inpl, refined_dist,&
+                            &old_inpl=old_inpl, updated=updated)
+                    endif
                     if( updated )then
                         if( new_inpl /= old_inpl ) changed_t(ithr) = changed_t(ithr) + 1
                         if( loss_delta < 0. ) negative_delta_t(ithr) = negative_delta_t(ithr) + 1
@@ -512,6 +543,8 @@ contains
                         loss_delta_max_t(ithr)  = max(loss_delta_max_t(ithr), loss_delta)
                         angle_delta_sum_t(ithr) = angle_delta_sum_t(ithr) + angle_delta
                         angle_delta_max_t(ithr) = max(angle_delta_max_t(ithr), angle_delta)
+                    else
+                        no_better_t(ithr) = no_better_t(ithr) + 1
                     endif
                 end do
                 hard_after = joint_topk_candidates%hard_rank(iptcl_map)
@@ -527,17 +560,28 @@ contains
             invalid_total    = sum(invalid_t)
             hard_churn_total = sum(hard_churn_t)
             negative_total   = sum(negative_delta_t)
+            no_better_total  = sum(no_better_t)
+            roundtrip_checked_total  = sum(roundtrip_checked_t)
+            roundtrip_mismatch_total = sum(roundtrip_mismatch_t)
             mean_loss_delta  = 0.
             mean_angle_delta = 0.
+            roundtrip_error_mean = 0.
             if( cand_total > 0 )then
                 mean_loss_delta  = sum(loss_delta_sum_t) / real(cand_total)
                 mean_angle_delta = sum(angle_delta_sum_t) / real(cand_total)
             endif
+            if( roundtrip_checked_total > 0 )then
+                roundtrip_error_mean = sum(roundtrip_error_sum_t) / real(roundtrip_checked_total)
+            endif
             deallocate(inpl_scores, inpl_dists)
-            write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
+            write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
                 &'>>> JOINT2D SGD INPL:', 'batch=', ibatch, 'eligible=', eligible_batch,&
                 &'candidates=', cand_total, 'changed=', changed_total, 'invalid=', invalid_total,&
-                &'nonfinite=', nonfinite_total, 'negative_delta=', negative_total
+                &'nonfinite=', nonfinite_total, 'negative_delta=', negative_total, 'no_better=', no_better_total
+            write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4)')&
+                &'>>> JOINT2D SGD INPL ROUNDTRIP:', 'batch=', ibatch, 'checked=', roundtrip_checked_total,&
+                &'mismatch=', roundtrip_mismatch_total, 'error_mean=', roundtrip_error_mean,&
+                &'error_max=', maxval(roundtrip_error_max_t), 'tolerance_max=', maxval(roundtrip_tol_max_t)
             write(logfhandle,'(A,1X,A,ES12.4,1X,A,ES12.4)')&
                 &'>>> JOINT2D SGD INPL LOSSES:', 'loss_delta_mean=', mean_loss_delta,&
                 &'loss_delta_max=', maxval(loss_delta_max_t)
@@ -547,20 +591,28 @@ contains
             if( nonfinite_total > 0 )then
                 THROW_HARD('joint 2D in-plane refinement produced nonfinite diagnostics')
             endif
+            if( roundtrip_mismatch_total > 0 )then
+                THROW_HARD('joint 2D stored-candidate distance/shift round-trip invariant failed')
+            endif
         end subroutine refine_joint_topk_inpls_for_batch
 
         subroutine refine_joint_topk_shifts_for_batch()
             type(pftc_shsrch_grad) :: grad_shsrch_obj(nthr_glob)
             integer :: cand_count_t(nthr_glob), refined_t(nthr_glob), invalid_t(nthr_glob)
             integer :: no_better_t(nthr_glob), nonfinite_t(nthr_glob), hard_churn_t(nthr_glob)
+            integer :: roundtrip_checked_t(nthr_glob), roundtrip_mismatch_t(nthr_glob)
             real    :: step_sum_t(nthr_glob), step_max_t(nthr_glob), loss_delta_sum_t(nthr_glob)
             real    :: loss_delta_max_t(nthr_glob), winner_shift_sum_t(nthr_glob), winner_shift_max_t(nthr_glob)
+            real    :: roundtrip_error_sum_t(nthr_glob), roundtrip_error_max_t(nthr_glob)
+            real    :: roundtrip_tol_max_t(nthr_glob)
             real    :: lims(2,2), lims_init(2,2), mean_step, mean_loss_delta, mean_winner_shift
             integer :: iloc, iptcl_map, iptcl, irank, ithr, nc, irot, hard_before, hard_after
             integer :: eligible_batch, cand_batch, refined_total, nonfinite_total, ithr_init
             integer :: invalid_total, no_better_total, hard_churn_total
+            integer :: roundtrip_checked_total, roundtrip_mismatch_total
             real    :: cxy(3), old_shift(2), old_shift_opt(2), opt_shift(2), damped_shift(2)
-            real    :: score_shift(2), rotmat(2,2), refined_corr, refined_dist, old_dist, step
+            real    :: score_shift(2), rotmat(2,2), refined_corr, refined_dist, old_corr, old_dist, step
+            real    :: roundtrip_dist, roundtrip_error, roundtrip_tol, roundtrip_error_mean
             real    :: loss_delta, winner_shift(2)
             logical :: updated
 
@@ -604,15 +656,21 @@ contains
             no_better_t        = 0
             nonfinite_t        = 0
             hard_churn_t       = 0
+            roundtrip_checked_t  = 0
+            roundtrip_mismatch_t = 0
             step_sum_t         = 0.
             step_max_t         = 0.
             loss_delta_sum_t   = 0.
             loss_delta_max_t   = 0.
             winner_shift_sum_t = 0.
             winner_shift_max_t = 0.
+            roundtrip_error_sum_t = 0.
+            roundtrip_error_max_t = 0.
+            roundtrip_tol_max_t   = 0.
             !$omp parallel do private(iloc,iptcl_map,iptcl,irank,ithr,nc,irot,hard_before,hard_after,cxy)&
             !$omp private(old_shift,old_shift_opt,opt_shift,damped_shift,score_shift,rotmat)&
-            !$omp private(refined_corr,refined_dist,old_dist,step,loss_delta,winner_shift,updated)&
+            !$omp private(refined_corr,refined_dist,old_corr,old_dist,step,loss_delta,winner_shift,updated)&
+            !$omp private(roundtrip_dist,roundtrip_error,roundtrip_tol)&
             !$omp default(shared) schedule(static) proc_bind(close)
             do iloc = 1, batchsz
                 ithr = omp_get_thread_num() + 1
@@ -637,6 +695,26 @@ contains
                     endif
                     call rotmat2d(b_ptr%pftc%get_rot(irot), rotmat)
                     old_shift_opt = matmul(old_shift, transpose(rotmat))
+                    old_corr = real(b_ptr%pftc%gen_corr_for_rot_8(&
+                        &joint_topk_candidates%cand(irank,iptcl_map)%icls, iptcl, real(old_shift_opt,dp), irot))
+                    roundtrip_dist = eulprob_dist_switch(old_corr, p_ptr%cc_objfun)
+                    if( trim(p_ptr%sgd_likelihood_units) == 'gaussian_nll' .and.&
+                        &p_ptr%cc_objfun == OBJFUN_EUCLID .and. .not. p_ptr%l_objfun_den )&
+                        &roundtrip_dist = b_ptr%pftc%get_euclid_nll_scale(iptcl) * roundtrip_dist
+                    if( .not. finite_joint_real(old_corr) .or. .not. finite_joint_real(roundtrip_dist) )then
+                        nonfinite_t(ithr) = nonfinite_t(ithr) + 1
+                        cycle
+                    endif
+                    roundtrip_error = abs(roundtrip_dist - old_dist)
+                    roundtrip_tol   = 128. * epsilon(1.0) * max(1.0, abs(roundtrip_dist), abs(old_dist))
+                    roundtrip_checked_t(ithr)   = roundtrip_checked_t(ithr) + 1
+                    roundtrip_error_sum_t(ithr) = roundtrip_error_sum_t(ithr) + roundtrip_error
+                    roundtrip_error_max_t(ithr) = max(roundtrip_error_max_t(ithr), roundtrip_error)
+                    roundtrip_tol_max_t(ithr)   = max(roundtrip_tol_max_t(ithr), roundtrip_tol)
+                    if( roundtrip_error > roundtrip_tol )then
+                        roundtrip_mismatch_t(ithr) = roundtrip_mismatch_t(ithr) + 1
+                        cycle
+                    endif
                     call grad_shsrch_obj(ithr)%set_indices(joint_topk_candidates%cand(irank,iptcl_map)%icls, iptcl)
                     cxy = grad_shsrch_obj(ithr)%minimize(irot=irot, sh_rot=.true., xy_in=old_shift_opt)
                     if( irot <= 0 )then
@@ -667,6 +745,8 @@ contains
                         step_max_t(ithr)       = max(step_max_t(ithr), step)
                         loss_delta_sum_t(ithr) = loss_delta_sum_t(ithr) + loss_delta
                         loss_delta_max_t(ithr) = max(loss_delta_max_t(ithr), loss_delta)
+                    else
+                        no_better_t(ithr) = no_better_t(ithr) + 1
                     endif
                 end do
                 hard_after = joint_topk_candidates%hard_rank(iptcl_map)
@@ -693,18 +773,28 @@ contains
             invalid_total    = sum(invalid_t)
             no_better_total  = sum(no_better_t)
             hard_churn_total = sum(hard_churn_t)
+            roundtrip_checked_total  = sum(roundtrip_checked_t)
+            roundtrip_mismatch_total = sum(roundtrip_mismatch_t)
             mean_step        = 0.
             mean_loss_delta  = 0.
             mean_winner_shift = 0.
+            roundtrip_error_mean = 0.
             if( refined_total > 0 )then
                 mean_step       = sum(step_sum_t) / real(refined_total)
                 mean_loss_delta = sum(loss_delta_sum_t) / real(refined_total)
             endif
             if( eligible_batch > 0 ) mean_winner_shift = sum(winner_shift_sum_t) / real(eligible_batch)
+            if( roundtrip_checked_total > 0 )then
+                roundtrip_error_mean = sum(roundtrip_error_sum_t) / real(roundtrip_checked_total)
+            endif
             write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
                 &'>>> JOINT2D SGD SHIFT:', 'batch=', ibatch, 'eligible=', eligible_batch,&
                 &'candidates=', sum(cand_count_t), 'refined=', refined_total, 'no_better=', no_better_total,&
                 &'invalid=', invalid_total, 'nonfinite=', nonfinite_total
+            write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4)')&
+                &'>>> JOINT2D SGD SHIFT ROUNDTRIP:', 'batch=', ibatch, 'checked=', roundtrip_checked_total,&
+                &'mismatch=', roundtrip_mismatch_total, 'error_mean=', roundtrip_error_mean,&
+                &'error_max=', maxval(roundtrip_error_max_t), 'tolerance_max=', maxval(roundtrip_tol_max_t)
             write(logfhandle,'(A,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4)')&
                 &'>>> JOINT2D SGD SHIFT NORMS:', 'step_mean=', mean_step, 'step_max=', maxval(step_max_t),&
                 &'loss_delta_mean=', mean_loss_delta, 'loss_delta_max=', maxval(loss_delta_max_t)
@@ -713,6 +803,9 @@ contains
                 &'winner_shift_mean=', mean_winner_shift, 'winner_shift_max=', maxval(winner_shift_max_t)
             if( nonfinite_total > 0 )then
                 THROW_HARD('joint 2D shift refinement produced nonfinite diagnostics')
+            endif
+            if( roundtrip_mismatch_total > 0 )then
+                THROW_HARD('joint 2D stored-candidate shift-refinement round-trip invariant failed')
             endif
         end subroutine refine_joint_topk_shifts_for_batch
 

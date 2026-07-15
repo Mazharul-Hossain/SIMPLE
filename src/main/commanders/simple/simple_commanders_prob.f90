@@ -469,11 +469,14 @@ contains
         call flush(logfhandle)
         if( params%l_sgd .and. trim(params%sgd_mode) == 'joint' )then
             call joint_candidates%build_from_loc_tab(eulprob_obj_glob%loc_tab, params%sgd_topk, pinds=pinds)
+            call joint_candidates%materialize_seed_shifts(eulprob_obj_glob%seed_shifts,&
+                &eulprob_obj_glob%seed_has_sh, params%l_doshift, eulprob_obj_glob%seed_nrots)
             allocate(base_shifts(2,eulprob_obj_glob%nptcls), source=0.)
             do iptcl = 1, eulprob_obj_glob%nptcls
                 if( pinds(iptcl) > 0 ) base_shifts(:,iptcl) = build%spproj_field%get_2Dshift(pinds(iptcl))
             end do
             call joint_candidates%set_base_shifts(base_shifts)
+            call joint_candidates%write_shift_provenance_diag('prob_align2D provisional')
             call joint_candidates%optimize_logits(params%sgd_inner_its, params%sgd_eta_latent)
             call joint_candidates%evaluate_reliability(params%sgd_cavg_min_cands, params%sgd_cavg_max_entropy)
             call joint_candidates%apply_balance_prior(params%ncls, params%sgd_balance_weight, balance_diag)

@@ -147,6 +147,50 @@ check_refinement_deltas() {
   fi
 }
 
+check_shift_provenance() {
+  require_contains 'JOINT2D SGD SHIFT PROVENANCE:' 'candidate shift-provenance diagnostics'
+  require_contains 'JOINT2D SGD SHIFT CONVENTION:' 'candidate shift-convention diagnostics'
+  if ! awk '
+    /JOINT2D SGD SHIFT PROVENANCE:/ {
+      seen++
+      total = invalid = missing = nonfinite_delta = nonfinite_base = 0
+      for (i = 1; i <= NF; i++) {
+        value = $i
+        if ($i ~ /^class_refined=/)    { sub(/^class_refined=/, "", value); total += value + 0 }
+        if ($i ~ /^materialized_seed=/) { sub(/^materialized_seed=/, "", value); total += value + 0 }
+        if ($i ~ /^genuine_zero=/)     { sub(/^genuine_zero=/, "", value); total += value + 0 }
+        if ($i ~ /^invalid=/)          { sub(/^invalid=/, "", value); invalid = value + 0 }
+        if ($i ~ /^missing_shift=/)    { sub(/^missing_shift=/, "", value); missing = value + 0 }
+        if ($i ~ /^nonfinite_delta=/)  { sub(/^nonfinite_delta=/, "", value); nonfinite_delta = value + 0 }
+        if ($i ~ /^nonfinite_base=/)   { sub(/^nonfinite_base=/, "", value); nonfinite_base = value + 0 }
+      }
+      if (total < 1 || invalid > 0 || missing > 0 || nonfinite_delta > 0 || nonfinite_base > 0) exit 1
+    }
+    END { if (seen == 0) exit 1 }
+  ' "$log_file"; then
+    fail 'invalid, missing, or nonfinite candidate shift provenance found'
+  fi
+}
+
+check_refinement_roundtrip() {
+  require_contains 'JOINT2D SGD INPL ROUNDTRIP:' 'in-plane stored-candidate round-trip diagnostics'
+  require_contains 'JOINT2D SGD SHIFT ROUNDTRIP:' 'shift stored-candidate round-trip diagnostics'
+  if ! awk '
+    /JOINT2D SGD (INPL|SHIFT) ROUNDTRIP:/ {
+      seen++
+      checked = mismatch = ""
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^checked=/)  { checked = $i; sub(/^checked=/, "", checked) }
+        if ($i ~ /^mismatch=/) { mismatch = $i; sub(/^mismatch=/, "", mismatch) }
+      }
+      if (checked == "" || mismatch == "" || (checked + 0) < 1 || (mismatch + 0) > 0) exit 1
+    }
+    END { if (seen == 0) exit 1 }
+  ' "$log_file"; then
+    fail 'stored candidate distance/shift round-trip invariant failed'
+  fi
+}
+
 check_final_loss_scale() {
   if ! awk '
     /JOINT2D SGD LATENT: cluster2D final reliability/ {
@@ -267,6 +311,7 @@ check_science_joint_log() {
   require_contains 'JOINT2D SGD INPL' 'in-plane refinement diagnostics'
   require_contains 'JOINT2D SGD INPL LOSSES' 'in-plane loss diagnostics'
   require_contains 'JOINT2D SGD SHIFT' 'shift refinement diagnostics'
+  require_contains 'JOINT2D SGD SHIFT PROVENANCE' 'candidate shift-provenance diagnostics'
   require_contains 'JOINT2D SGD BALANCE' 'class-balance diagnostics'
   require_contains 'JOINT2D SGD BALANCE SUPPORT' 'class-balance support diagnostics'
   require_contains 'JOINT2D SGD BALANCE PRIOR' 'class-balance prior diagnostics'
@@ -278,6 +323,8 @@ check_science_joint_log() {
   require_contains 'CAVG SGD RESTORE' 'CAVG restoration diagnostics'
   require_contains 'CAVG SGD RESTORE FRC' 'CAVG restoration FRC diagnostics'
   check_likelihood_unit_continuity
+  check_shift_provenance
+  check_refinement_roundtrip
   check_refinement_deltas
   check_final_loss_scale
   check_cavg_update_trust
