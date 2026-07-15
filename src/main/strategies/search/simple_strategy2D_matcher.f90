@@ -485,7 +485,8 @@ contains
                     call b_ptr%pftc%gen_objfun_vals(joint_topk_candidates%cand(irank,iptcl_map)%icls,&
                         &iptcl, score_shift, inpl_scores(:,ithr))
                     inpl_dists(:,ithr) = eulprob_dist_switch(inpl_scores(:,ithr), p_ptr%cc_objfun)
-                    if( p_ptr%cc_objfun == OBJFUN_EUCLID .and. .not. p_ptr%l_objfun_den )&
+                    if( trim(p_ptr%sgd_likelihood_units) == 'gaussian_nll' .and.&
+                        &p_ptr%cc_objfun == OBJFUN_EUCLID .and. .not. p_ptr%l_objfun_den )&
                         &inpl_dists(:,ithr) = b_ptr%pftc%get_euclid_nll_scale(iptcl) * inpl_dists(:,ithr)
                     if( any(inpl_scores(:,ithr) /= inpl_scores(:,ithr)) .or.&
                         &any(abs(inpl_scores(:,ithr)) >= huge(1.0) / 2.0) .or.&
@@ -648,7 +649,8 @@ contains
                     refined_corr = real(b_ptr%pftc%gen_corr_for_rot_8(&
                         &joint_topk_candidates%cand(irank,iptcl_map)%icls, iptcl, real(score_shift,dp), irot))
                     refined_dist = eulprob_dist_switch(refined_corr, p_ptr%cc_objfun)
-                    if( p_ptr%cc_objfun == OBJFUN_EUCLID .and. .not. p_ptr%l_objfun_den )&
+                    if( trim(p_ptr%sgd_likelihood_units) == 'gaussian_nll' .and.&
+                        &p_ptr%cc_objfun == OBJFUN_EUCLID .and. .not. p_ptr%l_objfun_den )&
                         &refined_dist = b_ptr%pftc%get_euclid_nll_scale(iptcl) * refined_dist
                     if( .not. finite_joint_real(refined_corr) .or. .not. finite_joint_real(refined_dist) .or.&
                         &.not. finite_joint_real(opt_shift(1)) .or. .not. finite_joint_real(opt_shift(2)) )then
@@ -816,6 +818,17 @@ contains
         subroutine finalize_joint_topk_reliability()
             type(joint2D_balance_diag) :: balance_diag
             logical :: fallback_used
+            logical :: l_gaussian_nll
+            character(len=STDLEN) :: likelihood_units
+
+            l_gaussian_nll = trim(p_ptr%sgd_likelihood_units) == 'gaussian_nll' .and.&
+                &p_ptr%cc_objfun == OBJFUN_EUCLID .and. .not. p_ptr%l_objfun_den
+            likelihood_units = 'objective_distance'
+            if( l_gaussian_nll ) likelihood_units = 'gaussian_nll'
+            write(logfhandle,'(A,1X,A,A,1X,A,A,1X,A,L1)')&
+                &'>>> JOINT2D SGD LIKELIHOOD UNITS:', 'context=', 'cluster2D_final',&
+                &'units=', trim(likelihood_units),&
+                &'active=', l_gaussian_nll
 
             ! Candidate refinements reset logits from their new distances. Re-run
             ! the latent optimizer on the fully refined table, then apply one

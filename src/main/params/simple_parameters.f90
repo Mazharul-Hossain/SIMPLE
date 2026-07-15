@@ -321,6 +321,7 @@ type :: parameters
     character(len=STDLEN)     :: select_flag='cluster' !< which flag to use for cluster selection (cluster|class){cluster}
     character(len=STDLEN)     :: sgd_eta_decay='const' !< stochastic class-average learning-rate schedule(const){const}
     character(len=STDLEN)     :: sgd_latent='st_topk' !< joint-SGD latent relaxation(st_topk|soft_topk|sample_topk){st_topk}
+    character(len=STDLEN)     :: sgd_likelihood_units='normalized' !< internal joint-SGD likelihood units(normalized|gaussian_nll){normalized}
     character(len=STDLEN)     :: sgd_mode='joint'     !< SGD optimizer mode(joint|cavg_only){joint}
     character(len=STDLEN)     :: sgd_activation='auto' !< internal SGD activation policy(auto|off|alternate|on){auto}
     character(len=STDLEN)     :: sgd_stage4_mode='alternate' !< abinitio2D stage-4 SGD mode(off|alternate|on){alternate}
@@ -575,6 +576,8 @@ type :: parameters
     real    :: sgd_batch_frac=0.60 !< fraction of active particles in each joint-SGD outer update
     real    :: sgd_balance_weight=0.0 !< joint-SGD optional class-balance weight
     real    :: sgd_cavg_max_entropy=0.95 !< joint-SGD max normalized entropy for weighted class averages
+    real    :: sgd_cavg_max_rel_step=0.25 !< joint-SGD per-half-class relative L2 trust bound
+    real    :: sgd_cavg_min_support=3.0 !< joint-SGD minimum expected count and effective sample size per half-class
     real    :: sgd_eta_cavg=0.1    !< joint-SGD class-average learning rate
     real    :: sgd_eta_latent=0.5  !< joint-SGD latent-logit learning rate
     real    :: sgd_eta_shift=0.25  !< joint-SGD shift learning rate

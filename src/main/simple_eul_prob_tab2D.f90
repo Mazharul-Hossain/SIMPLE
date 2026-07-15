@@ -362,7 +362,7 @@ contains
 
     logical function use_calibrated_joint_nll( self ) result(use_nll)
         class(eul_prob_tab2D), intent(in) :: self
-        use_nll = self%p_ptr%l_sgd .and. trim(self%p_ptr%sgd_mode) == 'joint'
+        use_nll = trim(self%p_ptr%sgd_likelihood_units) == 'gaussian_nll'
     end function use_calibrated_joint_nll
 
     subroutine write_likelihood_shadow_diag( self, i_first, i_last )
@@ -373,9 +373,19 @@ contains
         real :: scale_q(3), gap21_q(3), gap31_q(3), entropy_q(3), winner_q(3)
         real :: dist, winner
         integer :: i_from, i_to, nmax, i, iptcl, icls, j, nc, nsamples, accepted_shadow
+        logical :: l_active_nll
+        character(len=STDLEN) :: behavior, units
 
         if( .not. self%p_ptr%l_sgd_diag .or. trim(self%p_ptr%sgd_mode) /= 'joint' ) return
         if( self%p_ptr%cc_objfun /= OBJFUN_EUCLID .or. self%p_ptr%l_objfun_den ) return
+        l_active_nll = use_calibrated_joint_nll(self)
+        if( l_active_nll )then
+            behavior = 'active'
+            units    = 'gaussian_nll'
+        else
+            behavior = 'diagnostic_only'
+            units    = 'normalized'
+        endif
         i_from = max(1, i_first)
         i_to   = min(self%nptcls, i_last)
         if( i_to < i_from ) return
@@ -411,7 +421,11 @@ contains
             nll = 0.
             unnorm = 0.
             probs = 0.
-            nll(1:nc) = best(1:nc)
+            if( l_active_nll )then
+                nll(1:nc) = best(1:nc)
+            else
+                nll(1:nc) = scale * best(1:nc)
+            endif
             unnorm(1:nc) = exp(-(nll(1:nc) - nll(1)))
             denom = sum(unnorm(1:nc))
             if( .not. ieee_is_finite(denom) .or. denom <= 0. ) cycle
@@ -435,9 +449,13 @@ contains
         call shadow_quantiles(gap31_vals, nsamples, gap31_q)
         call shadow_quantiles(entropy_vals, nsamples, entropy_q)
         call shadow_quantiles(winner_vals, nsamples, winner_q)
-        write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,A)')&
+        write(logfhandle,'(A,1X,A,A,1X,A,A,1X,A,L1)')&
+            &'>>> JOINT2D SGD LIKELIHOOD UNITS:', 'context=', 'prob_align2D_provisional',&
+            &'units=', trim(units), 'active=', l_active_nll
+        write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,A,1X,A,A)')&
             &'>>> JOINT2D SGD NLL SHADOW MODEL:', 'convention=E/2 quadrature=pi/pftsz',&
-            &'pftsz=', self%b_ptr%pftc%get_pftsz(), 'scale=', 'pi*wsqsum/(2*pftsz) behavior=active'
+            &'pftsz=', self%b_ptr%pftc%get_pftsz(), 'scale=', 'pi*wsqsum/(2*pftsz)',&
+            &'behavior=', trim(behavior)
         write(logfhandle,'(A,1X,A,I0,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4)')&
             &'>>> JOINT2D SGD NLL SCALE QUANTILES:', 'samples=', nsamples,&
             &'p10=', scale_q(1), 'p50=', scale_q(2), 'p90=', scale_q(3)

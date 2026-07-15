@@ -140,6 +140,7 @@ type(builder),        pointer    :: b_ptr  => null()          !< active builder 
 class(parameters),    pointer    :: p_ptr => null()           !< active parameters instance
 integer,             allocatable :: eo_pops(:,:)              !< Even/odd class populations
 real,                allocatable :: eo_wsupport(:,:)          !< Weighted even/odd class support
+real,                allocatable :: eo_wsupport_sq(:,:)       !< Sum of squared assignment weights for effective support
 integer                          :: ncls       = 0            !< # classes
 integer                          :: ldim(3)        = [0,0,0]  !< logical dimension of image
 integer                          :: ldim_crop(3)   = [0,0,0]  !< logical dimension of cropped image

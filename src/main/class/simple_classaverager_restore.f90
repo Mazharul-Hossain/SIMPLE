@@ -29,6 +29,7 @@ contains
         ! populations
         allocate(eo_pops(2,ncls), source=0)
         allocate(eo_wsupport(2,ncls), source=0.0)
+        allocate(eo_wsupport_sq(2,ncls), source=0.0)
     end subroutine cavger_new
 
     ! setters/getters
@@ -193,6 +194,7 @@ contains
         ! populations
         eo_pops(:,:) = 0
         eo_wsupport(:,:) = 0.0
+        eo_wsupport_sq(:,:) = 0.0
         ! Memoization for cropped padded image, will be overwritten during search
         call memoize_ft_maps(ldim_croppd(1:2), p_ptr%smpd_crop)
     end subroutine cavger_init_online
@@ -352,8 +354,8 @@ contains
         if( update_diag%n_nonfinite > 0 )then
             THROW_HARD('joint CAVG SGD update produced nonfinite diagnostics')
         endif
-        if( update_diag%n_updated == 0 )then
-            THROW_HARD('joint CAVG SGD update has zero weighted support')
+        if( update_diag%n_updated + update_diag%n_preserved == 0 )then
+            THROW_HARD('joint CAVG SGD update did not evaluate any half-classes')
         endif
     end subroutine apply_joint_cavg_sgd_update
 
@@ -362,21 +364,41 @@ contains
         class(stack), intent(inout) :: batch_stack
         integer,      intent(in)    :: ieo, icls
         type(cavg_sgd_diagnostics), intent(inout) :: update_diag
-        if( eo_wsupport(ieo,icls) > TINY )then
+        real :: support, support_sq, effective_support
+        logical :: accepted
+        support = eo_wsupport(ieo,icls)
+        support_sq = eo_wsupport_sq(ieo,icls)
+        effective_support = 0.0
+        if( support_sq > TINY ) effective_support = support * support / support_sq
+        if( support >= p_ptr%sgd_cavg_min_support .and. &
+            &effective_support >= p_ptr%sgd_cavg_min_support )then
             call cavg_sgd_opt%preconditioned_cavg_update_inplace( &
                 &prev_stack%cmat(:,:,icls:icls), batch_stack%ctfsq(:,:,icls:icls), &
-                &batch_stack%cmat(:,:,icls:icls), update_diag, eo_wsupport(ieo,icls),&
-                &throw_on_nonfinite=.true.)
-            batch_stack%slices(icls)%ft = .true.
+                &batch_stack%cmat(:,:,icls:icls), update_diag, support,&
+                &throw_on_nonfinite=.true., effective_support=effective_support, accepted=accepted)
+            if( accepted )then
+                batch_stack%slices(icls)%ft = .true.
+            else
+                call preserve_joint_cavg_side(prev_stack, batch_stack, ieo, icls)
+            endif
         else
-            batch_stack%cmat(:,:,icls)  = prev_stack%cmat(:,:,icls)
-            batch_stack%ctfsq(:,:,icls) = 1.0
-            batch_stack%slices(icls)%ft = .true.
-            eo_wsupport(ieo,icls) = 1.0
-            eo_pops(ieo,icls) = max(1, eo_pops(ieo,icls))
-            call update_diag%record_preserved()
+            call preserve_joint_cavg_side(prev_stack, batch_stack, ieo, icls)
+            call update_diag%record_preserved(low_support=.true., support=support,&
+                &effective_support=effective_support)
         endif
     end subroutine apply_joint_cavg_side
+
+    subroutine preserve_joint_cavg_side( prev_stack, batch_stack, ieo, icls )
+        class(stack), intent(in)    :: prev_stack
+        class(stack), intent(inout) :: batch_stack
+        integer,      intent(in)    :: ieo, icls
+        batch_stack%cmat(:,:,icls)  = prev_stack%cmat(:,:,icls)
+        batch_stack%ctfsq(:,:,icls) = 1.0
+        batch_stack%slices(icls)%ft = .true.
+        eo_wsupport(ieo,icls) = 1.0
+        eo_wsupport_sq(ieo,icls) = 1.0
+        eo_pops(ieo,icls) = max(1, eo_pops(ieo,icls))
+    end subroutine preserve_joint_cavg_side
 
     subroutine cavger_update_sums( nptcls, ptcl_imgs )
         integer,      intent(in)    :: nptcls
@@ -417,10 +439,12 @@ contains
                 case(0,-1)
                     eo_pops(1,icls) = eo_pops(1,icls) + 1
                     eo_wsupport(1,icls) = eo_wsupport(1,icls) + 1.0
+                    eo_wsupport_sq(1,icls) = eo_wsupport_sq(1,icls) + 1.0
                     call cavgs%even%accumulate_fplane(precs(i)%e3, fplanes(ithr), icls)
                 case(1)
                     eo_pops(2,icls) = eo_pops(2,icls) + 1
                     eo_wsupport(2,icls) = eo_wsupport(2,icls) + 1.0
+                    eo_wsupport_sq(2,icls) = eo_wsupport_sq(2,icls) + 1.0
                     call cavgs%odd%accumulate_fplane(precs(i)%e3, fplanes(ithr), icls)
                 end select
             enddo
@@ -483,10 +507,12 @@ contains
                 case(0,-1)
                     eo_pops(1,icls) = eo_pops(1,icls) + 1
                     eo_wsupport(1,icls) = eo_wsupport(1,icls) + cand_weight
+                    eo_wsupport_sq(1,icls) = eo_wsupport_sq(1,icls) + cand_weight * cand_weight
                     call cavgs%even%accumulate_fplane(e3, fplane, icls, cand_weight)
                 case(1)
                     eo_pops(2,icls) = eo_pops(2,icls) + 1
                     eo_wsupport(2,icls) = eo_wsupport(2,icls) + cand_weight
+                    eo_wsupport_sq(2,icls) = eo_wsupport_sq(2,icls) + cand_weight * cand_weight
                     call cavgs%odd%accumulate_fplane(e3, fplane, icls, cand_weight)
                 end select
             end do
@@ -845,6 +871,7 @@ contains
         enddo
         !$omp end parallel do
         eo_wsupport = real(eo_pops)
+        eo_wsupport_sq = real(eo_pops)
         ! Assemble class contributions
         call cavgs%zero_set(.true.)
         call cavgs4reade%new_stack(ldim_crop(1:2), ncls)
@@ -1027,6 +1054,7 @@ contains
         l_joint_cavg_sgd_pending = .false.
         if( allocated(eo_pops) ) deallocate(eo_pops)
         if( allocated(eo_wsupport) ) deallocate(eo_wsupport)
+        if( allocated(eo_wsupport_sq) ) deallocate(eo_wsupport_sq)
     end subroutine cavger_kill
 
     !>  \brief submodule private destructor utility

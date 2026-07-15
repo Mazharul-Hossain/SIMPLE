@@ -705,6 +705,15 @@ contains
             case DEFAULT
                 THROW_HARD('sgd_mode must be joint or cavg_only')
         end select
+        ! Joint probabilistic scoring has one internal unit from the provisional
+        ! table through candidate refinement and the final posterior.
+        if( self%l_sgd .and. trim(self%sgd_mode) == 'joint' )&
+            &self%sgd_likelihood_units = 'gaussian_nll'
+        select case(trim(self%sgd_likelihood_units))
+            case('normalized','gaussian_nll')
+            case DEFAULT
+                THROW_HARD('sgd_likelihood_units must be normalized or gaussian_nll')
+        end select
         select case(trim(self%sgd_activation))
             case('auto','off','alternate','on')
             case DEFAULT
@@ -742,6 +751,12 @@ contains
             endif
             if( self%sgd_cavg_max_entropy < 0.0 .or. self%sgd_cavg_max_entropy > 1.0 )then
                 THROW_HARD('sgd_cavg_max_entropy must be between 0 and 1')
+            endif
+            if( self%sgd_cavg_min_support < 1.0 )then
+                THROW_HARD('sgd_cavg_min_support must be >= 1')
+            endif
+            if( self%sgd_cavg_max_rel_step <= 0.0 )then
+                THROW_HARD('sgd_cavg_max_rel_step must be > 0')
             endif
             if( self%sgd_batch_frac <= 0.0 .or. self%sgd_batch_frac >= 1.0 )then
                 THROW_HARD('sgd_batch_frac must be > 0 and < 1')

@@ -433,6 +433,11 @@ contains
         cline_prob_tab = cline
         call cline_prob_tab%set('prg', 'prob_tab2D')
         call cline_prob_tab%set('sgd', 'no')
+        if( params%l_sgd .and. trim(params%sgd_mode) == 'joint' )then
+            call cline_prob_tab%set('sgd_likelihood_units', 'gaussian_nll')
+        else
+            call cline_prob_tab%set('sgd_likelihood_units', 'normalized')
+        endif
         if( params%l_sgd .and. trim(params%sgd_mode) == 'joint' .and. params%l_sgd_diag )then
             call cline_prob_tab%set('sgd_diag', 'yes')
         else

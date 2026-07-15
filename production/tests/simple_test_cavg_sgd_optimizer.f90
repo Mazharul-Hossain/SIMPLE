@@ -10,8 +10,10 @@ type(cavg_sgd_optimizer) :: opt
 type(cavg_sgd_diagnostics) :: diag
 complex(kind=c_float_complex) :: oldc(2,2,1), statsc(2,2,1)
 real :: oldr(2,2,1), statsr(2,2,1), rho(2,2,1)
+logical :: accepted
 
 opt%eta0 = 1.0
+opt%max_rel_step = huge(1.0)
 oldc  = cmplx(2.0, 1.0, kind=c_float_complex)
 rho   = 4.0
 statsc = cmplx(40.0, 20.0, kind=c_float_complex)
@@ -74,6 +76,18 @@ statsc(1,1,1) = cmplx(huge(1.0), 0.0, kind=c_float_complex)
 call opt%preconditioned_cavg_update_inplace(oldc, rho, statsc, diag, 1.0,&
     &throw_on_nonfinite=.false.)
 call require_true(diag%n_nonfinite > 0, 'nonfinite synthetic input is diagnosed')
+
+call diag%reset
+opt%eta0 = 1.0
+opt%max_rel_step = 0.25
+oldc = cmplx(2.0, 1.0, kind=c_float_complex)
+rho = 4.0
+statsc = cmplx(40.0, 20.0, kind=c_float_complex)
+call opt%preconditioned_cavg_update_inplace(oldc, rho, statsc, diag, 7.5,&
+    &effective_support=7.5, accepted=accepted)
+call require_true(.not. accepted, 'relative-step trust bound rejects an excessive class update')
+call require_true(diag%n_trust_rejected == 1, 'trust rejection is diagnosed')
+call require_close(real(statsc(1,1,1)), 40.0, 1.0e-6, 'rejected update leaves numerator unchanged')
 
 write(logfhandle,'(A)') 'simple_test_cavg_sgd_optimizer complete'
 

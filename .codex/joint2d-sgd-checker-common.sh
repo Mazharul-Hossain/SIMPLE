@@ -108,6 +108,103 @@ check_soft_acceptance_observed() {
   fi
 }
 
+check_likelihood_unit_continuity() {
+  require_contains 'JOINT2D SGD LIKELIHOOD UNITS: context=prob_align2D_provisional' \
+    'provisional likelihood-unit diagnostics'
+  require_contains 'JOINT2D SGD LIKELIHOOD UNITS: context=cluster2D_final' \
+    'final likelihood-unit diagnostics'
+  if ! awk '
+    /JOINT2D SGD LIKELIHOOD UNITS:/ {
+      context = units = active = ""
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^context=/) { context = $i; sub(/^context=/, "", context) }
+        if ($i ~ /^units=/)   { units   = $i; sub(/^units=/,   "", units) }
+        if ($i ~ /^active=/)  { active  = $i; sub(/^active=/,  "", active) }
+      }
+      if (context == "prob_align2D_provisional" || context == "cluster2D_final") {
+        if (units != "gaussian_nll" || active != "T") exit 1
+      }
+    }
+  ' "$log_file"; then
+    fail 'provisional/final likelihood-unit discontinuity or inactive Gaussian-NLL calibration found'
+  fi
+}
+
+check_refinement_deltas() {
+  require_contains 'JOINT2D SGD INPL:' 'in-plane refinement diagnostics'
+  if ! awk '
+    /JOINT2D SGD INPL:/ {
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^negative_delta=/) {
+          value = $i
+          sub(/^negative_delta=/, "", value)
+          if ((value + 0) > 0) exit 1
+        }
+      }
+    }
+  ' "$log_file"; then
+    fail 'negative in-plane refinement delta found'
+  fi
+}
+
+check_final_loss_scale() {
+  if ! awk '
+    /JOINT2D SGD LATENT: cluster2D final reliability/ {
+      seen++
+      initial = final = ""
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^avg_initial_loss=/) { initial = $i; sub(/^avg_initial_loss=/, "", initial) }
+        if ($i ~ /^avg_final_loss=/)   { final   = $i; sub(/^avg_final_loss=/,   "", final) }
+      }
+      if (initial == "" || final == "") exit 1
+      initial += 0
+      final += 0
+      if ((initial <= 0 && final > 1.0e-6) || (initial > 0 && final > 100.0 * initial)) exit 1
+    }
+    END { if (seen == 0) exit 1 }
+  ' "$log_file"; then
+    fail 'missing final latent-loss diagnostics or final loss increased by at least two orders of magnitude'
+  fi
+}
+
+check_cavg_update_trust() {
+  require_contains 'CAVG SGD TRUST:' 'CAVG trust-bound diagnostics'
+  if grep -Eq 'CAVG SGD UPDATE:.*trust_rejected=[[:space:]]*[1-9][0-9]*' "$log_file"; then
+    fail 'one or more half-class updates exceeded the trust bound'
+  fi
+  if ! awk '
+    /CAVG SGD NORMS:/ {
+      have_rel = 0
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^rel_step=/) {
+          rel = $i
+          sub(/^rel_step=/, "", rel)
+          rel += 0
+          have_rel = 1
+        }
+      }
+    }
+    /CAVG SGD TRUST:/ {
+      proposed = bound = ""
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^proposed_rel_step_max=/) {
+          proposed = $i
+          sub(/^proposed_rel_step_max=/, "", proposed)
+        }
+        if ($i ~ /^bound=/) { bound = $i; sub(/^bound=/, "", bound) }
+      }
+      if (proposed == "" || bound == "" || !have_rel) exit 1
+      proposed += 0
+      bound += 0
+      if (proposed > bound || rel > bound) exit 1
+      have_rel = 0
+    }
+    END { if (have_rel) exit 1 }
+  ' "$log_file"; then
+    fail 'excessive or unparseable relative class-step diagnostic found'
+  fi
+}
+
 check_baseline_log() {
   check_abinitio_stage_matrix off off
   reject_contains 'JOINT 2D SGD' 'joint2D-SGD marker in baseline log'
@@ -137,7 +234,12 @@ check_smoke_joint_log() {
   require_contains 'JOINT2D SGD PARTICLE SUPPORT:' 'particle-support diagnostics'
   require_contains 'CAVG SGD UPDATE' 'CAVG update diagnostics'
   require_contains 'CAVG SGD NORMS' 'CAVG norm diagnostics'
+  require_contains 'CAVG SGD TRUST' 'CAVG trust-bound diagnostics'
   require_contains 'CAVG SGD RESTORE' 'CAVG restoration diagnostics'
+  check_likelihood_unit_continuity
+  check_refinement_deltas
+  check_final_loss_scale
+  check_cavg_update_trust
   check_soft_acceptance_observed
   if grep -Eq 'nonfinite=[[:space:]]*[1-9][0-9]*' "$log_file"; then
     fail "nonzero nonfinite diagnostic found"
@@ -172,8 +274,13 @@ check_science_joint_log() {
   require_contains 'CAVG SGD UPDATE' 'CAVG update diagnostics'
   require_contains 'CAVG SGD SUPPORT' 'CAVG support diagnostics'
   require_contains 'CAVG SGD NORMS' 'CAVG norm diagnostics'
+  require_contains 'CAVG SGD TRUST' 'CAVG trust-bound diagnostics'
   require_contains 'CAVG SGD RESTORE' 'CAVG restoration diagnostics'
   require_contains 'CAVG SGD RESTORE FRC' 'CAVG restoration FRC diagnostics'
+  check_likelihood_unit_continuity
+  check_refinement_deltas
+  check_final_loss_scale
+  check_cavg_update_trust
   check_soft_acceptance_observed
 }
 
