@@ -1146,7 +1146,7 @@ contains
         if( nc < 1 ) return
 
         do irank = 1, nc
-            ! Noise-normalized Euclidean distances are negative log-likelihoods.
+            ! The joint 2D matcher supplies calibrated Gaussian negative log-likelihoods.
             self%cand(irank,iptcl)%logit = -self%cand(irank,iptcl)%dist
         end do
         call refresh_particle(self, iptcl)

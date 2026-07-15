@@ -156,7 +156,7 @@ contains
     end subroutine gen_prob_objfun_val
 
     module subroutine gen_prob_likelihood_objfun_val( self, iref, iptcl, shift, nsample, dist, corr, irot,&
-        &pvec_sorted, sorted_inds )
+        &pvec_sorted, sorted_inds, calibrated_nll )
         class(polarft_calc), intent(inout) :: self
         integer,             intent(in)    :: iref, iptcl, nsample
         real(sp),            intent(in)    :: shift(2)
@@ -164,6 +164,10 @@ contains
         integer,             intent(out)   :: irot
         real(sp),            intent(inout) :: pvec_sorted(self%nrots)
         integer,             intent(inout) :: sorted_inds(self%nrots)
+        logical, optional,   intent(in)    :: calibrated_nll
+        logical :: l_calibrated_nll
+        l_calibrated_nll = .false.
+        if( present(calibrated_nll) ) l_calibrated_nll = calibrated_nll
         select case(self%p_ptr%cc_objfun)
             case(OBJFUN_CC)
                 call self%gen_prob_likelihood_cc_val(iref, iptcl, shift, nsample, dist, corr, irot, &
@@ -174,7 +178,7 @@ contains
                         &pvec_sorted, sorted_inds)
                 else
                     call self%gen_prob_likelihood_euclid_val(iref, iptcl, shift, nsample, dist, corr, irot, &
-                        &pvec_sorted, sorted_inds)
+                        &pvec_sorted, sorted_inds, calibrated_nll=l_calibrated_nll)
                 endif
         end select
     end subroutine gen_prob_likelihood_objfun_val
@@ -634,7 +638,7 @@ contains
     end subroutine gen_prob_likelihood_cc_val
 
     module subroutine gen_prob_likelihood_euclid_val( self, iref, iptcl, shift, nsample, dist, corr, irot,&
-        &pvec_sorted, sorted_inds )
+        &pvec_sorted, sorted_inds, calibrated_nll )
         class(polarft_calc), target, intent(inout) :: self
         integer,                     intent(in)    :: iref, iptcl, nsample
         real(sp),                    intent(in)    :: shift(2)
@@ -642,8 +646,15 @@ contains
         integer,                     intent(out)   :: irot
         real(sp),                    intent(inout) :: pvec_sorted(self%nrots)
         integer,                     intent(inout) :: sorted_inds(self%nrots)
+        logical, optional,           intent(in)    :: calibrated_nll
         real(dp) :: norm
+        real(sp) :: nll_scale
         integer  :: ithr
+        logical  :: l_calibrated_nll
+        l_calibrated_nll = .false.
+        if( present(calibrated_nll) ) l_calibrated_nll = calibrated_nll
+        nll_scale = 1.
+        if( l_calibrated_nll ) nll_scale = self%get_euclid_nll_scale(iptcl)
         call gen_euclid_crvec(self, iref, iptcl, shift, norm, ithr)
         call sample_likelihood_dist(self%nrots, euclid_dist_at_rot, nsample, dist, corr, irot,&
             &pvec_sorted, sorted_inds)
@@ -652,7 +663,7 @@ contains
 
         real function euclid_dist_at_rot(p_loc) result(dist_loc)
             integer, intent(in) :: p_loc
-            dist_loc = euclid_dist_from_crvec(self, ithr, p_loc, norm)
+            dist_loc = nll_scale * euclid_dist_from_crvec(self, ithr, p_loc, norm)
         end function euclid_dist_at_rot
 
     end subroutine gen_prob_likelihood_euclid_val

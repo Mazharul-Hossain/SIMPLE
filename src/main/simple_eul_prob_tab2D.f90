@@ -296,7 +296,8 @@ contains
                 do iref_n = 1, nactive
                     icls = active_cls(iref_n)
                     call self%b_ptr%pftc%gen_prob_likelihood_objfun_val(icls, iptcl, cxy(2:3), ninpl_smpl,&
-                        &inpl_dist, inpl_corr, irot, inpl_corrs, vec_nrots)
+                        &inpl_dist, inpl_corr, irot, inpl_corrs, vec_nrots,&
+                        &calibrated_nll=use_calibrated_joint_nll(self))
                     self%loc_tab(icls,i)%dist = inpl_dist
                     self%loc_tab(icls,i)%inpl   = irot
                     cls_dists(icls) = self%loc_tab(icls,i)%dist
@@ -312,7 +313,7 @@ contains
                     cxy_prob = grad_shsrch_obj(ithr)%minimize(irot=irot, sh_rot=.true., xy_in=cxy(2:3))
                     if( irot > 0 )then
                         self%loc_tab(icls,i)%inpl   = irot
-                        self%loc_tab(icls,i)%dist   = eulprob_dist_switch(cxy_prob(1), self%p_ptr%cc_objfun)
+                        self%loc_tab(icls,i)%dist   = likelihood_dist_from_corr(self, iptcl, cxy_prob(1))
                         self%loc_tab(icls,i)%x      = cxy_prob(2)
                         self%loc_tab(icls,i)%y      = cxy_prob(3)
                         self%loc_tab(icls,i)%has_sh = .true.
@@ -331,7 +332,8 @@ contains
                 do iref_n = 1, nactive
                     icls = active_cls(iref_n)
                     call self%b_ptr%pftc%gen_prob_likelihood_objfun_val(icls, iptcl, [0.,0.], ninpl_smpl,&
-                        &inpl_dist, inpl_corr, irot, inpl_corrs, vec_nrots)
+                        &inpl_dist, inpl_corr, irot, inpl_corrs, vec_nrots,&
+                        &calibrated_nll=use_calibrated_joint_nll(self))
                     self%loc_tab(icls,i)%dist = inpl_dist
                     self%loc_tab(icls,i)%inpl   = irot
                     self%loc_tab(icls,i)%x      = 0.
@@ -347,6 +349,21 @@ contains
         call o_prev%kill
         call write_likelihood_shadow_diag(self, i_from, i_to)
     end subroutine fill_tab_range
+
+    real function likelihood_dist_from_corr( self, iptcl, corr ) result(dist)
+        class(eul_prob_tab2D), intent(in) :: self
+        integer,               intent(in) :: iptcl
+        real,                  intent(in) :: corr
+        dist = eulprob_dist_switch(corr, self%p_ptr%cc_objfun)
+        if( use_calibrated_joint_nll(self) .and. self%p_ptr%cc_objfun == OBJFUN_EUCLID .and.&
+            &.not. self%p_ptr%l_objfun_den )&
+            &dist = self%b_ptr%pftc%get_euclid_nll_scale(iptcl) * dist
+    end function likelihood_dist_from_corr
+
+    logical function use_calibrated_joint_nll( self ) result(use_nll)
+        class(eul_prob_tab2D), intent(in) :: self
+        use_nll = self%p_ptr%l_sgd .and. trim(self%p_ptr%sgd_mode) == 'joint'
+    end function use_calibrated_joint_nll
 
     subroutine write_likelihood_shadow_diag( self, i_first, i_last )
         class(eul_prob_tab2D), intent(in) :: self
@@ -394,7 +411,7 @@ contains
             nll = 0.
             unnorm = 0.
             probs = 0.
-            nll(1:nc) = scale * best(1:nc)
+            nll(1:nc) = best(1:nc)
             unnorm(1:nc) = exp(-(nll(1:nc) - nll(1)))
             denom = sum(unnorm(1:nc))
             if( .not. ieee_is_finite(denom) .or. denom <= 0. ) cycle
@@ -420,7 +437,7 @@ contains
         call shadow_quantiles(winner_vals, nsamples, winner_q)
         write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,A)')&
             &'>>> JOINT2D SGD NLL SHADOW MODEL:', 'convention=E/2 quadrature=pi/pftsz',&
-            &'pftsz=', self%b_ptr%pftc%get_pftsz(), 'scale=', 'pi*wsqsum/(2*pftsz) behavior=diagnostic_only'
+            &'pftsz=', self%b_ptr%pftc%get_pftsz(), 'scale=', 'pi*wsqsum/(2*pftsz) behavior=active'
         write(logfhandle,'(A,1X,A,I0,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4)')&
             &'>>> JOINT2D SGD NLL SCALE QUANTILES:', 'samples=', nsamples,&
             &'p10=', scale_q(1), 'p50=', scale_q(2), 'p90=', scale_q(3)
@@ -601,7 +618,8 @@ contains
             real,    intent(out) :: dist_loc, corr_loc
             integer, intent(out) :: irot_loc
             call self%b_ptr%pftc%gen_prob_likelihood_objfun_val(icls_loc, iptcl_loc, sh_loc, ninpl_smpl,&
-                &dist_loc, corr_loc, irot_loc, eval_work%inpl_corrs(:,ithr_loc), eval_work%vec_nrots(:,ithr_loc))
+                &dist_loc, corr_loc, irot_loc, eval_work%inpl_corrs(:,ithr_loc), eval_work%vec_nrots(:,ithr_loc),&
+                &calibrated_nll=use_calibrated_joint_nll(self))
             if( irot_loc < 1 .or. irot_loc > nrots ) irot_loc = 1
         end subroutine score_class
 
@@ -624,7 +642,7 @@ contains
                 irot_loc = self%loc_tab(icls_loc,i_loc)%inpl
                 cxy_prob_loc = grad_shsrch_obj(ithr_loc)%minimize(irot=irot_loc, sh_rot=.true., xy_in=sh_loc)
                 if( irot_loc > 0 )then
-                    call self%record_sparse_eval(i_loc, icls_loc, eulprob_dist_switch(cxy_prob_loc(1), self%p_ptr%cc_objfun),&
+                    call self%record_sparse_eval(i_loc, icls_loc, likelihood_dist_from_corr(self, iptcl_loc, cxy_prob_loc(1)),&
                         &irot_loc, cxy_prob_loc(2), cxy_prob_loc(3), .true.)
                 endif
             enddo

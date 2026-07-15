@@ -466,10 +466,9 @@ contains
     end subroutine sample_power_dist
 
     ! Truncated, numerically-stabilized softmax over a lazily-evaluated distance function.
-    ! The distances are noise-variance-normalized negative-log-likelihoods (whitened per
-    ! Fourier shell by the estimated sigma2_noise upstream), so exp(-dist) is a properly
-    ! calibrated likelihood weight and no external temperature/tau factor is required. The
-    ! per-candidate min-shift only guards against overflow; it cancels in the normalized
+    ! Distances supplied by the caller are interpreted as negative log-likelihoods. Joint 2D
+    ! SGD supplies the calibrated Gaussian NLL; no external temperature/tau factor is used.
+    ! The per-candidate min-shift only guards against overflow and cancels in the normalized
     ! weights. Only the best nsample candidates form the sampling support (top-K sampling).
     subroutine sample_likelihood_dist( n, dist_fun, nsample, dist, corr, which, pvec_sorted, sorted_inds )
         integer,   intent(in)    :: n, nsample

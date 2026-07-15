@@ -645,7 +645,7 @@ interface
     end subroutine gen_prob_objfun_val
 
     module subroutine gen_prob_likelihood_objfun_val(self, iref, iptcl, shift, nsample, dist, corr, irot,&
-        &pvec_sorted, sorted_inds)
+        &pvec_sorted, sorted_inds, calibrated_nll)
         class(polarft_calc), intent(inout) :: self
         integer,             intent(in)    :: iref, iptcl, nsample
         real(sp),            intent(in)    :: shift(2)
@@ -653,6 +653,7 @@ interface
         integer,             intent(out)   :: irot
         real(sp),            intent(inout) :: pvec_sorted(self%nrots)
         integer,             intent(inout) :: sorted_inds(self%nrots)
+        logical, optional,   intent(in)    :: calibrated_nll
     end subroutine gen_prob_likelihood_objfun_val
 
     module subroutine gen_prob_power_objfun_val(self, iref, iptcl, shift, power, nsample, dist, corr, irot,&
@@ -726,7 +727,7 @@ interface
     end subroutine gen_prob_euclid_val
 
     module subroutine gen_prob_likelihood_euclid_val(self, iref, iptcl, shift, nsample, dist, corr, irot,&
-        &pvec_sorted, sorted_inds)
+        &pvec_sorted, sorted_inds, calibrated_nll)
         class(polarft_calc), target, intent(inout) :: self
         integer,                     intent(in)    :: iref, iptcl, nsample
         real(sp),                    intent(in)    :: shift(2)
@@ -734,6 +735,7 @@ interface
         integer,                     intent(out)   :: irot
         real(sp),                    intent(inout) :: pvec_sorted(self%nrots)
         integer,                     intent(inout) :: sorted_inds(self%nrots)
+        logical, optional,           intent(in)    :: calibrated_nll
     end subroutine gen_prob_likelihood_euclid_val
 
     module subroutine gen_prob_power_euclid_val(self, iref, iptcl, shift, power, nsample, dist, corr, irot,&
