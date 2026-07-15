@@ -433,6 +433,11 @@ contains
         cline_prob_tab = cline
         call cline_prob_tab%set('prg', 'prob_tab2D')
         call cline_prob_tab%set('sgd', 'no')
+        if( params%l_sgd .and. trim(params%sgd_mode) == 'joint' .and. params%l_sgd_diag )then
+            call cline_prob_tab%set('sgd_diag', 'yes')
+        else
+            call cline_prob_tab%set('sgd_diag', 'no')
+        endif
         if( .not. cline_prob_tab%defined('nparts') )then
             call xprob_tab2D%execute(cline_prob_tab)
         else

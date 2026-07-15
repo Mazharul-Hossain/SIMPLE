@@ -357,7 +357,7 @@ contains
         real :: dist, winner
         integer :: i_from, i_to, nmax, i, iptcl, icls, j, nc, nsamples, accepted_shadow
 
-        if( .not. self%p_ptr%l_sgd .or. trim(self%p_ptr%sgd_mode) /= 'joint' ) return
+        if( .not. self%p_ptr%l_sgd_diag .or. trim(self%p_ptr%sgd_mode) /= 'joint' ) return
         if( self%p_ptr%cc_objfun /= OBJFUN_EUCLID .or. self%p_ptr%l_objfun_den ) return
         i_from = max(1, i_first)
         i_to   = min(self%nptcls, i_last)
