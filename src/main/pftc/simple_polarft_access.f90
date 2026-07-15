@@ -36,6 +36,26 @@ contains
         get_pftsz = self%pftsz
     end function get_pftsz
 
+    module function get_euclid_nll_scale(self, iptcl) result(scale)
+        class(polarft_calc), intent(in) :: self
+        integer,             intent(in) :: iptcl
+        real(sp) :: scale
+        integer :: i
+        if( self%pftsz < 1 ) THROW_HARD('get_euclid_nll_scale: invalid polar Fourier size')
+        if( .not. allocated(self%wsqsums_ptcls) )&
+            &THROW_HARD('get_euclid_nll_scale: weighted particle square sums are not allocated')
+        if( iptcl < lbound(self%pinds,1) .or. iptcl > ubound(self%pinds,1) )&
+            &THROW_HARD('get_euclid_nll_scale: particle index is out of range')
+        i = self%pinds(iptcl)
+        if( i < lbound(self%wsqsums_ptcls,1) .or. i > ubound(self%wsqsums_ptcls,1) )&
+            &THROW_HARD('get_euclid_nll_scale: mapped particle index is out of range')
+        ! sigma2_noise is the variance of each real Fourier component: its estimators
+        ! divide complex power by two.  The Gaussian exponent therefore contributes E/2.
+        ! The half-circle polar sum approximates the Cartesian Fourier integral with
+        ! angular quadrature width pi/pftsz.
+        scale = real(DPI * self%wsqsums_ptcls(i) / real(2*self%pftsz,dp), sp)
+    end function get_euclid_nll_scale
+
     module function get_rot(self, roind) result(rot)
         class(polarft_calc), intent(in) :: self
         integer,             intent(in) :: roind

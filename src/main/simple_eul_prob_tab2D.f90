@@ -1,5 +1,6 @@
 !@descr: 2D probability table routines for multi-reference class assignment with probabilistic sampling
 module simple_eul_prob_tab2D
+use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
 use, intrinsic :: iso_fortran_env, only: int64
 use simple_pftc_srch_api
 use simple_builder,            only: builder
@@ -8,6 +9,7 @@ use simple_decay_funs,         only: extremal_decay2D
 use simple_eul_prob_tab_utils, only: build_pind_lookup, eulprob_dist_switch, materialize_seed_shift,&
     &read_seed_shift_table, write_seed_shift_table, sample_likelihood_index
 use simple_segmentation,       only: detect_peak_thres_fdr
+use simple_type_defs,          only: OBJFUN_EUCLID
 implicit none
 
 public :: eul_prob_tab2D, PRIOR2D_STAGE5_FNAME
@@ -228,6 +230,7 @@ contains
         logical :: class_active(self%nclasses)
         if( self%l_sparse_snhc )then
             call self%fill_tab_prob_snhc_range(i_first, i_last)
+            call write_likelihood_shadow_diag(self, i_first, i_last)
             return
         endif
         i_from = max(1, i_first)
@@ -342,7 +345,114 @@ contains
             call grad_shsrch_obj(ithr)%kill
         end do
         call o_prev%kill
+        call write_likelihood_shadow_diag(self, i_from, i_to)
     end subroutine fill_tab_range
+
+    subroutine write_likelihood_shadow_diag( self, i_first, i_last )
+        class(eul_prob_tab2D), intent(in) :: self
+        integer,               intent(in) :: i_first, i_last
+        real, allocatable :: scale_vals(:), gap21_vals(:), gap31_vals(:), entropy_vals(:), winner_vals(:)
+        real :: best(3), scale, nll(3), unnorm(3), probs(3), denom, entropy, norm_entropy
+        real :: scale_q(3), gap21_q(3), gap31_q(3), entropy_q(3), winner_q(3)
+        real :: dist, winner
+        integer :: i_from, i_to, nmax, i, iptcl, icls, j, nc, nsamples, accepted_shadow
+
+        if( .not. self%p_ptr%l_sgd .or. trim(self%p_ptr%sgd_mode) /= 'joint' ) return
+        if( self%p_ptr%cc_objfun /= OBJFUN_EUCLID .or. self%p_ptr%l_objfun_den ) return
+        i_from = max(1, i_first)
+        i_to   = min(self%nptcls, i_last)
+        if( i_to < i_from ) return
+        nmax = i_to - i_from + 1
+        allocate(scale_vals(nmax), gap21_vals(nmax), gap31_vals(nmax), entropy_vals(nmax), winner_vals(nmax), source=0.)
+        nsamples = 0
+        accepted_shadow = 0
+        do i = i_from, i_to
+            iptcl = self%pinds(i)
+            scale = self%b_ptr%pftc%get_euclid_nll_scale(iptcl)
+            if( .not. ieee_is_finite(scale) .or. scale <= 0. ) cycle
+            best = huge(1.0)
+            nc = 0
+            do icls = 1, self%nclasses
+                if( self%loc_tab(icls,i)%inpl < 1 ) cycle
+                dist = self%loc_tab(icls,i)%dist
+                if( .not. ieee_is_finite(dist) .or. dist < 0. .or. dist >= huge(1.0)/2. ) cycle
+                if( dist < best(1) )then
+                    best(3) = best(2)
+                    best(2) = best(1)
+                    best(1) = dist
+                else if( dist < best(2) )then
+                    best(3) = best(2)
+                    best(2) = dist
+                else if( dist < best(3) )then
+                    best(3) = dist
+                endif
+                nc = min(3, nc + 1)
+            end do
+            if( nc < 1 ) cycle
+            nsamples = nsamples + 1
+            scale_vals(nsamples) = scale
+            nll = 0.
+            unnorm = 0.
+            probs = 0.
+            nll(1:nc) = scale * best(1:nc)
+            unnorm(1:nc) = exp(-(nll(1:nc) - nll(1)))
+            denom = sum(unnorm(1:nc))
+            if( .not. ieee_is_finite(denom) .or. denom <= 0. ) cycle
+            probs(1:nc) = unnorm(1:nc) / denom
+            entropy = 0.
+            do j = 1, nc
+                if( probs(j) > 0. ) entropy = entropy - probs(j) * log(probs(j))
+            end do
+            norm_entropy = 0.
+            if( nc > 1 ) norm_entropy = entropy / log(real(nc))
+            winner = probs(1)
+            entropy_vals(nsamples) = norm_entropy
+            winner_vals(nsamples) = winner
+            if( nc >= 2 ) gap21_vals(nsamples) = nll(2) - nll(1)
+            if( nc >= 3 ) gap31_vals(nsamples) = nll(3) - nll(1)
+            if( nc >= self%p_ptr%sgd_cavg_min_cands .and.&
+                &norm_entropy <= self%p_ptr%sgd_cavg_max_entropy ) accepted_shadow = accepted_shadow + 1
+        end do
+        call shadow_quantiles(scale_vals, nsamples, scale_q)
+        call shadow_quantiles(gap21_vals, nsamples, gap21_q)
+        call shadow_quantiles(gap31_vals, nsamples, gap31_q)
+        call shadow_quantiles(entropy_vals, nsamples, entropy_q)
+        call shadow_quantiles(winner_vals, nsamples, winner_q)
+        write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,A)')&
+            &'>>> JOINT2D SGD NLL SHADOW MODEL:', 'convention=E/2 quadrature=pi/pftsz',&
+            &'pftsz=', self%b_ptr%pftc%get_pftsz(), 'scale=', 'pi*wsqsum/(2*pftsz) behavior=diagnostic_only'
+        write(logfhandle,'(A,1X,A,I0,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4)')&
+            &'>>> JOINT2D SGD NLL SCALE QUANTILES:', 'samples=', nsamples,&
+            &'p10=', scale_q(1), 'p50=', scale_q(2), 'p90=', scale_q(3)
+        write(logfhandle,'(A,1X,A,A,1X,A,I0,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4)')&
+            &'>>> JOINT2D SGD NLL GAP QUANTILES:', 'gap=', 'nll2-nll1', 'samples=', nsamples,&
+            &'p10=', gap21_q(1), 'p50=', gap21_q(2), 'p90=', gap21_q(3)
+        write(logfhandle,'(A,1X,A,A,1X,A,I0,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4)')&
+            &'>>> JOINT2D SGD NLL GAP QUANTILES:', 'gap=', 'nll3-nll1', 'samples=', nsamples,&
+            &'p10=', gap31_q(1), 'p50=', gap31_q(2), 'p90=', gap31_q(3)
+        write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,F8.5,1X,A,F8.5,1X,A,F8.5,1X,A,F8.5,1X,A,F8.5,1X,A,F8.5)')&
+            &'>>> JOINT2D SGD NLL SHADOW POSTERIOR:', 'samples=', nsamples, 'accepted=', accepted_shadow,&
+            &'norm_p10=', entropy_q(1), 'norm_p50=', entropy_q(2), 'norm_p90=', entropy_q(3),&
+            &'winner_p10=', winner_q(1), 'winner_p50=', winner_q(2), 'winner_p90=', winner_q(3)
+        deallocate(scale_vals, gap21_vals, gap31_vals, entropy_vals, winner_vals)
+    end subroutine write_likelihood_shadow_diag
+
+    subroutine shadow_quantiles( vals, nvals, quantiles )
+        real,    intent(in)  :: vals(:)
+        integer, intent(in)  :: nvals
+        real,    intent(out) :: quantiles(3)
+        real, allocatable :: sorted(:)
+        integer :: idx10, idx50, idx90
+        quantiles = 0.
+        if( nvals < 1 ) return
+        allocate(sorted(nvals), source=vals(1:nvals))
+        call hpsort(sorted)
+        idx10 = 1 + int(0.10 * real(nvals - 1))
+        idx50 = 1 + int(0.50 * real(nvals - 1))
+        idx90 = 1 + int(0.90 * real(nvals - 1))
+        quantiles = [sorted(idx10), sorted(idx50), sorted(idx90)]
+        deallocate(sorted)
+    end subroutine shadow_quantiles
 
     subroutine fill_tab_prob_snhc( self )
         class(eul_prob_tab2D), intent(inout) :: self

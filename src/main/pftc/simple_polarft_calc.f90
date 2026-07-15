@@ -127,6 +127,7 @@ type :: polarft_calc
     procedure          :: get_pdim_srch
     procedure          :: get_kfromto
     procedure          :: get_pftsz
+    procedure          :: get_euclid_nll_scale
     procedure          :: get_rot
     procedure          :: get_roind
     procedure          :: get_roind_fast
@@ -368,6 +369,12 @@ interface
     module pure integer function get_pftsz(self)
         class(polarft_calc), intent(in) :: self
     end function get_pftsz
+
+    module function get_euclid_nll_scale(self, iptcl) result(scale)
+        class(polarft_calc), intent(in) :: self
+        integer,             intent(in) :: iptcl
+        real(sp) :: scale
+    end function get_euclid_nll_scale
 
     module function get_rot(self, roind) result(rot)
         class(polarft_calc), intent(in) :: self
