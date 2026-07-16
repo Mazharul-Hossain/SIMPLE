@@ -519,7 +519,7 @@ contains
             &'>>> JOINT2D SGD NLL SHADOW POSTERIOR:', 'samples=', nsamples, 'accepted=', accepted_shadow,&
             &'norm_p10=', entropy_q(1), 'norm_p50=', entropy_q(2), 'norm_p90=', entropy_q(3),&
             &'winner_p10=', winner_q(1), 'winner_p50=', winner_q(2), 'winner_p90=', winner_q(3)
-        write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4)')&
+        write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4)')&
             &'>>> JOINT2D SGD ABSOLUTE FIT:', 'samples=', nsamples,&
             &'iteration=', self%p_ptr%which_iter,&
             &'p10_nll=', best_nll_q(1), 'p50_nll=', best_nll_q(2), 'p90_nll=', best_nll_q(3),&
