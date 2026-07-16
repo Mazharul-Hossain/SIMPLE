@@ -217,7 +217,7 @@ contains
     procedure          :: NLmean2D, NLmean2D_eo, NLmean3D, NLmean3D_eo
     procedure          :: ICM2D, ICM2D_eo, ICM3D, ICM3D_eo
     procedure          :: GLCM
-    procedure          :: tv_apply_reg
+    procedure          :: bs_smooth
     procedure          :: bartlett_reg_3D
     ! FREQUENCY ANALYSIS, file: simple_image_freq_anal.f90
     procedure          :: acf
@@ -1351,10 +1351,11 @@ interface
         real,         intent(in)    :: filter(:)
     end subroutine apply_filter_serial
 
-    module subroutine NLmean2D( self, msk, sdev_noise )
+    module subroutine NLmean2D( self, msk, sdev_noise, patch_size, search_radius )
         class(image),   intent(inout) :: self
         real, optional, intent(in)    :: msk
         real, optional, intent(in)    :: sdev_noise
+        integer, optional, intent(in) :: patch_size, search_radius
     end subroutine NLmean2D
 
     module subroutine NLmean2D_eo( even, odd, avg )
@@ -1400,11 +1401,11 @@ interface
         real,         intent(inout) :: pmat(nquanta,nquanta)
     end subroutine GLCM
 
-    module subroutine tv_apply_reg( self, self_b, self_r, lambda )
+    module subroutine bs_smooth( self, self_b, self_r, lambda )
         class(image), intent(inout) :: self
         class(image), intent(in)    :: self_b, self_r
         real,         intent(in)    :: lambda
-    end subroutine tv_apply_reg
+    end subroutine bs_smooth
 
     module subroutine bartlett_reg_3D( self, radius )
         class(image), intent(inout) :: self
