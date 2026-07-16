@@ -509,7 +509,9 @@ contains
         self%l_frac_worst  = self%frac_worst <= 0.99
         self%l_greedy_smpl = trim(self%greedy_sampling).eq.'yes'
         self%l_sgd         = trim(self%sgd).eq.'yes'
+        self%l_sgd_assignment_only = trim(self%sgd_assignment_only).eq.'yes'
         self%l_sgd_diag    = trim(self%sgd_diag).eq.'yes'
+        self%l_sgd_shadow_stage3 = trim(self%sgd_shadow_stage3).eq.'yes'
     end subroutine derive_sampling_settings
 
     module subroutine derive_parallel_settings(self, cline)
@@ -700,6 +702,16 @@ contains
             case DEFAULT
                 THROW_HARD('sgd_diag must be yes or no')
         end select
+        select case(trim(self%sgd_assignment_only))
+            case('yes','no')
+            case DEFAULT
+                THROW_HARD('sgd_assignment_only must be yes or no')
+        end select
+        select case(trim(self%sgd_shadow_stage3))
+            case('yes','no')
+            case DEFAULT
+                THROW_HARD('sgd_shadow_stage3 must be yes or no')
+        end select
         select case(trim(self%sgd_mode))
             case('joint','cavg_only')
             case DEFAULT
@@ -775,6 +787,11 @@ contains
             endif
             select case(trim(self%sgd_mode))
                 case('joint')
+                    if( self%l_sgd_assignment_only )then
+                        write(logfhandle,'(A)')&
+                            &'>>> JOINT2D SGD ABLATION CONFIG: mode=assignment_only assignments=active '//&
+                            &'cavg_update=preserve_previous'
+                    endif
                     if( trim(self%prob_assign) /= 'likelihood' )then
                         self%prob_assign = 'likelihood'
                         write(logfhandle,'(A)') '>>> JOINT 2D SGD: forcing prob_assign=likelihood'

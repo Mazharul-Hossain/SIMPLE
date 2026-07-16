@@ -42,6 +42,7 @@ type cluster2D_stage_cfg
     integer      :: iphase=0, iter=0, imaxits=0, minits=0, extr_iter=0
     real         :: trs=0., gaufreq=0.
     logical      :: l_write_prior = .false.
+    logical      :: l_sgd_shadow_stage3 = .false.
 end type cluster2D_stage_cfg
 
 contains
@@ -292,6 +293,7 @@ contains
             activation = 'off'
         endif
         cfg%sgd_activation = trim(activation)
+        cfg%l_sgd_shadow_stage3 = params%l_sgd_shadow_stage3 .and. istage == 3
         if( trim(activation) == 'off' )then
             cfg%sgd = 'no'
         else
@@ -344,6 +346,11 @@ contains
         call cline_cluster2D%set('center',    cfg%center)
         call cline_cluster2D%set('sgd',       cfg%sgd)
         call cline_cluster2D%set('sgd_activation', cfg%sgd_activation)
+        if( cfg%l_sgd_shadow_stage3 )then
+            call cline_cluster2D%set('sgd_shadow_stage3', 'yes')
+        else
+            call cline_cluster2D%set('sgd_shadow_stage3', 'no')
+        endif
         call cline_cluster2D%set('restore_cavgs', 'yes')
         call cline_cluster2D%set('box_crop',  stage_parms(istage)%box_crop)
         call cline_cluster2D%set('smpd_crop', stage_parms(istage)%smpd_crop)

@@ -150,7 +150,11 @@ type :: parameters
     character(len=3)          :: trust_header='no'    !< whether to trust the header information in the input files(yes|no){no}
     character(len=3)          :: script='no'          !< do not execute but generate a script for submission to the queue
     character(len=3)          :: sgd='no'             !< stochastic class-average update(yes|no){no}
+    !< run joint assignments but preserve pre-update class averages(yes|no){no}
+    character(len=3)          :: sgd_assignment_only='no'
     character(len=3)          :: sgd_diag='yes'       !< diagnostic output for stochastic class-average update(yes|no){yes}
+    !< diagnose joint likelihood assignments during stage 3 without changing behavior(yes|no){no}
+    character(len=3)          :: sgd_shadow_stage3='no'
     character(len=3)          :: shbarrier='yes'      !< use shift search barrier constraint(yes|no){yes}
     character(len=3)          :: single_pass='no'     !< only run coarse pass of sieving(yes|no){no}
     character(len=3)          :: skip_rejection='no'  !< skip class-average rejection/update path(yes|no){no}
@@ -643,7 +647,9 @@ type :: parameters
     logical :: l_prob_inpl       = .false.
     logical :: l_prob_align_mode = .false.
     logical :: l_sgd             = .false.
+    logical :: l_sgd_assignment_only = .false.
     logical :: l_sgd_diag        = .true.
+    logical :: l_sgd_shadow_stage3 = .false.
     logical :: l_ptcl_src_den    = .false.
     logical :: l_sigma_glob      = .false.
     logical :: l_trail_rec       = .false.

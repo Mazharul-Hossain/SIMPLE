@@ -108,6 +108,51 @@ check_soft_acceptance_observed() {
   fi
 }
 
+check_stage3_shadow_assignment() {
+  require_contains 'JOINT2D SGD ABSOLUTE FIT:' 'absolute best-fit diagnostics'
+  require_contains 'JOINT2D SGD SHADOW SUPPORT:' 'shadow top-3 class-support diagnostics'
+  if ! awk '
+    /ABINITIO2D SGD STAGE: stage=terminal/ { stage = 99; next }
+    /ABINITIO2D SGD STAGE: stage=[0-9]+/ {
+      line = $0
+      sub(/^.*stage=/, "", line)
+      sub(/ .*/, "", line)
+      stage = line + 0
+      next
+    }
+    /JOINT2D SGD SHADOW SUPPORT:/ {
+      samples = active = ""
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^samples=/) { samples = $i; sub(/^samples=/, "", samples) }
+        if ($i ~ /^active_classes=/) { active = $i; sub(/^active_classes=/, "", active) }
+      }
+      if (stage == 3 && samples + 0 > 0 && active + 0 > 0) seen_stage3++
+    }
+    END { if (seen_stage3 == 0) exit 1 }
+  ' "$log_file"; then
+    fail 'missing or empty observational assignment diagnostics during stage 3'
+  fi
+}
+
+check_assignment_only_ablation() {
+  require_contains 'JOINT2D SGD ABLATION: mode=assignment_only assignments=active cavg_update=preserve_previous' \
+    'assignment-only runtime marker'
+  if ! awk '
+    /CAVG SGD UPDATE: joint assignment-only preserve/ {
+      seen++
+      updated = preserved = ""
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^updated=/) { updated = $i; sub(/^updated=/, "", updated) }
+        if ($i ~ /^preserved=/) { preserved = $i; sub(/^preserved=/, "", preserved) }
+      }
+      if (updated == "" || preserved == "" || updated + 0 != 0 || preserved + 0 < 1) exit 1
+    }
+    END { if (seen == 0) exit 1 }
+  ' "$log_file"; then
+    fail 'assignment-only ablation changed a class image or lacked preservation diagnostics'
+  fi
+}
+
 check_likelihood_unit_continuity() {
   require_contains 'JOINT2D SGD LIKELIHOOD UNITS: context=prob_align2D_provisional' \
     'provisional likelihood-unit diagnostics'
@@ -360,6 +405,7 @@ check_smoke_joint_log() {
     'derived Gaussian-NLL calibration diagnostics'
   require_contains 'JOINT2D SGD NLL SCALE QUANTILES:' 'shadow Gaussian-NLL scale diagnostics'
   require_contains 'JOINT2D SGD NLL SHADOW POSTERIOR:' 'shadow Gaussian-NLL posterior diagnostics'
+  check_stage3_shadow_assignment
   require_contains 'JOINT2D SGD PARTICLE SUPPORT:' 'particle-support diagnostics'
   require_contains 'CAVG SGD UPDATE' 'CAVG update diagnostics'
   require_contains 'CAVG SGD NORMS' 'CAVG norm diagnostics'
@@ -395,6 +441,7 @@ check_science_joint_log() {
     'derived Gaussian-NLL calibration diagnostics'
   require_contains 'JOINT2D SGD NLL SCALE QUANTILES:' 'shadow Gaussian-NLL scale diagnostics'
   require_contains 'JOINT2D SGD NLL SHADOW POSTERIOR:' 'shadow Gaussian-NLL posterior diagnostics'
+  check_stage3_shadow_assignment
   require_contains 'JOINT2D SGD PARTICLE SUPPORT:' 'particle-support diagnostics'
   require_contains 'JOINT2D SGD INPL' 'in-plane refinement diagnostics'
   require_contains 'JOINT2D SGD INPL LOSSES' 'in-plane loss diagnostics'

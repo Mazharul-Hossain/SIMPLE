@@ -46,7 +46,7 @@ NAS rule:
 EOF
 }
 
-smoke_cases=( baseline stage4_off stage4_alternate stage4_alternate_balance )
+smoke_cases=( baseline stage4_off stage4_alternate stage4_alternate_balance stage4_alternate_assignment_only )
 
 list_cases() {
   printf '%s\n' "${smoke_cases[@]}"
@@ -113,6 +113,15 @@ run_selected_case() {
       joint2d_sgd_make_joint_args alternate 3 0.5 0.1 1.0
       joint2d_sgd_print_stage_policy alternate
       run_case stage4_alternate_balance "${joint2d_sgd_case_args[@]}"
+      ;;
+    stage4_alternate_assignment_only)
+      # Causal ablation: joint scoring/refinement/assignments stay active, but
+      # class images are preserved at every joint update boundary.
+      joint2d_sgd_make_joint_args alternate 3 0.5 0.1 0.0
+      joint2d_sgd_case_args+=( sgd_assignment_only=yes )
+      joint2d_sgd_print_stage_policy alternate
+      echo "Joint SGD ablation: assignments active; class-average SGD update disabled"
+      run_case stage4_alternate_assignment_only "${joint2d_sgd_case_args[@]}"
       ;;
   esac
 }

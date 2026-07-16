@@ -369,10 +369,14 @@ contains
         class(eul_prob_tab2D), intent(in) :: self
         integer,               intent(in) :: i_first, i_last
         real, allocatable :: scale_vals(:), gap21_vals(:), gap31_vals(:), entropy_vals(:), winner_vals(:)
+        real, allocatable :: best_nll_vals(:), best_norm_vals(:), class_mass(:)
         real :: best(3), scale, nll(3), unnorm(3), probs(3), denom, entropy, norm_entropy
         real :: scale_q(3), gap21_q(3), gap31_q(3), entropy_q(3), winner_q(3)
-        real :: dist, winner
+        real :: best_nll_q(3), best_norm_q(3), dist, winner, total_mass, population_entropy, max_mass
+        integer, allocatable :: class_hits(:)
+        integer :: best_class(3)
         integer :: i_from, i_to, nmax, i, iptcl, icls, j, nc, nsamples, accepted_shadow
+        integer :: active_classes, zero_support, max_hits
         logical :: l_active_nll
         character(len=STDLEN) :: behavior, units
 
@@ -390,7 +394,10 @@ contains
         i_to   = min(self%nptcls, i_last)
         if( i_to < i_from ) return
         nmax = i_to - i_from + 1
-        allocate(scale_vals(nmax), gap21_vals(nmax), gap31_vals(nmax), entropy_vals(nmax), winner_vals(nmax), source=0.)
+        allocate(scale_vals(nmax), gap21_vals(nmax), gap31_vals(nmax), entropy_vals(nmax), winner_vals(nmax),&
+            &best_nll_vals(nmax), best_norm_vals(nmax), source=0.)
+        allocate(class_mass(self%nclasses), source=0.)
+        allocate(class_hits(self%nclasses), source=0)
         nsamples = 0
         accepted_shadow = 0
         do i = i_from, i_to
@@ -398,6 +405,7 @@ contains
             scale = self%b_ptr%pftc%get_euclid_nll_scale(iptcl)
             if( .not. ieee_is_finite(scale) .or. scale <= 0. ) cycle
             best = huge(1.0)
+            best_class = 0
             nc = 0
             do icls = 1, self%nclasses
                 if( self%loc_tab(icls,i)%inpl < 1 ) cycle
@@ -407,11 +415,17 @@ contains
                     best(3) = best(2)
                     best(2) = best(1)
                     best(1) = dist
+                    best_class(3) = best_class(2)
+                    best_class(2) = best_class(1)
+                    best_class(1) = icls
                 else if( dist < best(2) )then
                     best(3) = best(2)
                     best(2) = dist
+                    best_class(3) = best_class(2)
+                    best_class(2) = icls
                 else if( dist < best(3) )then
                     best(3) = dist
+                    best_class(3) = icls
                 endif
                 nc = min(3, nc + 1)
             end do
@@ -439,6 +453,17 @@ contains
             winner = probs(1)
             entropy_vals(nsamples) = norm_entropy
             winner_vals(nsamples) = winner
+            best_nll_vals(nsamples) = nll(1)
+            if( l_active_nll )then
+                best_norm_vals(nsamples) = nll(1) / scale
+            else
+                best_norm_vals(nsamples) = best(1)
+            endif
+            do j = 1, nc
+                if( best_class(j) < 1 .or. best_class(j) > self%nclasses ) cycle
+                class_hits(best_class(j)) = class_hits(best_class(j)) + 1
+                class_mass(best_class(j)) = class_mass(best_class(j)) + probs(j)
+            end do
             if( nc >= 2 ) gap21_vals(nsamples) = nll(2) - nll(1)
             if( nc >= 3 ) gap31_vals(nsamples) = nll(3) - nll(1)
             if( nc >= self%p_ptr%sgd_cavg_min_cands .and.&
@@ -449,6 +474,27 @@ contains
         call shadow_quantiles(gap31_vals, nsamples, gap31_q)
         call shadow_quantiles(entropy_vals, nsamples, entropy_q)
         call shadow_quantiles(winner_vals, nsamples, winner_q)
+        call shadow_quantiles(best_nll_vals, nsamples, best_nll_q)
+        call shadow_quantiles(best_norm_vals, nsamples, best_norm_q)
+        active_classes = count(class_hits > 0)
+        zero_support = self%nclasses - active_classes
+        max_hits = 0
+        max_mass = 0.
+        if( self%nclasses > 0 )then
+            max_hits = maxval(class_hits)
+            max_mass = maxval(class_mass)
+        endif
+        total_mass = sum(class_mass)
+        population_entropy = 0.
+        if( total_mass > 0. )then
+            do icls = 1, self%nclasses
+                if( class_mass(icls) > 0. )then
+                    dist = class_mass(icls) / total_mass
+                    population_entropy = population_entropy - dist * log(dist)
+                endif
+            end do
+            if( self%nclasses > 1 ) population_entropy = population_entropy / log(real(self%nclasses))
+        endif
         write(logfhandle,'(A,1X,A,A,1X,A,A,1X,A,L1)')&
             &'>>> JOINT2D SGD LIKELIHOOD UNITS:', 'context=', 'prob_align2D_provisional',&
             &'units=', trim(units), 'active=', l_active_nll
@@ -473,7 +519,17 @@ contains
             &'>>> JOINT2D SGD NLL SHADOW POSTERIOR:', 'samples=', nsamples, 'accepted=', accepted_shadow,&
             &'norm_p10=', entropy_q(1), 'norm_p50=', entropy_q(2), 'norm_p90=', entropy_q(3),&
             &'winner_p10=', winner_q(1), 'winner_p50=', winner_q(2), 'winner_p90=', winner_q(3)
-        deallocate(scale_vals, gap21_vals, gap31_vals, entropy_vals, winner_vals)
+        write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4)')&
+            &'>>> JOINT2D SGD ABSOLUTE FIT:', 'samples=', nsamples,&
+            &'iteration=', self%p_ptr%which_iter,&
+            &'p10_nll=', best_nll_q(1), 'p50_nll=', best_nll_q(2), 'p90_nll=', best_nll_q(3),&
+            &'p10_norm_dist=', best_norm_q(1), 'p50_norm_dist=', best_norm_q(2), 'p90_norm_dist=', best_norm_q(3)
+        write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,ES12.4,1X,A,ES12.4)')&
+            &'>>> JOINT2D SGD SHADOW SUPPORT:', 'iteration=', self%p_ptr%which_iter,&
+            &'samples=', nsamples, 'active_classes=', active_classes, 'zero_support=', zero_support,&
+            &'max_top3_hits=', max_hits, 'max_posterior_mass=', max_mass, 'population_entropy=', population_entropy
+        deallocate(scale_vals, gap21_vals, gap31_vals, entropy_vals, winner_vals, best_nll_vals, best_norm_vals)
+        deallocate(class_mass, class_hits)
     end subroutine write_likelihood_shadow_diag
 
     subroutine shadow_quantiles( vals, nvals, quantiles )

@@ -326,7 +326,11 @@ contains
     module subroutine cavger_apply_sgd_update()
         if( p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'joint') .and. p_ptr%l_prob_align_mode )then
             if( .not. l_joint_cavg_sgd_pending ) return
-            call apply_joint_cavg_sgd_update
+            if( p_ptr%l_sgd_assignment_only )then
+                call preserve_assignment_only_cavgs
+            else
+                call apply_joint_cavg_sgd_update
+            endif
             l_joint_cavg_sgd_pending = .false.
             call cavg_sgd_opt%write_diag('joint preconditioned update applied')
             return
@@ -358,6 +362,33 @@ contains
             THROW_HARD('joint CAVG SGD update did not evaluate any half-classes')
         endif
     end subroutine apply_joint_cavg_sgd_update
+
+    subroutine preserve_assignment_only_cavgs()
+        type(cavg_sgd_diagnostics) :: update_diag
+        real :: support, support_sq, effective_support
+        integer :: icls, ieo
+        if( cavgs_joint_prev%ncls /= ncls ) THROW_HARD('joint assignment-only previous references are unavailable')
+        call update_diag%reset
+        do icls = 1,ncls
+            do ieo = 1,2
+                support = eo_wsupport(ieo,icls)
+                support_sq = eo_wsupport_sq(ieo,icls)
+                effective_support = 0.0
+                if( support_sq > TINY ) effective_support = support * support / support_sq
+                if( ieo == 1 )then
+                    call preserve_joint_cavg_side(cavgs_joint_prev%even, cavgs%even, ieo, icls)
+                else
+                    call preserve_joint_cavg_side(cavgs_joint_prev%odd, cavgs%odd, ieo, icls)
+                endif
+                call update_diag%record_preserved(support=support, effective_support=effective_support)
+            enddo
+        enddo
+        write(logfhandle,'(A,I0,1X,A,I0,1X,A)')&
+            &'>>> JOINT2D SGD ABLATION: mode=assignment_only assignments=active cavg_update=preserve_previous iter=',&
+            &p_ptr%which_iter, 'preserved_half_classes=', update_diag%n_preserved,&
+            &'class images unchanged at this joint update boundary'
+        call cavg_sgd_opt%write_update_diag('joint assignment-only preserve', update_diag)
+    end subroutine preserve_assignment_only_cavgs
 
     subroutine apply_joint_cavg_side( prev_stack, batch_stack, ieo, icls, update_diag )
         class(stack), intent(in)    :: prev_stack

@@ -438,7 +438,8 @@ contains
         else
             call cline_prob_tab%set('sgd_likelihood_units', 'normalized')
         endif
-        if( params%l_sgd .and. trim(params%sgd_mode) == 'joint' .and. params%l_sgd_diag )then
+        if( ((params%l_sgd .and. trim(params%sgd_mode) == 'joint') .or.&
+            &params%l_sgd_shadow_stage3) .and. params%l_sgd_diag )then
             call cline_prob_tab%set('sgd_diag', 'yes')
         else
             call cline_prob_tab%set('sgd_diag', 'no')

@@ -208,33 +208,33 @@ run_selected_case() {
       ;;
     joint_topk1_equiv)
       run_case joint_topk1_equiv "$rep" joint alternate 1 0.5 1.0 0.0 \
-        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=1 sgd_eta_cavg=1.0 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
+        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=1 sgd_eta_cavg=1.0 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes sgd_shadow_stage3=yes
       ;;
     joint_default)
       run_case joint_default "$rep" joint alternate 3 0.5 0.1 0.0 \
-        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
+        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes sgd_shadow_stage3=yes
       ;;
     latent_eta_0p1)
       run_case latent_eta_0p1 "$rep" joint alternate 3 0.1 0.1 0.0 \
-        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.1 sgd_balance_weight=0.0 sgd_diag=yes
+        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.1 sgd_balance_weight=0.0 sgd_diag=yes sgd_shadow_stage3=yes
       ;;
     latent_eta_1p0)
       run_case latent_eta_1p0 "$rep" joint alternate 3 1.0 0.1 0.0 \
-        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=1.0 sgd_balance_weight=0.0 sgd_diag=yes
+        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=1.0 sgd_balance_weight=0.0 sgd_diag=yes sgd_shadow_stage3=yes
       ;;
     cavg_eta_0p05)
       run_case cavg_eta_0p05 "$rep" joint alternate 3 0.5 0.05 0.0 \
-        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.05 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
+        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.05 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes sgd_shadow_stage3=yes
       ;;
     cavg_eta_0p25)
       run_case cavg_eta_0p25 "$rep" joint alternate 3 0.5 0.25 0.0 \
-        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.25 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes
+        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.25 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes sgd_shadow_stage3=yes
       ;;
     balance_1p0)
       # Unit-strength log-support prior: changes class occupancy logits without
       # rescaling the Gaussian likelihood itself.
       run_case balance_1p0 "$rep" joint alternate 3 0.5 0.1 1.0 \
-        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=1.0 sgd_diag=yes
+        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=1.0 sgd_diag=yes sgd_shadow_stage3=yes
       ;;
   esac
 }

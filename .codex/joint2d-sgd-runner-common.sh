@@ -91,6 +91,7 @@ joint2d_sgd_make_joint_args() {
     sgd_eta_cavg="$eta_cavg"
     sgd_balance_weight="$balance_weight"
     sgd_diag=yes
+    sgd_shadow_stage3=yes
   )
 }
 

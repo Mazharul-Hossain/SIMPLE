@@ -8,6 +8,7 @@ Usage:
   .codex/check-joint2d-sgd-smoke-log.sh stage4_off       <LOG> [RUN_DIR]
   .codex/check-joint2d-sgd-smoke-log.sh stage4_alternate <LOG> [RUN_DIR]
   .codex/check-joint2d-sgd-smoke-log.sh stage4_alternate_balance <LOG> [RUN_DIR]
+  .codex/check-joint2d-sgd-smoke-log.sh stage4_alternate_assignment_only <LOG> [RUN_DIR]
 
 Checks the shared-memory joint2D-SGD smoke logs produced by
 .codex/run-joint2d-sgd-smoke.sh. RUN_DIR is optional; when provided, the checker
@@ -48,8 +49,12 @@ case "$case_name" in
     check_smoke_joint_log alternate 3
     check_nonzero_balance_prior
     ;;
+  stage4_alternate_assignment_only)
+    check_assignment_only_ablation
+    check_smoke_joint_log alternate 3
+    ;;
   *)
-    fail "case must be baseline, stage4_off, stage4_alternate, or stage4_alternate_balance"
+    fail "case must be baseline, stage4_off, stage4_alternate, stage4_alternate_balance, or stage4_alternate_assignment_only"
     ;;
 esac
 
