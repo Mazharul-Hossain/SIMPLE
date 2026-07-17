@@ -28,6 +28,7 @@ type :: eul_prob_tab2D
     type(ptcl_ref), allocatable :: assgn_map(:)      !< assignment map (nptcls)
     real,           allocatable :: seed_shifts(:,:)  !< per-particle seeded shift (2,nptcls)
     logical,        allocatable :: seed_has_sh(:)    !< per-particle seeded shift flag
+    real,           allocatable :: diag_nll_scales(:)!< cached per-table-row NLL calibration across matcher batches
     integer                     :: seed_nrots = 0    !< rotation grid used for deferred seeded shifts
     integer,        allocatable :: pinds(:)          !< particle indices for processing
     logical,        allocatable :: class_exists(:)   !< class population filter
@@ -71,6 +72,7 @@ type :: eul_prob_tab2D
     procedure, private :: initialize_storage
     procedure, private :: allocate_sparse_bookkeeping
     procedure, private :: finalize_assignment
+    procedure, private :: cache_likelihood_diag_scales
 end type eul_prob_tab2D
 
 type :: eval2D_sparse_ws
@@ -163,6 +165,7 @@ contains
         allocate(self%pinds(self%nptcls), source=pinds)
         allocate(self%seed_shifts(2,self%nptcls), source=0.)
         allocate(self%seed_has_sh(self%nptcls), source=.false.)
+        allocate(self%diag_nll_scales(self%nptcls), source=0.)
     end subroutine new_common
 
     subroutine allocate_sparse_bookkeeping( self )
@@ -232,6 +235,7 @@ contains
         logical :: class_active(self%nclasses)
         if( self%l_sparse_snhc )then
             call self%fill_tab_prob_snhc_range(i_first, i_last)
+            call self%cache_likelihood_diag_scales(i_first, i_last)
             return
         endif
         i_from = max(1, i_first)
@@ -348,7 +352,23 @@ contains
             call grad_shsrch_obj(ithr)%kill
         end do
         call o_prev%kill
+        call self%cache_likelihood_diag_scales(i_from, i_to)
     end subroutine fill_tab_range
+
+    subroutine cache_likelihood_diag_scales( self, i_first, i_last )
+        class(eul_prob_tab2D), intent(inout) :: self
+        integer,               intent(in)    :: i_first, i_last
+        integer :: i, i_from, i_to, iptcl
+        if( .not. allocated(self%diag_nll_scales) ) return
+        if( .not. self%p_ptr%l_sgd_diag .or. trim(self%p_ptr%sgd_mode) /= 'joint' ) return
+        if( self%p_ptr%cc_objfun /= OBJFUN_EUCLID .or. self%p_ptr%l_objfun_den ) return
+        i_from = max(1, i_first)
+        i_to   = min(self%nptcls, i_last)
+        do i = i_from, i_to
+            iptcl = self%pinds(i)
+            self%diag_nll_scales(i) = self%b_ptr%pftc%get_euclid_nll_scale(iptcl)
+        enddo
+    end subroutine cache_likelihood_diag_scales
 
     real function likelihood_dist_from_corr( self, iptcl, corr ) result(dist)
         class(eul_prob_tab2D), intent(in) :: self
@@ -375,13 +395,14 @@ contains
         real :: best_nll_q(3), best_norm_q(3), dist, winner, total_mass, population_entropy, max_mass
         integer, allocatable :: class_hits(:)
         integer :: best_class(3)
-        integer :: i_from, i_to, nmax, i, iptcl, icls, j, nc, nsamples, accepted_shadow
+        integer :: i_from, i_to, nmax, i, icls, j, nc, nsamples, accepted_shadow
         integer :: active_classes, zero_support, max_hits
         logical :: l_active_nll
         character(len=STDLEN) :: behavior, units
 
         if( .not. self%p_ptr%l_sgd_diag .or. trim(self%p_ptr%sgd_mode) /= 'joint' ) return
         if( self%p_ptr%cc_objfun /= OBJFUN_EUCLID .or. self%p_ptr%l_objfun_den ) return
+        if( .not. allocated(self%diag_nll_scales) ) return
         l_active_nll = use_calibrated_joint_nll(self)
         if( l_active_nll )then
             behavior = 'active'
@@ -401,8 +422,7 @@ contains
         nsamples = 0
         accepted_shadow = 0
         do i = i_from, i_to
-            iptcl = self%pinds(i)
-            scale = self%b_ptr%pftc%get_euclid_nll_scale(iptcl)
+            scale = self%diag_nll_scales(i)
             if( .not. ieee_is_finite(scale) .or. scale <= 0. ) cycle
             best = huge(1.0)
             best_class = 0
@@ -1275,6 +1295,7 @@ contains
         if( allocated(self%assgn_map)      ) deallocate(self%assgn_map)
         if( allocated(self%seed_shifts)    ) deallocate(self%seed_shifts)
         if( allocated(self%seed_has_sh)    ) deallocate(self%seed_has_sh)
+        if( allocated(self%diag_nll_scales)) deallocate(self%diag_nll_scales)
         if( allocated(self%pinds)          ) deallocate(self%pinds)
         if( allocated(self%class_exists)   ) deallocate(self%class_exists)
         if( allocated(self%eval_touched_refs)   ) deallocate(self%eval_touched_refs)
