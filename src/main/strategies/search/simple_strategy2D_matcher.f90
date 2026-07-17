@@ -524,7 +524,25 @@ contains
                         invalid_t(ithr) = invalid_t(ithr) + 1
                         cycle
                     endif
-                    refined_dist = inpl_dists(new_inpl,ithr)
+                    ! The vectorized all-angle scorer is used to select the proposed
+                    ! in-plane state, but shift refinement evaluates one angle with
+                    ! gen_corr_for_rot_8.  Materialize the selected state in that
+                    ! exact downstream scoring convention before storing it.  This
+                    ! keeps the distance/state pair round-trippable across the
+                    ! in-plane -> shift refinement boundary, including when the
+                    ! Fourier support changes at a stage boundary.
+                    roundtrip_dist = real(b_ptr%pftc%gen_corr_for_rot_8(&
+                        &joint_topk_candidates%cand(irank,iptcl_map)%icls, iptcl,&
+                        &real(score_shift,dp), new_inpl))
+                    refined_dist = eulprob_dist_switch(roundtrip_dist, p_ptr%cc_objfun)
+                    if( trim(p_ptr%sgd_likelihood_units) == 'gaussian_nll' .and.&
+                        &p_ptr%cc_objfun == OBJFUN_EUCLID .and. .not. p_ptr%l_objfun_den )&
+                        &refined_dist = b_ptr%pftc%get_euclid_nll_scale(iptcl) * refined_dist
+                    if( .not. finite_joint_real(roundtrip_dist) .or.&
+                        &.not. finite_joint_real(refined_dist) )then
+                        nonfinite_t(ithr) = nonfinite_t(ithr) + 1
+                        cycle
+                    endif
                     angle_delta  = inpl_angle_delta(old_inpl, new_inpl)
                     loss_delta   = old_dist - refined_dist
                     if( p_ptr%l_doshift .and. joint_topk_candidates%cand(irank,iptcl_map)%has_sh )then
