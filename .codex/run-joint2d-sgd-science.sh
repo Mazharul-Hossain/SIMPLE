@@ -7,7 +7,8 @@ usage() {
 Usage:
   .codex/run-joint2d-sgd-science.sh --check
   .codex/run-joint2d-sgd-science.sh --list-cases
-  .codex/run-joint2d-sgd-science.sh --case CASE [--case CASE ...]
+  .codex/run-joint2d-sgd-science.sh [--root ROOT] [--shared-stage3] --case CASE [--case CASE ...]
+  .codex/run-joint2d-sgd-science.sh --shared-stage3-from PATH --case CASE [--case CASE ...]
   .codex/run-joint2d-sgd-science.sh --prepare-build
   .codex/run-joint2d-sgd-science.sh --prepare-betagal-extract
   .codex/run-joint2d-sgd-science.sh
@@ -31,10 +32,24 @@ The narrower `activation` and `hyperparameters` profiles remain available for
 targeted reruns. Every hyperparameter case uses `sgd_stage4_mode=alternate`.
 Repeat --case to rerun any subset; case selection overrides the profile matrix.
 
+  --shared-stage3 Run each replicate's joint-SGD cases from one byte-identical
+                  stage-3 checkpoint. Baseline remains independent.
+  --shared-stage3-from PATH
+                  Reuse completed checkpoint(s). PATH may be a checkpoint or
+                  a previous science root. Multi-replicate roots must contain
+                  _shared_stage3_checkpoint_repN for every requested replicate.
+  --root ROOT     Append into ROOT. Existing runs and manifest rows are kept;
+                  reruns receive a _rerunN suffix.
+
+When --root points to a previous run containing the matching checkpoint(s),
+--shared-stage3 reuses them automatically. Use --shared-stage3-from when the
+checkpoint and output root are different locations.
+
 Environment overrides:
   JOINT2D_SGD_PROJECTS_HOME        Defaults to ~/Projects.
   JOINT2D_SGD_BUILD_COPY           Defaults to ~/Projects/SIMPLE_joint2d_sgd_build.
   JOINT2D_SGD_SCIENCE_ROOT         Defaults to ~/Projects/simple_joint2d_sgd_science_<timestamp>.
+  JOINT2D_SGD_SHARED_STAGE3_FROM   Optional completed checkpoint or prior run root.
   JOINT2D_SGD_SCIENCE_PROJECT      Existing extracted .simple project for validation.
   JOINT2D_SGD_SCIENCE_REPS         Number of replicates. Defaults to 1; recommended 3.
   JOINT2D_SGD_SCIENCE_PROFILE      all, activation, or hyperparameters. Defaults to all.
@@ -63,6 +78,18 @@ write_manifest_header() {
   cat > "$manifest" <<'EOF'
 case	replicate	profile	mode	stage4_mode	log_file	run_dir	project	ncls	mskdiam	nthr	topk	sgd_eta_latent	sgd_eta_cavg	sgd_balance_weight	params	status
 EOF
+}
+
+initialize_manifest() {
+  local expected_header
+  expected_header=$'case\treplicate\tprofile\tmode\tstage4_mode\tlog_file\trun_dir\tproject\tncls\tmskdiam\tnthr\ttopk\tsgd_eta_latent\tsgd_eta_cavg\tsgd_balance_weight\tparams\tstatus'
+  if [[ -f "$manifest" ]]; then
+    [[ "$(head -n 1 "$manifest")" == "$expected_header" ]] || \
+      fail "existing science manifest has an incompatible header: $manifest"
+    echo "Appending science results to existing manifest: $manifest"
+  else
+    write_manifest_header
+  fi
 }
 
 science_all_cases=(
@@ -157,18 +184,41 @@ run_case() {
   local balance_weight="$8"
   shift 8
   local params=( "$@" )
-  local case_id="${case_name}_rep${rep}"
+  local case_id_base="${case_name}_rep${rep}"
+  joint2d_sgd_allocate_case_id "$case_id_base"
+  local case_id="$case_run_id"
   local log_file="$scratch_root/${case_id}.log"
   local status_file="$scratch_root/${case_id}.check"
   local status="pass"
 
   total_cases=$((total_cases + 1))
-  copy_case_root "$case_id"
-  echo "Running $case_id in $case_root"
-  (
-    cd "$case_root"
-    simple_exec prg=abinitio2D ncls="$ncls" mskdiam="$mskdiam" nthr="$nthr" projfile="$project_rel" "${params[@]}"
-  ) >"$log_file" 2>&1 || status="run_failed"
+  if [[ "$shared_stage3" == yes && "$mode" == joint ]]; then
+    local case_parent="$scratch_root/$case_id"
+    local resume_dir resume_project
+    mkdir -p "$case_parent"
+    cp -a "$checkpoint_case_root" "$case_parent/"
+    case_root="$case_parent/$(basename -- "$checkpoint_case_root")"
+    resume_dir="$(find "$case_root" -maxdepth 1 -type d -iname '*_abinitio2D' -print -quit)"
+    resume_project="$resume_dir/$(basename -- "$project_rel")"
+    [[ -n "$resume_dir" && -f "$resume_project" ]] || \
+      fail "shared-checkpoint project not found below: $case_root"
+    cp "$checkpoint_log" "$log_file"
+    echo "Running $case_id from shared stage 3 in $case_root"
+    (
+      cd "$resume_dir"
+      JOINT2D_SGD_CHECKPOINT_START_STAGE=4 \
+      JOINT2D_SGD_CHECKPOINT_LAST_ITER="$checkpoint_last_iter" \
+        simple_exec prg=abinitio2D ncls="$ncls" mskdiam="$mskdiam" nthr="$nthr" \
+          projfile="$(basename -- "$resume_project")" mkdir=no "${params[@]}"
+    ) >>"$log_file" 2>&1 || status="run_failed"
+  else
+    copy_case_root "$case_id"
+    echo "Running $case_id in $case_root"
+    (
+      cd "$case_root"
+      simple_exec prg=abinitio2D ncls="$ncls" mskdiam="$mskdiam" nthr="$nthr" projfile="$project_rel" "${params[@]}"
+    ) >"$log_file" 2>&1 || status="run_failed"
+  fi
 
   if [[ "$status" == "pass" ]]; then
     if "$checker" "$mode" "$log_file" "$stage4_mode" "$case_root" "$case_name" >"$status_file" 2>&1; then
@@ -191,6 +241,54 @@ run_case() {
     remember_failed_case "$case_name"
     echo "Continuing after $case_id failed with status $status; log: $log_file" >&2
   fi
+}
+
+prepare_shared_stage3_checkpoint() {
+  local rep="$1"
+  local checkpoint_name="_shared_stage3_checkpoint"
+  if [[ "$reps" -gt 1 ]]; then
+    checkpoint_name="${checkpoint_name}_rep${rep}"
+  fi
+
+  if [[ -n "$shared_stage3_from" ]]; then
+    joint2d_sgd_resolve_shared_stage3_checkpoint "$shared_stage3_from" "$checkpoint_name"
+    return
+  fi
+  if [[ -d "$scratch_root/$checkpoint_name" ]]; then
+    joint2d_sgd_resolve_shared_stage3_checkpoint "$scratch_root" "$checkpoint_name"
+    return
+  fi
+
+  checkpoint_log="$scratch_root/${checkpoint_name}.log"
+  copy_case_root "$checkpoint_name"
+  checkpoint_case_root="$case_root"
+  joint2d_sgd_make_joint_args alternate 3 0.5 0.1 0.0
+  echo "Preparing shared stage-3 checkpoint for replicate $rep in $checkpoint_case_root"
+  if (
+    cd "$checkpoint_case_root"
+    JOINT2D_SGD_CHECKPOINT_STOP_STAGE=3 \
+      simple_exec prg=abinitio2D ncls="$ncls" mskdiam="$mskdiam" nthr="$nthr" projfile="$project_rel" \
+        "${joint2d_sgd_case_args[@]}"
+  ) >"$checkpoint_log" 2>&1; then
+    :
+  else
+    local status=$?
+    fail "shared stage-3 checkpoint for replicate $rep exited $status; log=$checkpoint_log"
+  fi
+  checkpoint_last_iter="$(sed -n \
+    's/.*ABINITIO2D CHECKPOINT READY: stage=3 last_iter=\([0-9][0-9]*\).*/\1/p' \
+    "$checkpoint_log" | tail -n 1)"
+  [[ -n "$checkpoint_last_iter" ]] || \
+    fail "shared stage-3 checkpoint has no completion marker: $checkpoint_log"
+  echo "Shared stage-3 checkpoint ready: replicate=$rep last_iter=$checkpoint_last_iter log=$checkpoint_log"
+}
+
+selected_cases_include_joint() {
+  local selected
+  for selected in "${selected_cases[@]}"; do
+    [[ "$selected" != baseline ]] && return 0
+  done
+  return 1
 }
 
 run_selected_case() {
@@ -252,6 +350,9 @@ summarizer="$script_dir/summarize-joint2d-sgd-science.sh"
 action=""
 selected_cases=()
 case_filter_requested=no
+shared_stage3=no
+shared_stage3_from="$(env_or_legacy JOINT2D_SGD_SHARED_STAGE3_FROM JOINT_SGD_SHARED_STAGE3_FROM "")"
+root_override=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)
@@ -280,11 +381,27 @@ while [[ $# -gt 0 ]]; do
       set_action prepare-betagal-extract
       shift
       ;;
+    --shared-stage3)
+      shared_stage3=yes
+      shift
+      ;;
+    --shared-stage3-from)
+      [[ $# -ge 2 ]] || fail "--shared-stage3-from requires a path"
+      shared_stage3=yes
+      shared_stage3_from="$2"
+      shift 2
+      ;;
+    --root)
+      [[ $# -ge 2 ]] || fail "--root requires a path"
+      root_override="$2"
+      shift 2
+      ;;
     *)
       fail "unknown argument '$1'; use --help"
       ;;
   esac
 done
+[[ -z "$shared_stage3_from" ]] || shared_stage3=yes
 action="${action:-run}"
 
 case "$action" in
@@ -323,6 +440,9 @@ if [[ "$action" == "check" ]]; then
   else
     echo "Selected science cases: profile matrix"
   fi
+  echo "Shared stage-3 checkpoint: $shared_stage3"
+  echo "Shared stage-3 source: ${shared_stage3_from:-auto/new}"
+  echo "Requested output root: ${root_override:-default timestamped root}"
   cat <<'EOF'
 All profile: baseline plus the complete activation and 015 hyperparameter matrices.
 Activation profile: baseline, stage4_off, stage4_alternate, stage4_on.
@@ -339,7 +459,7 @@ require_project_or_explain "science" JOINT2D_SGD_SCIENCE_PROJECT
 infer_workflow_root "$project_path"
 
 timestamp="$(date +%Y%m%d_%H%M%S)"
-scratch_root="$(env_or_legacy JOINT2D_SGD_SCIENCE_ROOT JOINT_SGD_SCIENCE_ROOT "$projects_home/simple_joint2d_sgd_science_${timestamp}")"
+scratch_root="${root_override:-$(env_or_legacy JOINT2D_SGD_SCIENCE_ROOT JOINT_SGD_SCIENCE_ROOT "$projects_home/simple_joint2d_sgd_science_${timestamp}")}"
 reps="$(env_or_legacy JOINT2D_SGD_SCIENCE_REPS JOINT_SGD_SCIENCE_REPS 1)"
 ncls="$(env_or_legacy JOINT2D_SGD_SCIENCE_NCLS JOINT_SGD_SCIENCE_NCLS 100)"
 mskdiam="$(env_or_legacy JOINT2D_SGD_SCIENCE_MSKDIAM JOINT_SGD_SCIENCE_MSKDIAM 190)"
@@ -365,7 +485,8 @@ else
 fi
 
 mkdir -p "$scratch_root"
-write_manifest_header
+scratch_root="$(cd -- "$scratch_root" && pwd -P)"
+initialize_manifest
 total_cases=0
 failed_cases=0
 failed_case_list=()
@@ -377,8 +498,13 @@ echo "Workflow root: $workflow_root"
 echo "Project relative path: $project_rel"
 echo "ncls=$ncls mskdiam=$mskdiam nthr=$nthr reps=$reps profile=$profile"
 echo "Selected science cases: ${selected_cases[*]}"
+echo "Shared stage-3 checkpoint: $shared_stage3"
+echo "Shared stage-3 source: ${shared_stage3_from:-auto/new}"
 
 for rep in $(seq 1 "$reps"); do
+  if [[ "$shared_stage3" == yes ]] && selected_cases_include_joint; then
+    prepare_shared_stage3_checkpoint "$rep"
+  fi
   for case_name in "${selected_cases[@]}"; do
     run_selected_case "$case_name" "$rep"
   done
@@ -389,7 +515,10 @@ echo "joint2D-SGD scientific validation complete: $scratch_root"
 echo "Cases completed: $total_cases"
 echo "Cases failed: $failed_cases"
 if [[ "$failed_cases" -gt 0 ]]; then
-  rerun_command=( "$0" )
+  rerun_command=( "$0" --root "$scratch_root" )
+  if [[ "$shared_stage3" == yes ]]; then
+    rerun_command+=( --shared-stage3-from "${shared_stage3_from:-$scratch_root}" )
+  fi
   for case_name in "${failed_case_names[@]}"; do
     rerun_command+=( --case "$case_name" )
   done

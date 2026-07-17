@@ -535,6 +535,88 @@ copy_case_root() {
   [[ -f "$case_project" ]] || fail "copied project not found: $case_project"
 }
 
+joint2d_sgd_allocate_case_id() {
+  local base="$1"
+  local candidate="$base"
+  local rerun=2
+
+  while [[ -e "$scratch_root/$candidate" || -e "$scratch_root/${candidate}.log" || \
+           -e "$scratch_root/${candidate}.check" ]]; do
+    candidate="${base}_rerun${rerun}"
+    rerun=$((rerun + 1))
+  done
+  case_run_id="$candidate"
+}
+
+joint2d_sgd_resolve_shared_stage3_checkpoint() {
+  local requested="$1"
+  local checkpoint_name="${2:-_shared_stage3_checkpoint}"
+  local requested_abs checkpoint_container candidate resume_dir project_name
+  local log_candidate parent_container
+  local -a workflow_candidates=()
+  local -a log_candidates=()
+
+  if [[ ! -d "$requested" ]]; then
+    echo "${joint2d_sgd_runner_label:-joint2D-SGD runner} failed: shared stage-3 checkpoint path is not a directory: $requested" >&2
+    return 1
+  fi
+  requested_abs="$(cd -- "$requested" && pwd -P)"
+  checkpoint_container="$requested_abs"
+  if [[ -d "$requested_abs/$checkpoint_name" ]]; then
+    checkpoint_container="$requested_abs/$checkpoint_name"
+  fi
+
+  workflow_candidates+=(
+    "$checkpoint_container/$(basename -- "$workflow_root")"
+    "$checkpoint_container"
+  )
+  project_name="$(basename -- "$project_rel")"
+  checkpoint_case_root=""
+  for candidate in "${workflow_candidates[@]}"; do
+    [[ -d "$candidate" ]] || continue
+    resume_dir="$(find "$candidate" -maxdepth 1 -type d -iname '*_abinitio2D' -print -quit)"
+    if [[ -n "$resume_dir" && -f "$resume_dir/$project_name" ]]; then
+      checkpoint_case_root="$(cd -- "$candidate" && pwd -P)"
+      break
+    fi
+  done
+  if [[ -z "$checkpoint_case_root" ]]; then
+    echo "${joint2d_sgd_runner_label:-joint2D-SGD runner} failed: could not find an abinitio2D stage-3 project below checkpoint path: $requested_abs" >&2
+    return 1
+  fi
+
+  log_candidates+=(
+    "$requested_abs/${checkpoint_name}.log"
+    "$(dirname -- "$checkpoint_container")/$(basename -- "$checkpoint_container").log"
+  )
+  parent_container="$(dirname -- "$checkpoint_container")"
+  log_candidates+=( "$(dirname -- "$parent_container")/$(basename -- "$parent_container").log" )
+
+  checkpoint_log=""
+  for log_candidate in "${log_candidates[@]}"; do
+    if [[ -f "$log_candidate" ]]; then
+      checkpoint_log="$(cd -- "$(dirname -- "$log_candidate")" && pwd -P)/$(basename -- "$log_candidate")"
+      break
+    fi
+  done
+  if [[ -z "$checkpoint_log" ]]; then
+    echo "${joint2d_sgd_runner_label:-joint2D-SGD runner} failed: shared stage-3 checkpoint log not found for: $requested_abs" >&2
+    return 1
+  fi
+
+  checkpoint_last_iter="$(sed -n \
+    's/.*ABINITIO2D CHECKPOINT READY: stage=3 last_iter=\([0-9][0-9]*\).*/\1/p' \
+    "$checkpoint_log" | tail -n 1)"
+  if [[ -z "$checkpoint_last_iter" ]]; then
+    echo "${joint2d_sgd_runner_label:-joint2D-SGD runner} failed: shared stage-3 checkpoint log has no completion marker: $checkpoint_log" >&2
+    return 1
+  fi
+
+  echo "Reusing shared stage-3 checkpoint: $checkpoint_case_root"
+  echo "Shared stage-3 checkpoint log: $checkpoint_log"
+  echo "Shared stage-3 checkpoint last iteration: $checkpoint_last_iter"
+}
+
 print_common_check() {
   local root_line="$1"
   local simple_exec_path
