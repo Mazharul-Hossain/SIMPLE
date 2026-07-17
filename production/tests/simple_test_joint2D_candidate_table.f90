@@ -17,7 +17,7 @@ real, allocatable :: batch_weights(:,:)
 integer, allocatable :: batch_ncands(:)
 integer :: i, diag_checksum
 integer :: old_inpl
-real    :: base_shifts(2,4), weight_sum, expected_weight
+real    :: base_shifts(2,4), likelihood_scales(4), weight_sum, expected_weight
 real    :: p4_initial_weight, p4_initial_loss, p4_initial_entropy
 real    :: refined_logit
 real    :: old_shift(2), new_shift(2), step_norm
@@ -27,9 +27,11 @@ logical :: updated, fallback_used
 call init_loc_tab(loc_tab)
 call init_balance_loc_tab(balance_loc_tab)
 call init_base_shifts(base_shifts)
+likelihood_scales = [101.0, 202.0, 303.0, 404.0]
 
 call tab%build_from_loc_tab(loc_tab, 3)
 call tab%set_base_shifts(base_shifts)
+call tab%set_likelihood_scales(likelihood_scales)
 expected_weight = exp(-4.0) / (exp(-4.0) + exp(-5.0))
 call require_close(tab%cand(1,4)%weight, expected_weight, 1.0e-6,&
     &'initial weights match likelihood exp(-(dist-best_dist))')
@@ -132,6 +134,11 @@ call require_true(tab%accepted(1), 'in-plane-refined particle remains accepted a
 
 call tab_inpl%build_from_loc_tab(loc_tab, 3)
 call tab_inpl%set_base_shifts(base_shifts)
+call tab_inpl%materialize_candidate_distance(4, 1, 3.5)
+call require_true(tab_inpl%cand(1,4)%icls == 2 .and. tab_inpl%cand(1,4)%inpl == 22,&
+    &'distance materialization preserves candidate class and in-plane state')
+call require_close(tab_inpl%cand(1,4)%dist, 3.5, 1.0e-6,&
+    &'distance materialization stores the exact downstream score')
 call tab_inpl%apply_inpl_refinement(4, 1, 23, 0.1, old_inpl=old_inpl, updated=updated)
 call require_true(updated, 'two-candidate in-plane refinement reports update')
 call require_true(old_inpl == 22, 'two-candidate in-plane refinement reports old in-plane index')
@@ -213,6 +220,8 @@ call require_true(size(tab_roundtrip%cand, 1) == 3, 'roundtrip preserves topk di
 call require_true(size(tab_roundtrip%cand, 2) == 4, 'roundtrip preserves particle dimension')
 call require_true(tab_roundtrip%accepted(1), 'roundtrip preserves reliability flag')
 call require_close(tab_roundtrip%base_shift(1,1), 10.0, 1.0e-6, 'roundtrip preserves base shift')
+call require_close(tab_roundtrip%likelihood_scale(3), 303.0, 1.0e-6,&
+    &'roundtrip preserves provisional likelihood scale')
 call require_close(tab_roundtrip%cand(3,1)%eff_weight, tab%cand(3,1)%eff_weight, 1.0e-6,&
     &'roundtrip preserves effective candidate weight')
 call require_close(tab_roundtrip%expected_loss(4), tab%expected_loss(4), 1.0e-6,&

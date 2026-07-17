@@ -415,17 +415,22 @@ contains
             integer :: cand_count_t(nthr_glob), changed_t(nthr_glob), nonfinite_t(nthr_glob)
             integer :: hard_churn_t(nthr_glob), negative_delta_t(nthr_glob), invalid_t(nthr_glob)
             integer :: no_better_t(nthr_glob), roundtrip_checked_t(nthr_glob), roundtrip_mismatch_t(nthr_glob)
+            integer :: scale_discontinuity_t(nthr_glob)
             real    :: loss_delta_sum_t(nthr_glob), loss_delta_max_t(nthr_glob)
             real    :: angle_delta_sum_t(nthr_glob), angle_delta_max_t(nthr_glob)
             real    :: roundtrip_error_sum_t(nthr_glob), roundtrip_error_max_t(nthr_glob)
             real    :: roundtrip_tol_max_t(nthr_glob)
+            real    :: scale_rel_sum_t(nthr_glob), scale_rel_max_t(nthr_glob)
             integer :: iloc, iptcl_map, iptcl, irank, ithr, nc, nrots, old_inpl, new_inpl
             integer :: eligible_batch, cand_batch, hard_before, hard_after
             integer :: nonfinite_total, invalid_total, changed_total, cand_total, hard_churn_total, negative_total
             integer :: no_better_total, roundtrip_checked_total, roundtrip_mismatch_total
+            integer :: scale_discontinuity_total
             real    :: cand_shift(2), score_shift(2), refined_shift(2), rotmat(2,2), refined_dist, old_dist, loss_delta
             real    :: mean_loss_delta, mean_angle_delta, angle_delta, roundtrip_dist, roundtrip_error, roundtrip_tol
             real    :: roundtrip_error_mean
+            real    :: provisional_scale, current_scale, stored_norm_dist, scale_rel_error, scale_rel_mean
+            real    :: exact_old_corr, exact_old_dist
             logical :: updated
 
             if( .not. ctrl%l_joint_topk ) return
@@ -458,6 +463,7 @@ contains
             no_better_t       = 0
             roundtrip_checked_t  = 0
             roundtrip_mismatch_t = 0
+            scale_discontinuity_t = 0
             loss_delta_sum_t  = 0.
             loss_delta_max_t  = 0.
             angle_delta_sum_t = 0.
@@ -465,9 +471,12 @@ contains
             roundtrip_error_sum_t = 0.
             roundtrip_error_max_t = 0.
             roundtrip_tol_max_t   = 0.
+            scale_rel_sum_t       = 0.
+            scale_rel_max_t       = 0.
             !$omp parallel do private(iloc,iptcl_map,iptcl,irank,ithr,nc,hard_before,hard_after,old_inpl,new_inpl)&
             !$omp private(cand_shift,score_shift,refined_shift,rotmat,refined_dist,old_dist,loss_delta,angle_delta,updated)&
-            !$omp private(roundtrip_dist,roundtrip_error,roundtrip_tol)&
+            !$omp private(roundtrip_dist,roundtrip_error,roundtrip_tol,provisional_scale,current_scale,stored_norm_dist)&
+            !$omp private(scale_rel_error,exact_old_corr,exact_old_dist)&
             !$omp default(shared) schedule(static) proc_bind(close)
             do iloc = 1, batchsz
                 ithr = omp_get_thread_num() + 1
@@ -485,6 +494,18 @@ contains
                         cycle
                     endif
                     old_dist = joint_topk_candidates%cand(irank,iptcl_map)%dist
+                    provisional_scale = joint_topk_candidates%likelihood_scale(iptcl_map)
+                    current_scale = b_ptr%pftc%get_euclid_nll_scale(iptcl)
+                    if( provisional_scale <= 0. .or. .not. finite_joint_real(provisional_scale) .or.&
+                        &current_scale <= 0. .or. .not. finite_joint_real(current_scale) )then
+                        nonfinite_t(ithr) = nonfinite_t(ithr) + 1
+                        cycle
+                    endif
+                    scale_rel_error = abs(current_scale - provisional_scale) / provisional_scale
+                    scale_rel_sum_t(ithr) = scale_rel_sum_t(ithr) + scale_rel_error
+                    scale_rel_max_t(ithr) = max(scale_rel_max_t(ithr), scale_rel_error)
+                    if( scale_rel_error > 128. * epsilon(1.0) )&
+                        &scale_discontinuity_t(ithr) = scale_discontinuity_t(ithr) + 1
                     cand_shift = 0.
                     if( p_ptr%l_doshift .and. joint_topk_candidates%cand(irank,iptcl_map)%has_sh )then
                         cand_shift = [joint_topk_candidates%cand(irank,iptcl_map)%x,&
@@ -498,9 +519,6 @@ contains
                     call b_ptr%pftc%gen_objfun_vals(joint_topk_candidates%cand(irank,iptcl_map)%icls,&
                         &iptcl, score_shift, inpl_scores(:,ithr))
                     inpl_dists(:,ithr) = eulprob_dist_switch(inpl_scores(:,ithr), p_ptr%cc_objfun)
-                    if( trim(p_ptr%sgd_likelihood_units) == 'gaussian_nll' .and.&
-                        &p_ptr%cc_objfun == OBJFUN_EUCLID .and. .not. p_ptr%l_objfun_den )&
-                        &inpl_dists(:,ithr) = b_ptr%pftc%get_euclid_nll_scale(iptcl) * inpl_dists(:,ithr)
                     if( any(inpl_scores(:,ithr) /= inpl_scores(:,ithr)) .or.&
                         &any(abs(inpl_scores(:,ithr)) >= huge(1.0) / 2.0) .or.&
                         &any(inpl_dists(:,ithr) /= inpl_dists(:,ithr)) .or.&
@@ -508,9 +526,15 @@ contains
                         nonfinite_t(ithr) = nonfinite_t(ithr) + 1
                         cycle
                     endif
+                    ! Compare the objective independently of its Gaussian-NLL
+                    ! calibration.  The provisional scale is the active unit for
+                    ! the entire candidate lifetime; a freshly rebuilt PFTC may
+                    ! report a different scale, but must reproduce the normalized
+                    ! objective before refinement is allowed to continue.
+                    stored_norm_dist = old_dist / provisional_scale
                     roundtrip_dist  = inpl_dists(old_inpl,ithr)
-                    roundtrip_error = abs(roundtrip_dist - old_dist)
-                    roundtrip_tol   = 128. * epsilon(1.0) * max(1.0, abs(roundtrip_dist), abs(old_dist))
+                    roundtrip_error = abs(roundtrip_dist - stored_norm_dist)
+                    roundtrip_tol   = 128. * epsilon(1.0) * max(1.0, abs(roundtrip_dist), abs(stored_norm_dist))
                     roundtrip_checked_t(ithr)   = roundtrip_checked_t(ithr) + 1
                     roundtrip_error_sum_t(ithr) = roundtrip_error_sum_t(ithr) + roundtrip_error
                     roundtrip_error_max_t(ithr) = max(roundtrip_error_max_t(ithr), roundtrip_error)
@@ -519,6 +543,25 @@ contains
                         roundtrip_mismatch_t(ithr) = roundtrip_mismatch_t(ithr) + 1
                         cycle
                     endif
+                    inpl_dists(:,ithr) = provisional_scale * inpl_dists(:,ithr)
+                    ! Convert the retained original state from the provisional
+                    ! vector scorer to the exact scalar scorer used by shift
+                    ! refinement.  This is a representation handoff, not a state
+                    ! update, and removes vector/scalar summation drift without
+                    ! accepting a worse tested pose.
+                    exact_old_corr = real(b_ptr%pftc%gen_corr_for_rot_8(&
+                        &joint_topk_candidates%cand(irank,iptcl_map)%icls, iptcl,&
+                        &real(score_shift,dp), old_inpl))
+                    exact_old_dist = eulprob_dist_switch(exact_old_corr, p_ptr%cc_objfun)
+                    if( trim(p_ptr%sgd_likelihood_units) == 'gaussian_nll' .and.&
+                        &p_ptr%cc_objfun == OBJFUN_EUCLID .and. .not. p_ptr%l_objfun_den )&
+                        &exact_old_dist = provisional_scale * exact_old_dist
+                    if( .not. finite_joint_real(exact_old_corr) .or. .not. finite_joint_real(exact_old_dist) )then
+                        nonfinite_t(ithr) = nonfinite_t(ithr) + 1
+                        cycle
+                    endif
+                    call joint_topk_candidates%materialize_candidate_distance(iptcl_map, irank, exact_old_dist)
+                    old_dist = exact_old_dist
                     new_inpl = minloc(inpl_dists(:,ithr), dim=1)
                     if( new_inpl < 1 .or. new_inpl > nrots )then
                         invalid_t(ithr) = invalid_t(ithr) + 1
@@ -537,7 +580,7 @@ contains
                     refined_dist = eulprob_dist_switch(roundtrip_dist, p_ptr%cc_objfun)
                     if( trim(p_ptr%sgd_likelihood_units) == 'gaussian_nll' .and.&
                         &p_ptr%cc_objfun == OBJFUN_EUCLID .and. .not. p_ptr%l_objfun_den )&
-                        &refined_dist = b_ptr%pftc%get_euclid_nll_scale(iptcl) * refined_dist
+                        &refined_dist = provisional_scale * refined_dist
                     if( .not. finite_joint_real(roundtrip_dist) .or.&
                         &.not. finite_joint_real(refined_dist) )then
                         nonfinite_t(ithr) = nonfinite_t(ithr) + 1
@@ -581,9 +624,11 @@ contains
             no_better_total  = sum(no_better_t)
             roundtrip_checked_total  = sum(roundtrip_checked_t)
             roundtrip_mismatch_total = sum(roundtrip_mismatch_t)
+            scale_discontinuity_total = sum(scale_discontinuity_t)
             mean_loss_delta  = 0.
             mean_angle_delta = 0.
             roundtrip_error_mean = 0.
+            scale_rel_mean = 0.
             if( cand_total > 0 )then
                 mean_loss_delta  = sum(loss_delta_sum_t) / real(cand_total)
                 mean_angle_delta = sum(angle_delta_sum_t) / real(cand_total)
@@ -591,15 +636,21 @@ contains
             if( roundtrip_checked_total > 0 )then
                 roundtrip_error_mean = sum(roundtrip_error_sum_t) / real(roundtrip_checked_total)
             endif
+            if( cand_total > 0 ) scale_rel_mean = sum(scale_rel_sum_t) / real(cand_total)
             deallocate(inpl_scores, inpl_dists)
             write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
                 &'>>> JOINT2D SGD INPL:', 'batch=', ibatch, 'eligible=', eligible_batch,&
                 &'candidates=', cand_total, 'changed=', changed_total, 'invalid=', invalid_total,&
                 &'nonfinite=', nonfinite_total, 'negative_delta=', negative_total, 'no_better=', no_better_total
-            write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4)')&
+            write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4,1X,A)')&
                 &'>>> JOINT2D SGD INPL ROUNDTRIP:', 'batch=', ibatch, 'checked=', roundtrip_checked_total,&
                 &'mismatch=', roundtrip_mismatch_total, 'error_mean=', roundtrip_error_mean,&
-                &'error_max=', maxval(roundtrip_error_max_t), 'tolerance_max=', maxval(roundtrip_tol_max_t)
+                &'error_max=', maxval(roundtrip_error_max_t), 'tolerance_max=', maxval(roundtrip_tol_max_t),&
+                &'units=normalized_objective'
+            write(logfhandle,'(A,1X,A,I0,1X,A,I0,1X,A,ES12.4,1X,A,ES12.4,1X,A)')&
+                &'>>> JOINT2D SGD CALIBRATION HANDOFF:', 'batch=', ibatch,&
+                &'scale_discontinuity=', scale_discontinuity_total, 'rel_error_mean=', scale_rel_mean,&
+                &'rel_error_max=', maxval(scale_rel_max_t), 'active=provisional_scale'
             write(logfhandle,'(A,1X,A,ES12.4,1X,A,ES12.4)')&
                 &'>>> JOINT2D SGD INPL LOSSES:', 'loss_delta_mean=', mean_loss_delta,&
                 &'loss_delta_max=', maxval(loss_delta_max_t)
@@ -631,6 +682,7 @@ contains
             real    :: cxy(3), old_shift(2), old_shift_opt(2), opt_shift(2), damped_shift(2)
             real    :: score_shift(2), rotmat(2,2), refined_corr, refined_dist, old_corr, old_dist, step
             real    :: roundtrip_dist, roundtrip_error, roundtrip_tol, roundtrip_error_mean
+            real    :: provisional_scale
             real    :: loss_delta, winner_shift(2)
             logical :: updated
 
@@ -688,7 +740,7 @@ contains
             !$omp parallel do private(iloc,iptcl_map,iptcl,irank,ithr,nc,irot,hard_before,hard_after,cxy)&
             !$omp private(old_shift,old_shift_opt,opt_shift,damped_shift,score_shift,rotmat)&
             !$omp private(refined_corr,refined_dist,old_corr,old_dist,step,loss_delta,winner_shift,updated)&
-            !$omp private(roundtrip_dist,roundtrip_error,roundtrip_tol)&
+            !$omp private(roundtrip_dist,roundtrip_error,roundtrip_tol,provisional_scale)&
             !$omp default(shared) schedule(static) proc_bind(close)
             do iloc = 1, batchsz
                 ithr = omp_get_thread_num() + 1
@@ -706,6 +758,11 @@ contains
                     endif
                     irot      = joint_topk_candidates%cand(irank,iptcl_map)%inpl
                     old_dist  = joint_topk_candidates%cand(irank,iptcl_map)%dist
+                    provisional_scale = joint_topk_candidates%likelihood_scale(iptcl_map)
+                    if( provisional_scale <= 0. .or. .not. finite_joint_real(provisional_scale) )then
+                        nonfinite_t(ithr) = nonfinite_t(ithr) + 1
+                        cycle
+                    endif
                     old_shift = 0.
                     if( joint_topk_candidates%cand(irank,iptcl_map)%has_sh )then
                         old_shift = [joint_topk_candidates%cand(irank,iptcl_map)%x,&
@@ -718,7 +775,7 @@ contains
                     roundtrip_dist = eulprob_dist_switch(old_corr, p_ptr%cc_objfun)
                     if( trim(p_ptr%sgd_likelihood_units) == 'gaussian_nll' .and.&
                         &p_ptr%cc_objfun == OBJFUN_EUCLID .and. .not. p_ptr%l_objfun_den )&
-                        &roundtrip_dist = b_ptr%pftc%get_euclid_nll_scale(iptcl) * roundtrip_dist
+                        &roundtrip_dist = provisional_scale * roundtrip_dist
                     if( .not. finite_joint_real(old_corr) .or. .not. finite_joint_real(roundtrip_dist) )then
                         nonfinite_t(ithr) = nonfinite_t(ithr) + 1
                         cycle
@@ -747,7 +804,7 @@ contains
                     refined_dist = eulprob_dist_switch(refined_corr, p_ptr%cc_objfun)
                     if( trim(p_ptr%sgd_likelihood_units) == 'gaussian_nll' .and.&
                         &p_ptr%cc_objfun == OBJFUN_EUCLID .and. .not. p_ptr%l_objfun_den )&
-                        &refined_dist = b_ptr%pftc%get_euclid_nll_scale(iptcl) * refined_dist
+                        &refined_dist = provisional_scale * refined_dist
                     if( .not. finite_joint_real(refined_corr) .or. .not. finite_joint_real(refined_dist) .or.&
                         &.not. finite_joint_real(opt_shift(1)) .or. .not. finite_joint_real(opt_shift(2)) )then
                         nonfinite_t(ithr) = nonfinite_t(ithr) + 1

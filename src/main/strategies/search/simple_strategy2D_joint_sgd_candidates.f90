@@ -1,5 +1,6 @@
 !@descr: Compact top-K candidate table for 2D joint-SGD latent updates
 module simple_strategy2D_joint_sgd_candidates
+use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
 use simple_core_module_api
 use simple_type_defs, only: ptcl_ref
 use simple_eul_prob_tab_utils, only: materialize_seed_shift
@@ -12,7 +13,7 @@ private
 #include "simple_local_flags.inc"
 
 character(len=*), parameter :: JOINT2D_CANDIDATES_FNAME = 'joint2D_topk_candidates.dat'
-integer,          parameter :: JOINT2D_CANDIDATES_VERSION = 4
+integer,          parameter :: JOINT2D_CANDIDATES_VERSION = 5
 integer,          parameter :: SHIFT_PROVENANCE_INVALID       = 0
 integer,          parameter :: SHIFT_PROVENANCE_CLASS_REFINED = 1
 integer,          parameter :: SHIFT_PROVENANCE_SEED          = 2
@@ -73,12 +74,15 @@ type :: joint2D_candidate_table
     real,                    allocatable :: loss_delta(:)    !< initial_expected_loss - expected_loss
     real,                    allocatable :: particle_weight(:) !< total class-average support; independent of soft acceptance
     real,                    allocatable :: base_shift(:,:)  !< pre-assignment/base shift (2,nptcls)
+    real,                    allocatable :: likelihood_scale(:) !< provisional Gaussian-NLL scale retained through refinement
     integer,                 allocatable :: shift_provenance(:,:) !< origin of candidate delta shift (topk,nptcls)
     logical,                 allocatable :: accepted(:)      !< true only for a reliable soft top-K assignment
 contains
     procedure :: build_from_loc_tab
     procedure :: materialize_seed_shifts
     procedure :: set_base_shifts
+    procedure :: set_likelihood_scales
+    procedure :: materialize_candidate_distance
     procedure :: optimize_logits
     procedure :: apply_balance_prior
     procedure :: apply_inpl_refinement
@@ -207,6 +211,37 @@ contains
         endif
         self%base_shift = base_shift
     end subroutine set_base_shifts
+
+    subroutine set_likelihood_scales( self, likelihood_scale )
+        class(joint2D_candidate_table), intent(inout) :: self
+        real,                           intent(in)    :: likelihood_scale(:)
+
+        call require_allocated(self, 'likelihood scales requested before build/read')
+        if( size(likelihood_scale) /= size(self%ncand) )then
+            THROW_HARD('joint2D_candidate_table: likelihood-scale size mismatch')
+        endif
+        if( any(.not. ieee_is_finite(likelihood_scale)) .or. any(likelihood_scale <= 0.) )then
+            THROW_HARD('joint2D_candidate_table: likelihood scales must be finite and positive')
+        endif
+        self%likelihood_scale = likelihood_scale
+    end subroutine set_likelihood_scales
+
+    subroutine materialize_candidate_distance( self, iptcl, irank, dist )
+        class(joint2D_candidate_table), intent(inout) :: self
+        integer,                        intent(in)    :: iptcl, irank
+        real,                           intent(in)    :: dist
+
+        call require_allocated(self, 'candidate-distance materialization requested before build/read')
+        if( iptcl < 1 .or. iptcl > size(self%ncand) .or. irank < 1 .or. irank > self%ncand(iptcl) )then
+            THROW_HARD('joint2D_candidate_table: invalid candidate-distance materialization index')
+        endif
+        if( .not. ieee_is_finite(dist) .or. dist < 0. )then
+            THROW_HARD('joint2D_candidate_table: invalid materialized candidate distance')
+        endif
+        self%cand(irank,iptcl)%dist  = dist
+        self%cand(irank,iptcl)%logit = -dist
+        call refresh_particle(self, iptcl)
+    end subroutine materialize_candidate_distance
 
     subroutine optimize_logits( self, inner_its, eta_latent )
         class(joint2D_candidate_table), intent(inout) :: self
@@ -630,7 +665,7 @@ contains
         call fileiochk('joint2D_candidate_table; write_table(reals1); file: '//trim(fname), io_stat)
         write(unit=funit, iostat=io_stat) self%expected_loss, self%initial_expected_loss, self%loss_delta
         call fileiochk('joint2D_candidate_table; write_table(reals2); file: '//trim(fname), io_stat)
-        write(unit=funit, iostat=io_stat) self%particle_weight, self%base_shift
+        write(unit=funit, iostat=io_stat) self%particle_weight, self%base_shift, self%likelihood_scale
         call fileiochk('joint2D_candidate_table; write_table(reals3); file: '//trim(fname), io_stat)
         write(unit=funit, iostat=io_stat) self%accepted
         call fileiochk('joint2D_candidate_table; write_table(flags); file: '//trim(fname), io_stat)
@@ -651,7 +686,7 @@ contains
         call fileiochk('joint2D_candidate_table; read_table; file: '//trim(fname), io_stat)
         read(unit=funit, iostat=io_stat) version, topk, nptcls
         call fileiochk('joint2D_candidate_table; read_table(header); file: '//trim(fname), io_stat)
-        if( version /= JOINT2D_CANDIDATES_VERSION .and. version /= 3 .and. version /= 2 )then
+        if( version /= JOINT2D_CANDIDATES_VERSION .and. version /= 4 .and. version /= 3 .and. version /= 2 )then
             THROW_HARD('joint2D_candidate_table: unsupported file version')
         endif
         if( topk < 1 .or. nptcls < 1 )then
@@ -676,7 +711,12 @@ contains
         call fileiochk('joint2D_candidate_table; read_table(reals1); file: '//trim(fname), io_stat)
         read(unit=funit, iostat=io_stat) self%expected_loss, self%initial_expected_loss, self%loss_delta
         call fileiochk('joint2D_candidate_table; read_table(reals2); file: '//trim(fname), io_stat)
-        read(unit=funit, iostat=io_stat) self%particle_weight, self%base_shift
+        if( version >= 5 )then
+            read(unit=funit, iostat=io_stat) self%particle_weight, self%base_shift, self%likelihood_scale
+        else
+            read(unit=funit, iostat=io_stat) self%particle_weight, self%base_shift
+            self%likelihood_scale = 1.
+        endif
         call fileiochk('joint2D_candidate_table; read_table(reals3); file: '//trim(fname), io_stat)
         read(unit=funit, iostat=io_stat) self%accepted
         call fileiochk('joint2D_candidate_table; read_table(flags); file: '//trim(fname), io_stat)
@@ -791,6 +831,7 @@ contains
         if( any(abs(self%loss_delta - other%loss_delta) > rt) ) return
         if( any(abs(self%particle_weight - other%particle_weight) > rt) ) return
         if( any(abs(self%base_shift - other%base_shift) > rt) ) return
+        if( any(abs(self%likelihood_scale - other%likelihood_scale) > rt) ) return
         if( any(self%shift_provenance /= other%shift_provenance) ) return
         do iptcl = 1, size(self%ncand)
             do irank = 1, size(self%cand, 1)
@@ -1096,6 +1137,7 @@ contains
             call mix_real64(h, self%particle_weight(iptcl))
             call mix_real64(h, self%base_shift(1,iptcl))
             call mix_real64(h, self%base_shift(2,iptcl))
+            call mix_real64(h, self%likelihood_scale(iptcl))
             if( self%accepted(iptcl) )then
                 call mix_int64(h, 1)
             else
@@ -1203,6 +1245,7 @@ contains
         if( allocated(self%loss_delta)      ) deallocate(self%loss_delta)
         if( allocated(self%particle_weight) ) deallocate(self%particle_weight)
         if( allocated(self%base_shift)      ) deallocate(self%base_shift)
+        if( allocated(self%likelihood_scale)) deallocate(self%likelihood_scale)
         if( allocated(self%shift_provenance)) deallocate(self%shift_provenance)
         if( allocated(self%accepted)        ) deallocate(self%accepted)
     end subroutine kill_candidate_table
@@ -1456,7 +1499,8 @@ contains
             &self%initial_hard_rank(nptcls), self%reject_reason(nptcls), self%entropy(nptcls),&
             &self%initial_entropy(nptcls), self%norm_entropy(nptcls), self%winner_weight(nptcls),&
             &self%expected_loss(nptcls), self%initial_expected_loss(nptcls), self%loss_delta(nptcls),&
-            &self%particle_weight(nptcls), self%base_shift(2,nptcls), self%shift_provenance(topk,nptcls),&
+            &self%particle_weight(nptcls), self%base_shift(2,nptcls), self%likelihood_scale(nptcls),&
+            &self%shift_provenance(topk,nptcls),&
             &self%accepted(nptcls))
         self%cand              = joint2D_candidate()
         self%pinds             = 0
@@ -1473,6 +1517,7 @@ contains
         self%loss_delta        = 0.
         self%particle_weight   = 0.
         self%base_shift        = 0.
+        self%likelihood_scale  = 1.
         self%shift_provenance  = SHIFT_PROVENANCE_INVALID
         self%accepted          = .false.
     end subroutine allocate_blank_table
@@ -1529,6 +1574,7 @@ contains
         dst%loss_delta(dst_col)   = src%loss_delta(src_col)
         dst%particle_weight(dst_col) = src%particle_weight(src_col)
         dst%base_shift(:,dst_col) = src%base_shift(:,src_col)
+        dst%likelihood_scale(dst_col) = src%likelihood_scale(src_col)
         dst%shift_provenance(:,dst_col) = src%shift_provenance(:,src_col)
         dst%accepted(dst_col)     = src%accepted(src_col)
     end subroutine copy_candidate_column

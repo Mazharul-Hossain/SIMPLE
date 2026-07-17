@@ -474,6 +474,7 @@ contains
         call flush(logfhandle)
         if( params%l_sgd .and. trim(params%sgd_mode) == 'joint' )then
             call joint_candidates%build_from_loc_tab(eulprob_obj_glob%loc_tab, params%sgd_topk, pinds=pinds)
+            call joint_candidates%set_likelihood_scales(eulprob_obj_glob%diag_nll_scales)
             call joint_candidates%materialize_seed_shifts(eulprob_obj_glob%seed_shifts,&
                 &eulprob_obj_glob%seed_has_sh, params%l_doshift, eulprob_obj_glob%seed_nrots)
             allocate(base_shifts(2,eulprob_obj_glob%nptcls), source=0.)

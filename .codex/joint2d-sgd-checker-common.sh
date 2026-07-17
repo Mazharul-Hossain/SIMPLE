@@ -228,6 +228,11 @@ check_likelihood_unit_continuity() {
     'provisional likelihood-unit diagnostics'
   require_contains 'JOINT2D SGD LIKELIHOOD UNITS: context=cluster2D_final' \
     'final likelihood-unit diagnostics'
+  require_contains 'JOINT2D SGD CALIBRATION HANDOFF:' \
+    'provisional-to-refinement calibration handoff diagnostics'
+  if grep -F 'JOINT2D SGD CALIBRATION HANDOFF:' "$log_file" | grep -Fvq 'active=provisional_scale'; then
+    fail 'refinement did not retain the provisional Gaussian-NLL calibration'
+  fi
   if ! awk '
     /JOINT2D SGD SCHEDULE:/ {
       joint_active = ($0 ~ /mode=joint/)

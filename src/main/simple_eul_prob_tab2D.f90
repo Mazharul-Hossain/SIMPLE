@@ -360,7 +360,9 @@ contains
         integer,               intent(in)    :: i_first, i_last
         integer :: i, i_from, i_to, iptcl
         if( .not. allocated(self%diag_nll_scales) ) return
-        if( .not. self%p_ptr%l_sgd_diag .or. trim(self%p_ptr%sgd_mode) /= 'joint' ) return
+        ! This scale is part of the active likelihood unit and must survive the
+        ! provisional-worker -> refinement handoff even when diagnostics are off.
+        if( trim(self%p_ptr%sgd_likelihood_units) /= 'gaussian_nll' ) return
         if( self%p_ptr%cc_objfun /= OBJFUN_EUCLID .or. self%p_ptr%l_objfun_den ) return
         i_from = max(1, i_first)
         i_to   = min(self%nptcls, i_last)
@@ -1328,6 +1330,8 @@ contains
         addr = sizeof(file_header) + 1
         call write_seed_shift_table(funit, addr, self%seed_nrots, self%seed_shifts, self%seed_has_sh)
         write(funit, pos=addr) self%loc_tab
+        addr = addr + sizeof(self%loc_tab)
+        write(funit, pos=addr) self%diag_nll_scales
         call fclose(funit)
     end subroutine write_tab
 
@@ -1378,6 +1382,8 @@ contains
         write(funit, pos=addr) sparse_refs
         addr = addr + sizeof(sparse_refs)
         write(funit, pos=addr) sparse_tab
+        addr = addr + sizeof(sparse_tab)
+        write(funit, pos=addr) self%diag_nll_scales
         call fclose(funit)
         deallocate(sparse_tab, sparse_refs, sparse_counts)
     end subroutine write_sparse_tab
@@ -1386,7 +1392,7 @@ contains
         class(eul_prob_tab2D), intent(inout) :: self
         class(string),         intent(in)    :: binfname
         type(ptcl_ref), allocatable :: mat_loc(:,:)
-        real,           allocatable :: seed_shifts_loc(:,:)
+        real,           allocatable :: seed_shifts_loc(:,:), nll_scales_loc(:)
         logical,        allocatable :: seed_has_sh_loc(:)
         integer, allocatable :: pind2glob(:), pinds_loc(:)
         integer :: funit, io_stat, file_header(2), nptcls_loc, nclasses_loc, i_loc, i_glob, pind, max_pind, seed_nrots_loc
@@ -1406,17 +1412,19 @@ contains
         nptcls_loc   = file_header(2)
         if( nclasses_loc .ne. self%nclasses ) THROW_HARD('nclasses mismatch in read_tab_to_glob!')
         allocate(mat_loc(nclasses_loc, nptcls_loc))
-        allocate(seed_shifts_loc(2,nptcls_loc), seed_has_sh_loc(nptcls_loc))
+        allocate(seed_shifts_loc(2,nptcls_loc), seed_has_sh_loc(nptcls_loc), nll_scales_loc(nptcls_loc))
         addr = sizeof(file_header) + 1
         call read_seed_shift_table(funit, addr, seed_nrots_loc, seed_shifts_loc, seed_has_sh_loc)
         read(unit=funit, pos=addr) mat_loc
+        addr = addr + sizeof(mat_loc)
+        read(unit=funit, pos=addr) nll_scales_loc
         call fclose(funit)
         if( self%seed_nrots == 0 ) self%seed_nrots = seed_nrots_loc
         if( self%seed_nrots /= seed_nrots_loc ) THROW_HARD('seed_nrots mismatch in eul_prob_tab2D%read_tab_to_glob')
         pinds_loc = mat_loc(1,:)%pind
         call build_pind_lookup(self%pinds, pinds_loc, pind2glob, max_pind)
         if( max_pind < 1 )then
-            deallocate(mat_loc, seed_shifts_loc, seed_has_sh_loc, pind2glob, pinds_loc)
+            deallocate(mat_loc, seed_shifts_loc, seed_has_sh_loc, nll_scales_loc, pind2glob, pinds_loc)
             return
         endif
         !$omp parallel do default(shared) proc_bind(close) schedule(static) private(i_loc,i_glob,pind)
@@ -1428,17 +1436,18 @@ contains
                 self%loc_tab(:,i_glob)     = mat_loc(:,i_loc)
                 self%seed_shifts(:,i_glob) = seed_shifts_loc(:,i_loc)
                 self%seed_has_sh(i_glob)   = seed_has_sh_loc(i_loc)
+                self%diag_nll_scales(i_glob) = nll_scales_loc(i_loc)
             endif
         end do
         !$omp end parallel do
-        deallocate(mat_loc, seed_shifts_loc, seed_has_sh_loc, pind2glob, pinds_loc)
+        deallocate(mat_loc, seed_shifts_loc, seed_has_sh_loc, nll_scales_loc, pind2glob, pinds_loc)
     end subroutine read_tab_to_glob
 
     subroutine read_sparse_tab_to_glob( self, binfname )
         class(eul_prob_tab2D), intent(inout) :: self
         class(string),         intent(in)    :: binfname
         type(ptcl_ref), allocatable :: sparse_tab(:)
-        real,           allocatable :: seed_shifts_loc(:,:)
+        real,           allocatable :: seed_shifts_loc(:,:), nll_scales_loc(:)
         logical,        allocatable :: seed_has_sh_loc(:)
         integer,        allocatable :: pinds_loc(:), sparse_counts(:), sparse_refs(:), pind2glob(:)
         integer :: funit, io_stat, file_header(3), nclasses_loc, nptcls_loc, nnz
@@ -1456,7 +1465,8 @@ contains
         nnz          = file_header(3)
         if( nclasses_loc .ne. self%nclasses ) THROW_HARD('nclasses mismatch in eul_prob_tab2D%read_sparse_tab_to_glob')
         if( nnz < 1 ) THROW_HARD('empty sparse table in eul_prob_tab2D%read_sparse_tab_to_glob')
-        allocate(pinds_loc(nptcls_loc), seed_shifts_loc(2,nptcls_loc), seed_has_sh_loc(nptcls_loc))
+        allocate(pinds_loc(nptcls_loc), seed_shifts_loc(2,nptcls_loc), seed_has_sh_loc(nptcls_loc),&
+            &nll_scales_loc(nptcls_loc))
         allocate(sparse_counts(nptcls_loc), sparse_refs(nnz), sparse_tab(nnz))
         addr = sizeof(file_header) + 1
         read(funit, pos=addr) pinds_loc
@@ -1467,6 +1477,8 @@ contains
         read(funit, pos=addr) sparse_refs
         addr = addr + sizeof(sparse_refs)
         read(funit, pos=addr) sparse_tab
+        addr = addr + sizeof(sparse_tab)
+        read(funit, pos=addr) nll_scales_loc
         call fclose(funit)
         if( any(sparse_counts < 0) .or. sum(sparse_counts) /= nnz )&
             &THROW_HARD('sparse table count mismatch in eul_prob_tab2D%read_sparse_tab_to_glob')
@@ -1479,7 +1491,8 @@ contains
         if( .not. allocated(self%eval_touched_counts) ) allocate(self%eval_touched_counts(self%nptcls), source=0)
         call build_pind_lookup(self%pinds, pinds_loc, pind2glob, max_pind)
         if( max_pind < 1 )then
-            deallocate(pinds_loc, seed_shifts_loc, seed_has_sh_loc, sparse_counts, sparse_refs, sparse_tab, pind2glob)
+            deallocate(pinds_loc, seed_shifts_loc, seed_has_sh_loc, nll_scales_loc, sparse_counts, sparse_refs,&
+                &sparse_tab, pind2glob)
             return
         endif
         pos = 0
@@ -1490,6 +1503,7 @@ contains
             if( i_glob > 0 )then
                 self%seed_shifts(:,i_glob) = seed_shifts_loc(:,i_loc)
                 self%seed_has_sh(i_glob)   = seed_has_sh_loc(i_loc)
+                self%diag_nll_scales(i_glob) = nll_scales_loc(i_loc)
             endif
             do k = 1, sparse_counts(i_loc)
                 pos = pos + 1
@@ -1501,7 +1515,8 @@ contains
             enddo
         enddo
         if( pos /= nnz ) THROW_HARD('sparse table count mismatch in eul_prob_tab2D%read_sparse_tab_to_glob')
-        deallocate(pinds_loc, seed_shifts_loc, seed_has_sh_loc, sparse_counts, sparse_refs, sparse_tab, pind2glob)
+        deallocate(pinds_loc, seed_shifts_loc, seed_has_sh_loc, nll_scales_loc, sparse_counts, sparse_refs,&
+            &sparse_tab, pind2glob)
     end subroutine read_sparse_tab_to_glob
 
     subroutine write_assignment( self, binfname )

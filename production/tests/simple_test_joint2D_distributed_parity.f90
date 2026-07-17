@@ -11,15 +11,17 @@ type(joint2D_candidate_table) :: global_tab, merged_tab, part1, part2, part_roun
 type(joint2D_candidate_table) :: hard_global, hard_part
 type(joint2D_candidate_table) :: parts(2)
 integer :: pinds(5), part1_pinds(3), part2_pinds(2)
-real    :: shared_support(4), part_support(4), rejected_support(4)
+real    :: shared_support(4), part_support(4), rejected_support(4), likelihood_scales(5)
 logical :: fallback_used
 
 pinds       = [11, 12, 13, 14, 15]
 part1_pinds = [11, 13, 15]
 part2_pinds = [12, 14]
 call init_loc_tab(loc_tab)
+likelihood_scales = [11.0, 12.0, 13.0, 14.0, 15.0]
 
 call global_tab%build_from_loc_tab(loc_tab, 2, pinds=pinds)
+call global_tab%set_likelihood_scales(likelihood_scales)
 call global_tab%apply_reliability(2, 1.0)
 call require_true(all(global_tab%pinds == pinds), 'global table records exact particle order')
 call require_true(global_tab%ncand(3) == 0, 'empty particle remains empty in global table')
@@ -29,6 +31,8 @@ call global_tab%extract_by_pinds(part1_pinds, part1)
 call global_tab%extract_by_pinds(part2_pinds, part2)
 call require_true(all(part1%pinds == part1_pinds), 'part 1 keeps exact requested order')
 call require_true(all(part2%pinds == part2_pinds), 'part 2 keeps exact requested order')
+call require_close(part1%likelihood_scale(2), 13.0, 1.0e-6,&
+    &'partition extraction follows particle-specific likelihood scale')
 call require_true(part1%ncand(2) == 0, 'empty particle remains empty in part table')
 call require_true(.not. part1%accepted(2), 'empty particle remains rejected in part table')
 
