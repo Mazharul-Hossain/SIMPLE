@@ -160,7 +160,7 @@ record_case_result() {
 
 prepare_shared_stage3_checkpoint() {
   local checkpoint_name="_shared_stage3_checkpoint"
-  local checkpoint_log="$scratch_root/${checkpoint_name}.log"
+  checkpoint_log="$scratch_root/${checkpoint_name}.log"
   if [[ -n "$shared_stage3_from" ]]; then
     joint2d_sgd_resolve_shared_stage3_checkpoint "$shared_stage3_from" "$checkpoint_name"
     return
