@@ -201,14 +201,35 @@ contains
 
     subroutine capture_joint_prev_cavgs()
         integer :: icls
+        integer :: source_ft_count
+        real(dp) :: capture_error, max_capture_error
+        logical :: source_was_ft
         if( .not. allocated(cavgs_merged) ) THROW_HARD('joint CAVG SGD requires loaded references')
         call cavgs_joint_prev%kill_set
         call cavgs_joint_prev%new_set(ldim_crop(1:2), ncls)
+        source_ft_count = 0
+        max_capture_error = 0.0_dp
         do icls = 1,ncls
-            call copy_image_ft_to_stack(cavgs_even(icls),   cavgs_joint_prev%even,   icls)
-            call copy_image_ft_to_stack(cavgs_odd(icls),    cavgs_joint_prev%odd,    icls)
-            call copy_image_ft_to_stack(cavgs_merged(icls), cavgs_joint_prev%merged, icls)
+            call copy_image_to_real_stack(cavgs_even(icls), cavgs_joint_prev%even, icls,&
+                &capture_error, source_was_ft)
+            max_capture_error = max(max_capture_error, capture_error)
+            if( source_was_ft ) source_ft_count = source_ft_count + 1
+            call copy_image_to_real_stack(cavgs_odd(icls), cavgs_joint_prev%odd, icls,&
+                &capture_error, source_was_ft)
+            max_capture_error = max(max_capture_error, capture_error)
+            if( source_was_ft ) source_ft_count = source_ft_count + 1
+            call copy_image_to_real_stack(cavgs_merged(icls), cavgs_joint_prev%merged, icls,&
+                &capture_error, source_was_ft)
+            max_capture_error = max(max_capture_error, capture_error)
+            if( source_was_ft ) source_ft_count = source_ft_count + 1
         enddo
+        write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,I0,1X,A,ES12.4,1X,A,L1)')&
+            &'>>> CAVG SGD SNAPSHOT:', 'representation=restored_real', 'images=', 3*ncls,&
+            &'source_ft=', source_ft_count, 'max_abs_error=', max_capture_error,&
+            &'compatible=', max_capture_error <= 0.0_dp
+        if( max_capture_error > 0.0_dp )then
+            THROW_HARD('joint CAVG SGD real snapshot failed its capture invariant')
+        endif
     end subroutine capture_joint_prev_cavgs
 
     module subroutine cavger_prepare_joint_sgd_update()
@@ -220,20 +241,29 @@ contains
         call cavg_sgd_opt%write_diag('distributed master previous class averages captured')
     end subroutine cavger_prepare_joint_sgd_update
 
-    subroutine copy_image_ft_to_stack( img, cavg_stack, icls )
+    subroutine copy_image_to_real_stack( img, cavg_stack, icls, capture_error, source_was_ft )
         class(image), intent(in)    :: img
         class(stack), intent(inout) :: cavg_stack
         integer,      intent(in)    :: icls
+        real(dp),     intent(out)   :: capture_error
+        logical,      intent(out)   :: source_was_ft
         type(image) :: tmp_img
-        complex, allocatable :: cmat(:,:,:)
         real,    allocatable :: rmat(:,:,:)
         integer :: img_ldim(3), stack_ldim(2)
+        source_was_ft = img%is_ft()
         img_ldim = img%get_ldim()
         stack_ldim = cavg_stack%ldim
         if( any(img_ldim(1:2) /= stack_ldim) )then
             THROW_HARD('joint CAVG SGD snapshot logical dimensions do not match the destination stack')
         endif
-        rmat = img%get_rmat()
+        ! A stack overlays rmat and cmat on one FFTW allocation, so a snapshot
+        ! cannot contain valid real and Fourier representations simultaneously.
+        ! Joint CAVG updates consume restored real images; materialize and keep
+        ! only that representation.  Copying cmat after rmat would overwrite the
+        ! saved class with Fourier coefficients interpreted as real pixels.
+        call tmp_img%copy(img)
+        call tmp_img%ifft
+        rmat = tmp_img%get_rmat()
         if( size(rmat,1) /= img_ldim(1) .or. size(rmat,2) /= img_ldim(2) )then
             THROW_HARD('joint CAVG SGD snapshot getter did not return the logical image dimensions')
         endif
@@ -244,20 +274,13 @@ contains
         ! assignment-only output remains bit-preserving.
         cavg_stack%rmat(:,:,icls) = 0.0
         cavg_stack%rmat(1:stack_ldim(1),1:stack_ldim(2),icls) = rmat(:,:,1)
-        call tmp_img%copy(img)
-        call tmp_img%fft
-        cmat = tmp_img%get_cmat()
-        if( size(cmat,1) /= size(cavg_stack%cmat,1) .or.&
-            &size(cmat,2) /= size(cavg_stack%cmat,2) )then
-            THROW_HARD('joint CAVG SGD snapshot Fourier dimensions do not match the destination stack')
-        endif
-        cavg_stack%cmat(:,:,icls)  = cmat(:,:,1)
         cavg_stack%ctfsq(:,:,icls) = 1.0
-        cavg_stack%slices(icls)%ft = .true.
+        cavg_stack%slices(icls)%ft = .false.
+        capture_error = maxval(abs(real(cavg_stack%rmat(1:stack_ldim(1),1:stack_ldim(2),icls),dp)&
+            &- real(rmat(:,:,1),dp)))
         if( allocated(rmat) ) deallocate(rmat)
-        if( allocated(cmat) ) deallocate(cmat)
         call tmp_img%kill
-    end subroutine copy_image_ft_to_stack
+    end subroutine copy_image_to_real_stack
 
     subroutine calc_class_center_shift( icls, cavg_img, xyz )
         integer,      intent(in)    :: icls
@@ -492,18 +515,15 @@ contains
         max_norm_error = 0.0_dp
         do icls = 1,ncls
             call accumulate_output_invariant(cavgs_joint_prev%even, cavgs%even, icls, diff_sq, old_sq, new_sq)
-            rel_error = sqrt(diff_sq / max(old_sq, DTINY))
-            norm_ratio = sqrt(new_sq / max(old_sq, DTINY))
+            call calc_output_invariant_errors(diff_sq, old_sq, new_sq, rel_error, norm_ratio)
             max_rel_error = max(max_rel_error, rel_error)
             max_norm_error = max(max_norm_error, abs(norm_ratio - 1.0_dp))
             call accumulate_output_invariant(cavgs_joint_prev%odd, cavgs%odd, icls, diff_sq, old_sq, new_sq)
-            rel_error = sqrt(diff_sq / max(old_sq, DTINY))
-            norm_ratio = sqrt(new_sq / max(old_sq, DTINY))
+            call calc_output_invariant_errors(diff_sq, old_sq, new_sq, rel_error, norm_ratio)
             max_rel_error = max(max_rel_error, rel_error)
             max_norm_error = max(max_norm_error, abs(norm_ratio - 1.0_dp))
             call accumulate_output_invariant(cavgs_joint_prev%merged, cavgs%merged, icls, diff_sq, old_sq, new_sq)
-            rel_error = sqrt(diff_sq / max(old_sq, DTINY))
-            norm_ratio = sqrt(new_sq / max(old_sq, DTINY))
+            call calc_output_invariant_errors(diff_sq, old_sq, new_sq, rel_error, norm_ratio)
             max_rel_error = max(max_rel_error, rel_error)
             max_norm_error = max(max_norm_error, abs(norm_ratio - 1.0_dp))
         enddo
@@ -515,6 +535,21 @@ contains
             THROW_HARD('assignment-only restored-output freeze invariant failed')
         endif
     end subroutine write_assignment_only_output_invariant
+
+    pure subroutine calc_output_invariant_errors( diff_sq, old_sq, new_sq, rel_error, norm_ratio )
+        real(dp), intent(in)  :: diff_sq, old_sq, new_sq
+        real(dp), intent(out) :: rel_error, norm_ratio
+        if( old_sq <= DTINY .and. new_sq <= DTINY )then
+            ! An exactly empty class preserved as exactly empty is a perfect
+            ! freeze.  Defining its norm ratio as zero would manufacture a
+            ! unit error even though both images and their difference vanish.
+            rel_error = 0.0_dp
+            norm_ratio = 1.0_dp
+        else
+            rel_error = sqrt(diff_sq / max(old_sq, DTINY))
+            norm_ratio = sqrt(new_sq / max(old_sq, DTINY))
+        endif
+    end subroutine calc_output_invariant_errors
 
     subroutine accumulate_output_invariant( old_stack, new_stack, icls, diff_sq, old_sq, new_sq )
         class(stack), intent(in) :: old_stack, new_stack

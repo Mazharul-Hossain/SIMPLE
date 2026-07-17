@@ -229,6 +229,10 @@ check_likelihood_unit_continuity() {
   require_contains 'JOINT2D SGD LIKELIHOOD UNITS: context=cluster2D_final' \
     'final likelihood-unit diagnostics'
   if ! awk '
+    /JOINT2D SGD SCHEDULE:/ {
+      joint_active = ($0 ~ /mode=joint/)
+      next
+    }
     /JOINT2D SGD LIKELIHOOD UNITS:/ {
       context = units = active = ""
       for (i = 1; i <= NF; i++) {
@@ -236,9 +240,17 @@ check_likelihood_unit_continuity() {
         if ($i ~ /^units=/)   { units   = $i; sub(/^units=/,   "", units) }
         if ($i ~ /^active=/)  { active  = $i; sub(/^active=/,  "", active) }
       }
-      if (context == "prob_align2D_provisional" || context == "cluster2D_final") {
-        if (units != "gaussian_nll" || active != "T") exit 1
+      if (joint_active && context == "prob_align2D_provisional") {
+        provisional++
+        if (units != "gaussian_nll" || active != "T") bad = 1
       }
+      if (joint_active && context == "cluster2D_final") {
+        final++
+        if (units != "gaussian_nll" || active != "T") bad = 1
+      }
+    }
+    END {
+      if (bad || provisional == 0 || final == 0 || provisional != final) exit 1
     }
   ' "$log_file"; then
     fail 'provisional/final likelihood-unit discontinuity or inactive Gaussian-NLL calibration found'
