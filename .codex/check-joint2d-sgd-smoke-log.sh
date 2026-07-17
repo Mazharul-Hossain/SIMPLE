@@ -59,4 +59,7 @@ case "$case_name" in
 esac
 
 check_run_outputs "$run_dir"
+if [[ "$case_name" == stage4_alternate_assignment_only ]]; then
+  check_assignment_only_mrc_invariant "$run_dir"
+fi
 echo "joint2D-SGD smoke log check passed: $case_name $log_file"

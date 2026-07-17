@@ -49,6 +49,7 @@ type :: eul_prob_tab2D
     ! MAIN PROCEDURES
     procedure :: fill_tab
     procedure :: fill_tab_range
+    procedure :: write_likelihood_diag => write_likelihood_shadow_diag
     procedure :: ref_assign => ref_assign_likelihood
     procedure :: write_tab
     procedure :: read_tab_to_glob
@@ -213,6 +214,7 @@ contains
     subroutine fill_tab( self )
         class(eul_prob_tab2D), intent(inout) :: self
         call self%fill_tab_range(1, self%nptcls)
+        call self%write_likelihood_diag(1, self%nptcls)
     end subroutine fill_tab
 
     subroutine fill_tab_range( self, i_first, i_last )
@@ -230,7 +232,6 @@ contains
         logical :: class_active(self%nclasses)
         if( self%l_sparse_snhc )then
             call self%fill_tab_prob_snhc_range(i_first, i_last)
-            call write_likelihood_shadow_diag(self, i_first, i_last)
             return
         endif
         i_from = max(1, i_first)
@@ -347,7 +348,6 @@ contains
             call grad_shsrch_obj(ithr)%kill
         end do
         call o_prev%kill
-        call write_likelihood_shadow_diag(self, i_from, i_to)
     end subroutine fill_tab_range
 
     real function likelihood_dist_from_corr( self, iptcl, corr ) result(dist)

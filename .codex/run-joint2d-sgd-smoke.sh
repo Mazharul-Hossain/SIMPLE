@@ -8,6 +8,7 @@ Usage:
   .codex/run-joint2d-sgd-smoke.sh --check
   .codex/run-joint2d-sgd-smoke.sh --list-cases
   .codex/run-joint2d-sgd-smoke.sh --case CASE [--case CASE ...]
+  .codex/run-joint2d-sgd-smoke.sh --report-only [--shared-stage3] [--case CASE ...]
   .codex/run-joint2d-sgd-smoke.sh --prepare-build
   .codex/run-joint2d-sgd-smoke.sh --prepare-betagal-extract
   .codex/run-joint2d-sgd-smoke.sh
@@ -19,6 +20,12 @@ Workstation layout:
 The server smoke matrix runs baseline, stage-4 off with K=1, and stage-4
 alternate with K=3. The complete activation matrix remains in the science runner.
 Use repeatable --case options to run only selected cases.
+
+  --report-only   Continue after executable/checker failures, print a final
+                  PASS/FAIL table, and return success so an overnight shell
+                  is not stopped by a scientific validation failure.
+  --shared-stage3 Run balance and assignment-only continuations from one
+                  byte-identical checkpoint taken after stage 3.
 
 Environment overrides:
   JOINT2D_SGD_PROJECTS_HOME       Defaults to ~/Projects.
@@ -75,20 +82,141 @@ set_action() {
   action="$requested"
 }
 
+execute_case() {
+  local case_name="$1"
+  local log_mode="$2"
+  local resume_dir resume_project
+  shift
+  shift
+  local log_file="$scratch_root/${case_name}.log"
+  echo "Running $case_name in $case_root"
+  if [[ "$log_mode" == append ]]; then
+    resume_dir="$(find "$case_root" -maxdepth 1 -type d -iname '*_abinitio2D' -print -quit)"
+    [[ -n "$resume_dir" ]] || fail "shared-checkpoint abinitio2D directory not found under $case_root"
+    resume_project="$resume_dir/$(basename -- "$project_rel")"
+    [[ -f "$resume_project" ]] || fail "shared-checkpoint project not found: $resume_project"
+    if (
+      cd "$resume_dir"
+      JOINT2D_SGD_CHECKPOINT_START_STAGE=4 \
+      JOINT2D_SGD_CHECKPOINT_LAST_ITER="$checkpoint_last_iter" \
+        simple_exec prg=abinitio2D ncls="$ncls" mskdiam="$mskdiam" nthr="$nthr" \
+          projfile="$(basename -- "$resume_project")" mkdir=no "$@"
+    ) >>"$log_file" 2>&1; then
+      :
+    else
+      local status=$?
+      echo "CASE FAIL: $case_name executable exited $status; log=$log_file" >&2
+      return 1
+    fi
+  else
+    if (
+      cd "$case_root"
+      simple_exec prg=abinitio2D ncls="$ncls" mskdiam="$mskdiam" nthr="$nthr" projfile="$project_rel" "$@"
+    ) >"$log_file" 2>&1; then
+      :
+    else
+      local status=$?
+      echo "CASE FAIL: $case_name executable exited $status; log=$log_file" >&2
+      return 1
+    fi
+  fi
+  if ! "$checker" "$case_name" "$log_file" "$case_root"; then
+    echo "CASE FAIL: $case_name checker rejected the completed run; log=$log_file" >&2
+    return 1
+  fi
+  echo "Log: $log_file"
+}
+
+case_is_selected() {
+  local requested="$1"
+  local selected
+  for selected in "${selected_cases[@]}"; do
+    [[ "$selected" == "$requested" ]] && return 0
+  done
+  return 1
+}
+
+record_case_result() {
+  local case_name="$1"
+  shift
+  if "$@"; then
+    passed_cases+=( "$case_name" )
+  else
+    failed_cases+=( "$case_name" )
+    [[ "$report_only" == yes ]] || return 1
+  fi
+}
+
+prepare_shared_stage3_checkpoint() {
+  local checkpoint_name="_shared_stage3_checkpoint"
+  local checkpoint_log="$scratch_root/${checkpoint_name}.log"
+  copy_case_root "$checkpoint_name"
+  checkpoint_case_root="$case_root"
+  joint2d_sgd_make_joint_args alternate 3 0.5 0.1 0.0
+  echo "Preparing shared stage-3 checkpoint in $checkpoint_case_root"
+  if (
+    cd "$checkpoint_case_root"
+    JOINT2D_SGD_CHECKPOINT_STOP_STAGE=3 \
+      simple_exec prg=abinitio2D ncls="$ncls" mskdiam="$mskdiam" nthr="$nthr" projfile="$project_rel" \
+        "${joint2d_sgd_case_args[@]}"
+  ) >"$checkpoint_log" 2>&1; then
+    :
+  else
+    local status=$?
+    echo "SHARED CHECKPOINT FAIL: executable exited $status; log=$checkpoint_log" >&2
+    return 1
+  fi
+  checkpoint_last_iter="$(sed -n 's/.*ABINITIO2D CHECKPOINT READY: stage=3 last_iter=\([0-9][0-9]*\).*/\1/p' "$checkpoint_log" | tail -n 1)"
+  [[ -n "$checkpoint_last_iter" ]] || {
+    echo "SHARED CHECKPOINT FAIL: missing stage-3 checkpoint marker; log=$checkpoint_log" >&2
+    return 1
+  }
+  echo "Shared stage-3 checkpoint ready: last_iter=$checkpoint_last_iter log=$checkpoint_log"
+}
+
+run_shared_continuation() {
+  local case_name="$1"
+  shift
+  local case_parent="$scratch_root/$case_name"
+  mkdir -p "$case_parent"
+  cp -a "$checkpoint_case_root" "$case_parent/"
+  case_root="$case_parent/$(basename -- "$checkpoint_case_root")"
+  case_project="$case_root/$project_rel"
+  [[ -f "$case_project" ]] || fail "shared-checkpoint project not found: $case_project"
+  cp "$scratch_root/_shared_stage3_checkpoint.log" "$scratch_root/${case_name}.log"
+  execute_case "$case_name" append "$@"
+}
+
+run_selected_shared_pair() {
+  local checkpoint_ok=yes
+  prepare_shared_stage3_checkpoint || checkpoint_ok=no
+  if case_is_selected stage4_alternate_balance; then
+    if [[ "$checkpoint_ok" == yes ]]; then
+      joint2d_sgd_make_joint_args alternate 3 0.5 0.1 1.0
+      record_case_result stage4_alternate_balance run_shared_continuation \
+        stage4_alternate_balance "${joint2d_sgd_case_args[@]}"
+    else
+      failed_cases+=( stage4_alternate_balance )
+    fi
+  fi
+  if case_is_selected stage4_alternate_assignment_only; then
+    if [[ "$checkpoint_ok" == yes ]]; then
+      joint2d_sgd_make_joint_args alternate 3 0.5 0.1 0.0
+      joint2d_sgd_case_args+=( sgd_assignment_only=yes )
+      record_case_result stage4_alternate_assignment_only run_shared_continuation \
+        stage4_alternate_assignment_only "${joint2d_sgd_case_args[@]}"
+    else
+      failed_cases+=( stage4_alternate_assignment_only )
+    fi
+  fi
+  [[ "$checkpoint_ok" == yes || "$report_only" == yes ]]
+}
+
 run_case() {
   local case_name="$1"
   shift
-  local log_file="$scratch_root/${case_name}.log"
-
   copy_case_root "$case_name"
-  echo "Running $case_name in $case_root"
-  (
-    cd "$case_root"
-    simple_exec prg=abinitio2D ncls="$ncls" mskdiam="$mskdiam" nthr="$nthr" projfile="$project_rel" "$@"
-  ) >"$log_file" 2>&1
-
-  "$checker" "$case_name" "$log_file" "$case_root"
-  echo "Log: $log_file"
+  execute_case "$case_name" replace "$@"
 }
 
 run_selected_case() {
@@ -116,7 +244,7 @@ run_selected_case() {
       ;;
     stage4_alternate_assignment_only)
       # Causal ablation: joint scoring/refinement/assignments stay active, but
-      # class images are preserved at every joint update boundary.
+      # restored output class images are frozen at every joint boundary.
       joint2d_sgd_make_joint_args alternate 3 0.5 0.1 0.0
       joint2d_sgd_case_args+=( sgd_assignment_only=yes )
       joint2d_sgd_print_stage_policy alternate
@@ -136,6 +264,8 @@ joint2d_sgd_common_init
 checker="$script_dir/check-joint2d-sgd-smoke-log.sh"
 
 action=""
+report_only=no
+shared_stage3=no
 selected_cases=()
 case_filter_requested=no
 while [[ $# -gt 0 ]]; do
@@ -164,6 +294,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --prepare-betagal-extract)
       set_action prepare-betagal-extract
+      shift
+      ;;
+    --report-only)
+      report_only=yes
+      shift
+      ;;
+    --shared-stage3)
+      shared_stage3=yes
       shift
       ;;
     *)
@@ -207,6 +345,8 @@ if [[ "$action" == "check" ]]; then
   print_common_check "Default smoke root: $projects_home/simple_joint2d_sgd_smoke_<timestamp>"
   echo "Smoke threads: $(env_or_legacy JOINT2D_SGD_SMOKE_NTHR JOINT_SGD_SMOKE_NTHR 64)"
   echo "Selected smoke cases: ${selected_cases[*]}"
+  echo "Failure policy: $([[ "$report_only" == yes ]] && echo report-only || echo fail-fast)"
+  echo "Shared stage-3 checkpoint: $shared_stage3"
   joint2d_sgd_print_stage_policy alternate
   exit 0
 fi
@@ -230,9 +370,26 @@ echo "Workflow root: $workflow_root"
 echo "Project relative path: $project_rel"
 echo "ncls=$ncls mskdiam=$mskdiam nthr=$nthr"
 echo "Selected smoke cases: ${selected_cases[*]}"
+echo "Failure policy: $([[ "$report_only" == yes ]] && echo report-only || echo fail-fast)"
+echo "Shared stage-3 checkpoint: $shared_stage3"
 
+passed_cases=()
+failed_cases=()
 for case_name in "${selected_cases[@]}"; do
-  run_selected_case "$case_name"
+  if [[ "$shared_stage3" == yes && \
+        ( "$case_name" == stage4_alternate_balance || "$case_name" == stage4_alternate_assignment_only ) ]]; then
+    continue
+  fi
+  record_case_result "$case_name" run_selected_case "$case_name"
 done
 
+if [[ "$shared_stage3" == yes ]] && \
+    { case_is_selected stage4_alternate_balance || case_is_selected stage4_alternate_assignment_only; }; then
+  run_selected_shared_pair
+fi
+
+echo "joint2D-SGD smoke validation summary: PASS=${passed_cases[*]:-none} FAIL=${failed_cases[*]:-none}"
 echo "joint2D-SGD smoke validation complete: $scratch_root"
+if [[ "${#failed_cases[@]}" -gt 0 && "$report_only" != yes ]]; then
+  exit 1
+fi

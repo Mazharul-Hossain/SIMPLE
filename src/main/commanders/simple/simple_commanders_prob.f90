@@ -360,6 +360,10 @@ contains
                 &ptcl_imgs(1:batchsz), ptcl_match_imgs, ptcl_match_imgs_pad)
             call eulprob_obj_part%fill_tab_range(batch_start, batch_end)
         end do
+        ! Diagnostics must describe the complete sampled table, not individual
+        ! matcher-memory batches.  For the smoke case this is one 4,393-particle
+        ! record per iteration rather than two unrelated half-batch records.
+        call eulprob_obj_part%write_likelihood_diag(1, nptcls)
         ! write the 2D probability table
         fname = string(DIST_FBODY)//int2str_pad(params%part,params%numlen)//'.dat'
         call eulprob_obj_part%write_tab(fname)

@@ -132,13 +132,41 @@ check_stage3_shadow_assignment() {
   ' "$log_file"; then
     fail 'missing or empty observational assignment diagnostics during stage 3'
   fi
+  if ! awk '
+    /ABINITIO2D SGD STAGE: stage=terminal/ { stage = 99; next }
+    /ABINITIO2D SGD STAGE: stage=[0-9]+/ {
+      line = $0
+      sub(/^.*stage=/, "", line)
+      sub(/ .*/, "", line)
+      stage = line + 0
+      next
+    }
+    /PROB_ALIGN2D: sampled [0-9]+ particles/ && stage == 3 {
+      expected = $0
+      sub(/^.*sampled /, "", expected)
+      sub(/ particles.*$/, "", expected)
+      next
+    }
+    /JOINT2D SGD SHADOW SUPPORT:/ && stage == 3 {
+      iteration = samples = ""
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^iteration=/) { iteration = $i; sub(/^iteration=/, "", iteration) }
+        if ($i ~ /^samples=/)   { samples   = $i; sub(/^samples=/,   "", samples) }
+      }
+      if (expected == "" || samples + 0 != expected + 0 || ++seen[iteration] != 1) exit 1
+      complete++
+    }
+    END { if (complete == 0) exit 1 }
+  ' "$log_file"; then
+    fail 'stage-3 shadow diagnostics were split across half-batches or duplicated instead of covering the full sampled table once'
+  fi
 }
 
 check_assignment_only_ablation() {
-  require_contains 'JOINT2D SGD ABLATION: mode=assignment_only assignments=active cavg_update=preserve_previous' \
+  require_contains 'JOINT2D SGD ABLATION: mode=assignment_only assignments=active cavg_update=freeze_restored_output' \
     'assignment-only runtime marker'
   if ! awk '
-    /CAVG SGD UPDATE: joint assignment-only preserve/ {
+    /CAVG SGD UPDATE: joint assignment-only output freeze/ {
       seen++
       updated = preserved = ""
       for (i = 1; i <= NF; i++) {
@@ -151,6 +179,48 @@ check_assignment_only_ablation() {
   ' "$log_file"; then
     fail 'assignment-only ablation changed a class image or lacked preservation diagnostics'
   fi
+  require_contains 'CAVG SGD OUTPUT INVARIANT:' 'assignment-only restored-output invariant'
+  if grep -F 'CAVG SGD OUTPUT INVARIANT:' "$log_file" | grep -Fvq 'compatible=T'; then
+    fail 'assignment-only restored-output invariant failed'
+  fi
+}
+
+check_assignment_only_mrc_invariant() {
+  local run_dir="$1"
+  local input_ref output_ref suffix input_path output_path
+  local input_hash output_hash
+  local compared=0
+  [[ -n "$run_dir" ]] || return 0
+  while read -r input_ref output_ref; do
+    [[ -n "$input_ref" && -n "$output_ref" ]] || continue
+    for suffix in '' '_even' '_odd'; do
+      input_path="$(find "$run_dir" -type f -name "$(basename -- "${input_ref%.mrc}${suffix}.mrc")" -print -quit)"
+      output_path="$(find "$run_dir" -type f -name "$(basename -- "${output_ref%.mrc}${suffix}.mrc")" -print -quit)"
+      [[ -n "$input_path" && -n "$output_path" ]] || \
+        fail "assignment-only MRC invariant could not locate ${input_ref%.mrc}${suffix}.mrc or ${output_ref%.mrc}${suffix}.mrc"
+      input_hash="$(tail -c +1025 "$input_path" | sha256sum | awk '{print $1}')"
+      output_hash="$(tail -c +1025 "$output_path" | sha256sum | awk '{print $1}')"
+      if [[ "$(wc -c <"$input_path")" -ne "$(wc -c <"$output_path")" || \
+            "$input_hash" != "$output_hash" ]]; then
+        fail "assignment-only MRC payload changed: $input_path -> $output_path"
+      fi
+      compared=$((compared + 1))
+    done
+  done < <(awk '
+    /JOINT2D SGD REFS IN: cluster2D/ {
+      input = $0
+      sub(/^.*refs=/, "", input)
+      next
+    }
+    /JOINT2D SGD REFS OUT: cluster2D/ && input != "" {
+      output = $0
+      sub(/^.*refs=/, "", output)
+      sub(/ .*/, "", output)
+      print input, output
+      input = ""
+    }
+  ' "$log_file")
+  [[ "$compared" -gt 0 ]] || fail 'assignment-only MRC invariant found no joint input/output reference pairs'
 }
 
 check_likelihood_unit_continuity() {
@@ -411,6 +481,8 @@ check_smoke_joint_log() {
   require_contains 'CAVG SGD NORMS' 'CAVG norm diagnostics'
   require_contains 'CAVG SGD TRUST' 'CAVG trust-bound diagnostics'
   require_contains 'CAVG SGD RESTORE' 'CAVG restoration diagnostics'
+  require_contains 'CAVG SGD REPRESENTATION: old_space=restored_real batch_space=restored_real preconditioner=identity compatible=T' \
+    'restored-output representation/unit invariant'
   check_likelihood_unit_continuity
   check_refinement_deltas
   check_final_loss_scale

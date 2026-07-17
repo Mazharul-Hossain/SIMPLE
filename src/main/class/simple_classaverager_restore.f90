@@ -226,12 +226,16 @@ contains
         integer,      intent(in)    :: icls
         type(image) :: tmp_img
         complex, allocatable :: cmat(:,:,:)
+        real,    allocatable :: rmat(:,:,:)
+        rmat = img%get_rmat()
+        cavg_stack%rmat(:,:,icls) = rmat(:,:,1)
         call tmp_img%copy(img)
         call tmp_img%fft
         cmat = tmp_img%get_cmat()
         cavg_stack%cmat(:,:,icls)  = cmat(:,:,1)
         cavg_stack%ctfsq(:,:,icls) = 1.0
         cavg_stack%slices(icls)%ft = .true.
+        if( allocated(rmat) ) deallocate(rmat)
         if( allocated(cmat) ) deallocate(cmat)
         call tmp_img%kill
     end subroutine copy_image_ft_to_stack
@@ -326,13 +330,12 @@ contains
     module subroutine cavger_apply_sgd_update()
         if( p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'joint') .and. p_ptr%l_prob_align_mode )then
             if( .not. l_joint_cavg_sgd_pending ) return
-            if( p_ptr%l_sgd_assignment_only )then
-                call preserve_assignment_only_cavgs
-            else
-                call apply_joint_cavg_sgd_update
-            endif
-            l_joint_cavg_sgd_pending = .false.
-            call cavg_sgd_opt%write_diag('joint preconditioned update applied')
+            ! The previous reference is already a fully restored image, whereas cavgs
+            ! still contains raw Fourier numerator/CTF-density statistics here.  Mixing
+            ! those representations before restoration attenuates even an eta=0/no-op
+            ! update.  Defer the joint update until cavger_restore_cavgs has restored the
+            ! current batch into the same real-space representation as the old reference.
+            call cavg_sgd_opt%write_diag('joint update deferred until restored output space')
             return
         endif
         if( .not. (p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'cavg_only')) ) return
@@ -345,25 +348,46 @@ contains
         call cavg_sgd_opt%write_diag('cavg_only sufficient statistics blended')
     end subroutine cavger_apply_sgd_update
 
-    subroutine apply_joint_cavg_sgd_update()
-        type(cavg_sgd_diagnostics) :: update_diag
+    subroutine apply_joint_cavg_output_update()
+        type(cavg_sgd_diagnostics) :: update_diag, merged_diag
+        real, allocatable :: unit_precond(:,:,:)
+        real :: support, support_sq, effective_support
         integer :: icls
         if( cavgs_joint_prev%ncls /= ncls ) THROW_HARD('joint CAVG SGD previous references are unavailable')
+        if( size(cavgs_joint_prev%even%rmat,1) /= size(cavgs%even%rmat,1) .or.&
+            &size(cavgs_joint_prev%even%rmat,2) /= size(cavgs%even%rmat,2) )then
+            THROW_HARD('joint CAVG SGD restored-output representations have incompatible dimensions')
+        endif
+        allocate(unit_precond(size(cavgs%even%rmat,1),size(cavgs%even%rmat,2),1), source=1.0)
         call update_diag%reset
+        call merged_diag%reset
         do icls = 1,ncls
-            call apply_joint_cavg_side(cavgs_joint_prev%even, cavgs%even, 1, icls, update_diag)
-            call apply_joint_cavg_side(cavgs_joint_prev%odd,  cavgs%odd,  2, icls, update_diag)
+            call apply_joint_cavg_output_side(cavgs_joint_prev%even, cavgs%even, 1, icls,&
+                &unit_precond, update_diag)
+            call apply_joint_cavg_output_side(cavgs_joint_prev%odd, cavgs%odd, 2, icls,&
+                &unit_precond, update_diag)
+            support = sum(eo_wsupport(:,icls))
+            support_sq = sum(eo_wsupport_sq(:,icls))
+            effective_support = 0.0
+            if( support_sq > TINY ) effective_support = support * support / support_sq
+            call apply_joint_cavg_output_values(cavgs_joint_prev%merged, cavgs%merged, icls,&
+                &support, effective_support, unit_precond, merged_diag)
         enddo
-        call cavg_sgd_opt%write_update_diag('joint preconditioned update', update_diag)
-        if( update_diag%n_nonfinite > 0 )then
-            THROW_HARD('joint CAVG SGD update produced nonfinite diagnostics')
+        deallocate(unit_precond)
+        call cavg_sgd_opt%write_update_diag('joint output-space update', update_diag)
+        call cavg_sgd_opt%write_update_diag('joint output-space merged update', merged_diag)
+        if( update_diag%n_nonfinite > 0 .or. merged_diag%n_nonfinite > 0 )then
+            THROW_HARD('joint CAVG SGD restored-output update produced nonfinite diagnostics')
         endif
-        if( update_diag%n_updated + update_diag%n_preserved == 0 )then
-            THROW_HARD('joint CAVG SGD update did not evaluate any half-classes')
+        if( update_diag%n_updated + update_diag%n_preserved /= 2 * ncls )then
+            THROW_HARD('joint CAVG SGD restored-output update did not evaluate every half-class')
         endif
-    end subroutine apply_joint_cavg_sgd_update
+        write(logfhandle,'(A,1X,A,1X,A,1X,A,1X,A,L1)')&
+            &'>>> CAVG SGD REPRESENTATION:', 'old_space=restored_real', 'batch_space=restored_real',&
+            &'preconditioner=identity', 'compatible=', .true.
+    end subroutine apply_joint_cavg_output_update
 
-    subroutine preserve_assignment_only_cavgs()
+    subroutine preserve_assignment_only_output()
         type(cavg_sgd_diagnostics) :: update_diag
         real :: support, support_sq, effective_support
         integer :: icls, ieo
@@ -376,60 +400,111 @@ contains
                 effective_support = 0.0
                 if( support_sq > TINY ) effective_support = support * support / support_sq
                 if( ieo == 1 )then
-                    call preserve_joint_cavg_side(cavgs_joint_prev%even, cavgs%even, ieo, icls)
+                    call copy_joint_cavg_output(cavgs_joint_prev%even, cavgs%even, icls)
                 else
-                    call preserve_joint_cavg_side(cavgs_joint_prev%odd, cavgs%odd, ieo, icls)
+                    call copy_joint_cavg_output(cavgs_joint_prev%odd, cavgs%odd, icls)
                 endif
                 call update_diag%record_preserved(support=support, effective_support=effective_support)
             enddo
+            call copy_joint_cavg_output(cavgs_joint_prev%merged, cavgs%merged, icls)
         enddo
         write(logfhandle,'(A,I0,1X,A,I0,1X,A)')&
-            &'>>> JOINT2D SGD ABLATION: mode=assignment_only assignments=active cavg_update=preserve_previous iter=',&
+            &'>>> JOINT2D SGD ABLATION: mode=assignment_only assignments=active cavg_update=freeze_restored_output iter=',&
             &p_ptr%which_iter, 'preserved_half_classes=', update_diag%n_preserved,&
-            &'class images unchanged at this joint update boundary'
-        call cavg_sgd_opt%write_update_diag('joint assignment-only preserve', update_diag)
-    end subroutine preserve_assignment_only_cavgs
+            &'class images bypassed density, merge, and gridding restoration after the freeze'
+        write(logfhandle,'(A,1X,A,1X,A,1X,A,1X,A,L1)')&
+            &'>>> CAVG SGD REPRESENTATION:', 'old_space=restored_real', 'batch_space=restored_real',&
+            &'preconditioner=identity', 'compatible=', .true.
+        call cavg_sgd_opt%write_update_diag('joint assignment-only output freeze', update_diag)
+        call write_assignment_only_output_invariant
+    end subroutine preserve_assignment_only_output
 
-    subroutine apply_joint_cavg_side( prev_stack, batch_stack, ieo, icls, update_diag )
+    subroutine apply_joint_cavg_output_side( prev_stack, batch_stack, ieo, icls, unit_precond, update_diag )
         class(stack), intent(in)    :: prev_stack
         class(stack), intent(inout) :: batch_stack
         integer,      intent(in)    :: ieo, icls
+        real,         intent(in)    :: unit_precond(:,:,:)
         type(cavg_sgd_diagnostics), intent(inout) :: update_diag
         real :: support, support_sq, effective_support
-        logical :: accepted
         support = eo_wsupport(ieo,icls)
         support_sq = eo_wsupport_sq(ieo,icls)
         effective_support = 0.0
         if( support_sq > TINY ) effective_support = support * support / support_sq
-        if( support >= p_ptr%sgd_cavg_min_support .and. &
+        call apply_joint_cavg_output_values(prev_stack, batch_stack, icls, support,&
+            &effective_support, unit_precond, update_diag)
+    end subroutine apply_joint_cavg_output_side
+
+    subroutine apply_joint_cavg_output_values( prev_stack, batch_stack, icls, support, effective_support,&
+        &unit_precond, update_diag )
+        class(stack), intent(in)    :: prev_stack
+        class(stack), intent(inout) :: batch_stack
+        integer,      intent(in)    :: icls
+        real,         intent(in)    :: support, effective_support
+        real,         intent(in)    :: unit_precond(:,:,:)
+        type(cavg_sgd_diagnostics), intent(inout) :: update_diag
+        logical :: accepted
+        if( support >= p_ptr%sgd_cavg_min_support .and.&
             &effective_support >= p_ptr%sgd_cavg_min_support )then
-            call cavg_sgd_opt%preconditioned_cavg_update_inplace( &
-                &prev_stack%cmat(:,:,icls:icls), batch_stack%ctfsq(:,:,icls:icls), &
-                &batch_stack%cmat(:,:,icls:icls), update_diag, support,&
-                &throw_on_nonfinite=.true., effective_support=effective_support, accepted=accepted)
-            if( accepted )then
-                batch_stack%slices(icls)%ft = .true.
-            else
-                call preserve_joint_cavg_side(prev_stack, batch_stack, ieo, icls)
-            endif
+            call cavg_sgd_opt%preconditioned_cavg_update_inplace(&
+                &prev_stack%rmat(:,:,icls:icls), unit_precond, batch_stack%rmat(:,:,icls:icls),&
+                &update_diag, support, throw_on_nonfinite=.true., effective_support=effective_support,&
+                &accepted=accepted)
+            if( .not. accepted ) call copy_joint_cavg_output(prev_stack, batch_stack, icls)
         else
-            call preserve_joint_cavg_side(prev_stack, batch_stack, ieo, icls)
+            call copy_joint_cavg_output(prev_stack, batch_stack, icls)
             call update_diag%record_preserved(low_support=.true., support=support,&
                 &effective_support=effective_support)
         endif
-    end subroutine apply_joint_cavg_side
+        batch_stack%slices(icls)%ft = .false.
+    end subroutine apply_joint_cavg_output_values
 
-    subroutine preserve_joint_cavg_side( prev_stack, batch_stack, ieo, icls )
+    subroutine copy_joint_cavg_output( prev_stack, output_stack, icls )
         class(stack), intent(in)    :: prev_stack
-        class(stack), intent(inout) :: batch_stack
-        integer,      intent(in)    :: ieo, icls
-        batch_stack%cmat(:,:,icls)  = prev_stack%cmat(:,:,icls)
-        batch_stack%ctfsq(:,:,icls) = 1.0
-        batch_stack%slices(icls)%ft = .true.
-        eo_wsupport(ieo,icls) = 1.0
-        eo_wsupport_sq(ieo,icls) = 1.0
-        eo_pops(ieo,icls) = max(1, eo_pops(ieo,icls))
-    end subroutine preserve_joint_cavg_side
+        class(stack), intent(inout) :: output_stack
+        integer,      intent(in)    :: icls
+        output_stack%rmat(:,:,icls) = prev_stack%rmat(:,:,icls)
+        output_stack%slices(icls)%ft = .false.
+    end subroutine copy_joint_cavg_output
+
+    subroutine write_assignment_only_output_invariant()
+        real(dp) :: diff_sq, old_sq, new_sq, rel_error, norm_ratio, max_rel_error, max_norm_error
+        integer :: icls
+        max_rel_error = 0.0_dp
+        max_norm_error = 0.0_dp
+        do icls = 1,ncls
+            call accumulate_output_invariant(cavgs_joint_prev%even, cavgs%even, icls, diff_sq, old_sq, new_sq)
+            rel_error = sqrt(diff_sq / max(old_sq, DTINY))
+            norm_ratio = sqrt(new_sq / max(old_sq, DTINY))
+            max_rel_error = max(max_rel_error, rel_error)
+            max_norm_error = max(max_norm_error, abs(norm_ratio - 1.0_dp))
+            call accumulate_output_invariant(cavgs_joint_prev%odd, cavgs%odd, icls, diff_sq, old_sq, new_sq)
+            rel_error = sqrt(diff_sq / max(old_sq, DTINY))
+            norm_ratio = sqrt(new_sq / max(old_sq, DTINY))
+            max_rel_error = max(max_rel_error, rel_error)
+            max_norm_error = max(max_norm_error, abs(norm_ratio - 1.0_dp))
+            call accumulate_output_invariant(cavgs_joint_prev%merged, cavgs%merged, icls, diff_sq, old_sq, new_sq)
+            rel_error = sqrt(diff_sq / max(old_sq, DTINY))
+            norm_ratio = sqrt(new_sq / max(old_sq, DTINY))
+            max_rel_error = max(max_rel_error, rel_error)
+            max_norm_error = max(max_norm_error, abs(norm_ratio - 1.0_dp))
+        enddo
+        write(logfhandle,'(A,1X,A,ES12.4,1X,A,ES12.4,1X,A,ES12.4,1X,A,L1)')&
+            &'>>> CAVG SGD OUTPUT INVARIANT:', 'max_rel_error=', max_rel_error,&
+            &'max_norm_ratio_error=', max_norm_error, 'tolerance=', 1.0e-7_dp,&
+            &'compatible=', max_rel_error <= 1.0e-7_dp .and. max_norm_error <= 1.0e-7_dp
+        if( max_rel_error > 1.0e-7_dp .or. max_norm_error > 1.0e-7_dp )then
+            THROW_HARD('assignment-only restored-output freeze invariant failed')
+        endif
+    end subroutine write_assignment_only_output_invariant
+
+    subroutine accumulate_output_invariant( old_stack, new_stack, icls, diff_sq, old_sq, new_sq )
+        class(stack), intent(in) :: old_stack, new_stack
+        integer,      intent(in) :: icls
+        real(dp),     intent(out) :: diff_sq, old_sq, new_sq
+        diff_sq = sum((real(new_stack%rmat(:,:,icls),dp) - real(old_stack%rmat(:,:,icls),dp))**2)
+        old_sq  = sum(real(old_stack%rmat(:,:,icls),dp)**2)
+        new_sq  = sum(real(new_stack%rmat(:,:,icls),dp)**2)
+    end subroutine accumulate_output_invariant
 
     subroutine cavger_update_sums( nptcls, ptcl_imgs )
         integer,      intent(in)    :: nptcls
@@ -706,6 +781,35 @@ contains
             call b_ptr%clsfrcs%set_frc(icls, frcs(:,icls), 1)
         end do
         !$omp end parallel do
+        if( l_joint_cavg_sgd )then
+            if( .not. l_joint_cavg_sgd_pending )then
+                THROW_HARD('joint CAVG SGD restored-output update was not prepared')
+            endif
+            if( p_ptr%l_sgd_assignment_only )then
+                call preserve_assignment_only_output
+            else
+                call apply_joint_cavg_output_update
+            endif
+            l_joint_cavg_sgd_pending = .false.
+            ! The first FRC pass is needed by regularization and low-resolution
+            ! even/odd merging.  Recompute it after the final-space SGD update so
+            ! the written FRC describes the images that will actually be written.
+            !$omp parallel do default(shared) private(icls,ithr) schedule(static) proc_bind(close)
+            do icls = 1,ncls
+                ithr = omp_get_thread_num() + 1
+                even_tmp%rmat(:,:,ithr) = cavgs%even%rmat(:,:,icls)
+                odd_tmp%rmat(:,:,ithr)  = cavgs%odd%rmat(:,:,icls)
+                even_tmp%slices(ithr)%ft = .false.
+                odd_tmp%slices(ithr)%ft  = .false.
+                call even_tmp%softmask(ithr)
+                call odd_tmp%softmask(ithr)
+                call even_tmp%fft(ithr)
+                call odd_tmp%fft(ithr)
+                call even_tmp%frc(odd_tmp, ithr, frcs(:,icls))
+                call b_ptr%clsfrcs%set_frc(icls, frcs(:,icls), 1)
+            enddo
+            !$omp end parallel do
+        endif
         if( l_joint_cavg_sgd ) call write_joint_restore_diag(frcs)
         ! write FRCs
         call b_ptr%clsfrcs%write(frcs_fname)
@@ -946,7 +1050,7 @@ contains
         if( p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'joint') .and. p_ptr%l_prob_align_mode .and.&
             &l_joint_cavg_sgd_pending )then
             call cavger_apply_sgd_update
-            write(logfhandle,'(A,I0)') '>>> JOINT2D SGD DISTR REDUCE: master applied joint CAVG SGD update nparts=',&
+            write(logfhandle,'(A,I0)') '>>> JOINT2D SGD DISTR REDUCE: master scheduled restored-output CAVG update nparts=',&
                 &p_ptr%nparts
         endif
         ! Restoration of e/o/merged classes
