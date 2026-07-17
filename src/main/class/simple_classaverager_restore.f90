@@ -227,11 +227,30 @@ contains
         type(image) :: tmp_img
         complex, allocatable :: cmat(:,:,:)
         real,    allocatable :: rmat(:,:,:)
+        integer :: img_ldim(3), stack_ldim(2)
+        img_ldim = img%get_ldim()
+        stack_ldim = [size(cavg_stack%rmat,1), size(cavg_stack%rmat,2)]
+        if( any(img_ldim(1:2) /= stack_ldim) )then
+            THROW_HARD('joint CAVG SGD snapshot logical dimensions do not match the destination stack')
+        endif
         rmat = img%get_rmat()
-        cavg_stack%rmat(:,:,icls) = rmat(:,:,1)
+        if( size(rmat,1) < img_ldim(1) .or. size(rmat,2) < img_ldim(2) )then
+            THROW_HARD('joint CAVG SGD snapshot real allocation is smaller than its logical dimensions')
+        endif
+        ! image%rmat uses the FFTW in-place physical layout: for a logical
+        ! 128-pixel first dimension the allocation is 130 pixels wide.  The
+        ! stack stores only the logical image.  Copying the whole allocation
+        ! therefore either fails (130/128) or mixes padding into the frozen
+        ! output; copy the logical region explicitly and without an FFT
+        ! round-trip so assignment-only can remain bit-preserving.
+        cavg_stack%rmat(:,:,icls) = rmat(1:img_ldim(1),1:img_ldim(2),1)
         call tmp_img%copy(img)
         call tmp_img%fft
         cmat = tmp_img%get_cmat()
+        if( size(cmat,1) /= size(cavg_stack%cmat,1) .or.&
+            &size(cmat,2) /= size(cavg_stack%cmat,2) )then
+            THROW_HARD('joint CAVG SGD snapshot Fourier dimensions do not match the destination stack')
+        endif
         cavg_stack%cmat(:,:,icls)  = cmat(:,:,1)
         cavg_stack%ctfsq(:,:,icls) = 1.0
         cavg_stack%slices(icls)%ft = .true.
