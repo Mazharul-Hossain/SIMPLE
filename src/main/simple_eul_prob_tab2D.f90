@@ -126,6 +126,7 @@ contains
         self%nptcls = size(pinds)
         allocate(self%pinds(self%nptcls),source=pinds)
         allocate(self%assgn_map(self%nptcls))
+        allocate(self%diag_nll_scales(self%nptcls), source=0.)
         do i = 1,self%nptcls
             self%assgn_map(i)%pind   = self%pinds(i)
             self%assgn_map(i)%icls   = 0
@@ -1523,10 +1524,17 @@ contains
         class(eul_prob_tab2D), intent(in) :: self
         class(string),         intent(in) :: binfname
         integer :: funit, io_stat, headsz
+        integer(int64) :: addr
         headsz = sizeof(self%nptcls)
+        if( .not. allocated(self%diag_nll_scales) )&
+            &THROW_HARD('eul_prob_tab2D%write_assignment; Gaussian-NLL scales are not allocated')
+        if( size(self%diag_nll_scales) /= self%nptcls )&
+            &THROW_HARD('eul_prob_tab2D%write_assignment; Gaussian-NLL scale size mismatch')
         call fopen(funit, binfname, access='STREAM', action='WRITE', status='REPLACE', iostat=io_stat)
         write(unit=funit, pos=1)          self%nptcls
         write(unit=funit, pos=headsz + 1) self%assgn_map
+        addr = int(headsz,int64) + int(sizeof(self%assgn_map),int64) + 1_int64
+        write(unit=funit, pos=addr) self%diag_nll_scales
         call fclose(funit)
     end subroutine write_assignment
 
@@ -1595,8 +1603,10 @@ contains
         class(eul_prob_tab2D), intent(inout) :: self
         class(string),         intent(in)    :: binfname
         type(ptcl_ref), allocatable :: assgn_glob(:)
+        real,           allocatable :: nll_scales_glob(:)
         integer, allocatable :: pind2glob(:), pinds_glob(:)
         integer :: funit, io_stat, nptcls_glob, headsz, i_loc, i_glob, pind, max_pind
+        integer(int64) :: addr, file_bytes, scale_bytes
         headsz = sizeof(nptcls_glob)
         if( .not. file_exists(binfname) )then
             THROW_HARD('file '//binfname%to_char()//' does not exist!')
@@ -1606,12 +1616,20 @@ contains
         call fileiochk('simple_eul_prob_tab2D; read_assignment; file: '//binfname%to_char(), io_stat)
         read(unit=funit, pos=1) nptcls_glob
         allocate(assgn_glob(nptcls_glob))
+        allocate(nll_scales_glob(nptcls_glob), source=0.)
         read(unit=funit, pos=headsz + 1) assgn_glob
+        addr = int(headsz,int64) + int(sizeof(assgn_glob),int64) + 1_int64
+        scale_bytes = int(sizeof(nll_scales_glob),int64)
+        inquire(unit=funit, size=file_bytes)
+        if( file_bytes >= addr + scale_bytes - 1_int64 ) read(unit=funit, pos=addr) nll_scales_glob
         call fclose(funit)
+        if( .not. allocated(self%diag_nll_scales) ) allocate(self%diag_nll_scales(self%nptcls), source=0.)
+        if( size(self%diag_nll_scales) /= self%nptcls )&
+            &THROW_HARD('eul_prob_tab2D%read_assignment; Gaussian-NLL scale size mismatch')
         pinds_glob = assgn_glob(:)%pind
         call build_pind_lookup(pinds_glob, self%pinds, pind2glob, max_pind)
         if( max_pind < 1 )then
-            deallocate(assgn_glob, pind2glob, pinds_glob)
+            deallocate(assgn_glob, nll_scales_glob, pind2glob, pinds_glob)
             return
         endif
         !$omp parallel do default(shared) proc_bind(close) schedule(static) private(i_loc,i_glob,pind)
@@ -1619,10 +1637,21 @@ contains
             pind = self%pinds(i_loc)
             if( pind < 1 .or. pind > max_pind ) cycle
             i_glob = pind2glob(pind)
-            if( i_glob > 0 ) self%assgn_map(i_loc) = assgn_glob(i_glob)
+            if( i_glob > 0 )then
+                self%assgn_map(i_loc) = assgn_glob(i_glob)
+                self%diag_nll_scales(i_loc) = nll_scales_glob(i_glob)
+            endif
         end do
         !$omp end parallel do
-        deallocate(assgn_glob, pind2glob, pinds_glob)
+        if( trim(self%p_ptr%sgd_likelihood_units) == 'gaussian_nll' )then
+            if( any(.not. ieee_is_finite(self%diag_nll_scales)) .or. any(self%diag_nll_scales <= 0.) )then
+                THROW_HARD('eul_prob_tab2D%read_assignment; invalid transported Gaussian-NLL scale')
+            endif
+            write(logfhandle,'(A,1X,A,I0,1X,A,ES12.4,1X,A,ES12.4)')&
+                &'>>> JOINT2D SGD SCORE SCALE TRANSPORT:', 'samples=', self%nptcls,&
+                &'min=', minval(self%diag_nll_scales), 'max=', maxval(self%diag_nll_scales)
+        endif
+        deallocate(assgn_glob, nll_scales_glob, pind2glob, pinds_glob)
     end subroutine read_assignment
 
     subroutine init_eval2D_sparse_ws( self, nclasses, nrots, smpl_ncls, nthr )

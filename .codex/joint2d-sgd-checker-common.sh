@@ -291,6 +291,29 @@ check_posterior_mode() {
 
 check_score_calibration() {
   grep -Fq 'JOINT2D SGD SCORE CALIBRATION:' "$log_file" || return 0
+  require_contains 'JOINT2D SGD SCORE SCALE TRANSPORT:' 'Gaussian-NLL assignment scale transport diagnostics'
+  if ! awk '
+    function value_after_key(i, prefix, value) {
+      value = $i
+      sub(prefix, "", value)
+      if (value == "" && i < NF) value = $(i + 1)
+      return value
+    }
+    /JOINT2D SGD SCORE SCALE TRANSPORT:/ {
+      samples = min_scale = max_scale = ""
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^samples=/) samples = value_after_key(i, "^samples=")
+        if ($i ~ /^min=/) min_scale = value_after_key(i, "^min=")
+        if ($i ~ /^max=/) max_scale = value_after_key(i, "^max=")
+      }
+      if (samples == "" || min_scale == "" || max_scale == "" || samples + 0 < 1 ||
+          min_scale + 0 <= 0 || max_scale + 0 < min_scale + 0) exit 1
+      seen++
+    }
+    END { if (seen == 0) exit 1 }
+  ' "$log_file"; then
+    fail 'Gaussian-NLL assignment scale transport is invalid or unparseable'
+  fi
   if ! awk '
     /SCORE \[0,1\]/ && /AVG\/SDEV\/MIN\/MAX:/ {
       seen++
