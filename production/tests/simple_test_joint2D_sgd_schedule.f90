@@ -2,6 +2,7 @@ program simple_test_joint2D_sgd_schedule
 use simple_joint2D_sgd_schedule, only: joint2D_sgd_active_for_iteration,&
     &joint2D_sgd_active_for_policy, joint2D_sgd_activation_for_stage,&
     &joint2D_sgd_activation_valid, joint2D_sgd_batch_size,&
+    &joint2D_sgd_likelihood_units,&
     &JOINT2D_SGD_WARMUP_ITS, JOINT2D_SGD_ALTERNATE_UNTIL
 implicit none
 
@@ -25,6 +26,10 @@ do iter = 21, 30
     call require_true(joint2D_sgd_active_for_iteration(iter), 'iterations after 20 use joint SGD')
 end do
 call require_true(.not. joint2D_sgd_active_for_iteration(0), 'nonpositive iteration is not joint SGD')
+call require_true(trim(joint2D_sgd_likelihood_units(.false.)) == 'normalized',&
+    &'inactive schedule uses normalized assignment units')
+call require_true(trim(joint2D_sgd_likelihood_units(.true.)) == 'gaussian_nll',&
+    &'active schedule uses Gaussian-NLL assignment units')
 
 call require_true(joint2D_sgd_activation_valid('auto'), 'auto is a valid internal activation')
 call require_true(.not. joint2D_sgd_activation_valid('auto', .false.), 'auto is not a valid stage-4 mode')

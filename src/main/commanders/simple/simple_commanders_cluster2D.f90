@@ -35,7 +35,8 @@ contains
     subroutine exec_cluster2D( self, cline )
         use simple_cluster2D_strategy
         use simple_joint2D_sgd_schedule, only: joint2D_sgd_active_for_policy,&
-            &joint2D_sgd_batch_size, JOINT2D_SGD_WARMUP_ITS, JOINT2D_SGD_ALTERNATE_UNTIL
+            &joint2D_sgd_batch_size, joint2D_sgd_likelihood_units,&
+            &JOINT2D_SGD_WARMUP_ITS, JOINT2D_SGD_ALTERNATE_UNTIL
         class(commander_cluster2D), intent(inout) :: self
         class(cmdline),             intent(inout) :: cline
         class(cluster2D_strategy), allocatable    :: strategy
@@ -100,12 +101,20 @@ contains
                 params%sgd = 'no'
                 call cline%set('sgd', 'no')
             endif
+            ! sgd_likelihood_units is derived during initial parameter parsing, when
+            ! the requested joint mode is still active.  Keep it synchronized with
+            ! the per-iteration schedule so an inactive/alternating boundary reads
+            ! the ordinary normalized assignment instead of demanding NLL scales.
+            params%sgd_likelihood_units = joint2D_sgd_likelihood_units(&
+                &l_sgd_active .and. trim(params%sgd_mode) == 'joint')
+            call cline%set('sgd_likelihood_units', trim(params%sgd_likelihood_units))
             if( l_sgd_schedule )then
-                write(logfhandle,'(A,I0,1X,A,I0,1X,A,A,1X,A,A,1X,A,I0,1X,A,I0)')&
+                write(logfhandle,'(A,I0,1X,A,I0,1X,A,A,1X,A,A,1X,A,A,1X,A,I0,1X,A,I0)')&
                     &'>>> JOINT2D SGD SCHEDULE: iteration=', params%which_iter,&
                     &'stage_iter=', niters,&
                     &'policy=', trim(params%sgd_activation),&
                     &'mode=', merge('joint  ', 'sgd_off', l_sgd_active),&
+                    &'units=', trim(params%sgd_likelihood_units),&
                     &'warmup_through=', JOINT2D_SGD_WARMUP_ITS,&
                     &'alternate_through=', JOINT2D_SGD_ALTERNATE_UNTIL
             endif

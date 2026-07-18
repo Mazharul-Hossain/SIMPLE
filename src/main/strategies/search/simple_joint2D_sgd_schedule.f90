@@ -8,9 +8,19 @@ integer, parameter, public :: JOINT2D_SGD_ALTERNATE_UNTIL = 20
 integer, parameter :: SGD_ACTIVATION_LEN = 9
 public :: joint2D_sgd_active_for_iteration, joint2D_sgd_active_for_policy
 public :: joint2D_sgd_activation_for_stage, joint2D_sgd_activation_valid
-public :: joint2D_sgd_batch_size
+public :: joint2D_sgd_batch_size, joint2D_sgd_likelihood_units
 
 contains
+
+    pure function joint2D_sgd_likelihood_units( active ) result( units )
+        logical, intent(in) :: active
+        character(len=12) :: units
+        if( active )then
+            units = 'gaussian_nll'
+        else
+            units = 'normalized'
+        endif
+    end function joint2D_sgd_likelihood_units
 
     pure integer function joint2D_sgd_batch_size( nactive, batch_frac, max_samples ) result( batch_size )
         integer, intent(in) :: nactive, max_samples
