@@ -10,7 +10,7 @@ use simple_type_defs, only: OBJFUN_CC, OBJFUN_EUCLID, ptcl_ref
 implicit none
 
 public :: angle_sampling, build_pind_lookup, calc_athres, calc_num2sample
-public :: eulprob_corr_switch, eulprob_dist_switch
+public :: eulprob_corr_switch, eulprob_corr_switch_scaled, eulprob_dist_switch
 public :: materialize_seed_shift, read_seed_shift_table, write_seed_shift_table
 public :: sample_bounded_dist, sample_likelihood_dist, sample_power_dist, sample_likelihood_index
 public :: prob_candidate, prob_candidate_buffer, prob_candidate_store
@@ -305,6 +305,23 @@ contains
                 corr = exp(-dist)
         end select
     end function eulprob_corr_switch
+
+    elemental function eulprob_corr_switch_scaled( dist, cc_objfun, distance_scale ) result(corr)
+        real,    intent(in) :: dist, distance_scale
+        integer, intent(in) :: cc_objfun
+        real :: corr
+        corr = dist
+        select case(cc_objfun)
+            case(OBJFUN_CC)
+                corr = 1 - dist
+            case(OBJFUN_EUCLID)
+                if( distance_scale > TINY )then
+                    corr = exp(-dist / distance_scale)
+                else
+                    corr = 0.
+                endif
+        end select
+    end function eulprob_corr_switch_scaled
 
     function angle_sampling_1( pvec, athres_ub_in, prob_athres ) result( which )
         real,    intent(in)  :: pvec(:)        !< probabilities

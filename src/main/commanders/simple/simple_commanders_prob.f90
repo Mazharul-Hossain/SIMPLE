@@ -475,6 +475,8 @@ contains
         if( params%l_sgd .and. trim(params%sgd_mode) == 'joint' )then
             call joint_candidates%build_from_loc_tab(eulprob_obj_glob%loc_tab, params%sgd_topk, pinds=pinds)
             call joint_candidates%set_likelihood_scales(eulprob_obj_glob%diag_nll_scales)
+            write(logfhandle,'(A)')&
+                &'>>> JOINT2D SGD SCORE CALIBRATION: source=gaussian_nll output=exp(-nll/likelihood_scale) range=[0,1]'
             call joint_candidates%materialize_seed_shifts(eulprob_obj_glob%seed_shifts,&
                 &eulprob_obj_glob%seed_has_sh, params%l_doshift, eulprob_obj_glob%seed_nrots)
             allocate(base_shifts(2,eulprob_obj_glob%nptcls), source=0.)
@@ -483,6 +485,10 @@ contains
             end do
             call joint_candidates%set_base_shifts(base_shifts)
             call joint_candidates%write_shift_provenance_diag('prob_align2D provisional')
+            write(logfhandle,'(A,1X,A,A,1X,A,I0,1X,A,L1,1X,A)')&
+                &'>>> JOINT2D SGD POSTERIOR MODE:', 'context=', 'prob_align2D_provisional',&
+                &'inner_its=', params%sgd_inner_its, 'raw_likelihood=', params%sgd_inner_its == 0,&
+                &'temperature=none'
             call joint_candidates%optimize_logits(params%sgd_inner_its, params%sgd_eta_latent)
             call joint_candidates%evaluate_reliability(params%sgd_cavg_min_cands, params%sgd_cavg_max_entropy)
             call joint_candidates%apply_balance_prior(params%ncls, params%sgd_balance_weight, balance_diag)

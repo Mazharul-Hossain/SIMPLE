@@ -1,7 +1,7 @@
 !@descr: 2D strategy for probabilistic class assignment (precomputed by prob_align2D/prob_tab2D)
 module simple_strategy2D_prob
 use simple_pftc_srch_api
-use simple_eul_prob_tab_utils, only: eulprob_corr_switch
+use simple_eul_prob_tab_utils, only: eulprob_corr_switch, eulprob_corr_switch_scaled
 use simple_parameters,       only: parameters
 use simple_strategy2D,       only: strategy2D
 use simple_strategy2D_srch,  only: strategy2D_spec
@@ -36,7 +36,7 @@ contains
         class(strategy2D_prob), intent(inout) :: self
         class(oris),            intent(inout) :: os
         integer :: iptcl_map, icls, inpl, npeaks
-        real    :: corr, frac
+        real    :: corr, frac, likelihood_scale
         if( os%get_state(self%s%iptcl) > 0 )then
             if( .not. associated(self%spec%eulprob_obj_part2D) ) THROW_HARD('strategy2D_prob requires eulprob_obj_part2D')
             call self%s%prep4srch(os)
@@ -48,7 +48,22 @@ contains
             npeaks    = self%spec%eulprob_obj_part2D%assgn_map(iptcl_map)%npeaks
             if( frac <= 0. ) frac = 100.
             self%s%nrefs_eval = max(1, min(self%s%nrefs, nint(real(self%s%nrefs) * frac / 100.)))
-            corr      = eulprob_corr_switch(self%spec%eulprob_obj_part2D%assgn_map(iptcl_map)%dist, self%s%p_ptr%cc_objfun)
+            if( trim(self%s%p_ptr%sgd_likelihood_units) == 'gaussian_nll' .and.&
+                &self%s%p_ptr%cc_objfun == OBJFUN_EUCLID )then
+                if( .not. allocated(self%spec%eulprob_obj_part2D%diag_nll_scales) )then
+                    THROW_HARD('strategy2D_prob requires retained Gaussian-NLL scales')
+                endif
+                if( iptcl_map < 1 .or. iptcl_map > size(self%spec%eulprob_obj_part2D%diag_nll_scales) )then
+                    THROW_HARD('strategy2D_prob Gaussian-NLL scale index is out of range')
+                endif
+                likelihood_scale = self%spec%eulprob_obj_part2D%diag_nll_scales(iptcl_map)
+                if( likelihood_scale <= 0. ) THROW_HARD('strategy2D_prob encountered invalid Gaussian-NLL scale')
+                corr = eulprob_corr_switch_scaled(self%spec%eulprob_obj_part2D%assgn_map(iptcl_map)%dist,&
+                    &self%s%p_ptr%cc_objfun, likelihood_scale)
+            else
+                corr = eulprob_corr_switch(self%spec%eulprob_obj_part2D%assgn_map(iptcl_map)%dist,&
+                    &self%s%p_ptr%cc_objfun)
+            endif
             self%s%best_class = icls
             self%s%best_rot   = inpl
             self%s%best_corr  = corr

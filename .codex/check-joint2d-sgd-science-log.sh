@@ -40,6 +40,9 @@ case "$mode" in
     check_baseline_log
     ;;
   joint)
+    if [[ "$case_name" == assignment_only ]]; then
+      check_assignment_only_ablation
+    fi
     check_science_joint_log "$case_name" "$stage4_mode"
     ;;
   *)
@@ -48,4 +51,7 @@ case "$mode" in
 esac
 
 check_run_outputs "$run_dir" yes
+if [[ "$case_name" == assignment_only ]]; then
+  check_assignment_only_mrc_invariant "$run_dir"
+fi
 echo "joint2D-SGD science log check passed: $mode $log_file"

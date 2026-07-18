@@ -23,6 +23,7 @@ integer,          parameter :: RELIABILITY_EMPTY        = 1
 integer,          parameter :: RELIABILITY_TOO_FEW      = 2
 integer,          parameter :: RELIABILITY_HIGH_ENTROPY = 3
 real,             parameter :: BALANCE_EPS              = 1.0e-6
+real,             parameter :: POSTERIOR_SUPPORT_MIN    = 1.0e-3
 
 type :: joint2D_candidate
     integer :: pind = 0
@@ -250,7 +251,7 @@ contains
         integer :: iter, iptcl
 
         call require_allocated(self, 'latent-logit optimization requested before build/read')
-        if( inner_its < 1 ) THROW_HARD('joint2D_candidate_table: inner_its must be >= 1')
+        if( inner_its < 0 ) THROW_HARD('joint2D_candidate_table: inner_its must be >= 0')
         if( eta_latent <= 0. ) THROW_HARD('joint2D_candidate_table: eta_latent must be > 0')
 
         do iter = 1, inner_its
@@ -880,17 +881,17 @@ contains
         integer :: nptcls, topk, nonempty, empty_count, accepted_count, too_few_count, entropy_count
         integer :: fallback_count, soft_accepted_count, contributing_count, winner_churn_count, diag_iteration
         integer :: iptcl, irank, nc, gap21_count, gap31_count, logit_range_count
-        integer :: rank_weight_count, softmax_nonfinite
+        integer :: rank_weight_count, softmax_nonfinite, multi_support_count, effective_k_count, supported_candidates
         real    :: avg_ncand, avg_entropy, avg_initial_entropy, avg_norm_entropy, avg_winner_weight
         real    :: avg_initial_loss, avg_expected_loss, avg_loss_delta
         real    :: accepted_fraction, entropy_min, entropy_max, norm_entropy_min, norm_entropy_max
         real    :: winner_weight_min, winner_weight_max, fallback_fraction, effective_support
-        real    :: dist1, dist2, dist3, cand_dist, logit_min, logit_max, weight_sum, rank_weight_mean
+        real    :: dist1, dist2, dist3, cand_dist, logit_min, logit_max, weight_sum, weight_sq_sum, rank_weight_mean
         real    :: gap21_q(3), gap31_q(3), logit_range_q(3), norm_entropy_q(3), winner_weight_q(3)
-        real    :: weight_sum_q(3), rank_weight_q(3), particle_weight_q(3)
+        real    :: weight_sum_q(3), rank_weight_q(3), particle_weight_q(3), effective_k_q(3)
         logical :: global_fallback
         real, allocatable :: gap21_vals(:), gap31_vals(:), logit_range_vals(:)
-        real, allocatable :: weight_sum_vals(:), rank_weight_vals(:)
+        real, allocatable :: weight_sum_vals(:), rank_weight_vals(:), effective_k_vals(:)
 
         if( .not. allocated(self%ncand) )then
             write(logfhandle,'(A,1X,A)') '>>> JOINT2D SGD TOPK:', trim(label)//' table not allocated'
@@ -939,8 +940,11 @@ contains
         gap31_count = 0
         logit_range_count = 0
         softmax_nonfinite = 0
+        multi_support_count = 0
+        effective_k_count = 0
+        effective_k_q = 0.
         allocate(gap21_vals(nptcls), gap31_vals(nptcls), logit_range_vals(nptcls),&
-            &weight_sum_vals(nptcls), rank_weight_vals(nptcls), source=0.)
+            &weight_sum_vals(nptcls), rank_weight_vals(nptcls), effective_k_vals(nptcls), source=0.)
         if( nptcls > 0 ) avg_ncand = real(sum(self%ncand)) / real(nptcls)
         if( nptcls > 0 ) accepted_fraction = real(accepted_count) / real(nptcls)
         if( nonempty > 0 ) fallback_fraction = real(fallback_count) / real(nonempty)
@@ -968,6 +972,8 @@ contains
             logit_min = huge(1.0)
             logit_max = -huge(1.0)
             weight_sum = 0.
+            weight_sq_sum = 0.
+            supported_candidates = 0
             do irank = 1, nc
                 cand_dist = self%cand(irank,iptcl)%dist
                 if( cand_dist < dist1 )then
@@ -983,6 +989,9 @@ contains
                 logit_min = min(logit_min, self%cand(irank,iptcl)%logit)
                 logit_max = max(logit_max, self%cand(irank,iptcl)%logit)
                 weight_sum = weight_sum + self%cand(irank,iptcl)%weight
+                weight_sq_sum = weight_sq_sum + self%cand(irank,iptcl)%weight**2
+                if( self%cand(irank,iptcl)%weight >= POSTERIOR_SUPPORT_MIN )&
+                    &supported_candidates = supported_candidates + 1
                 if( .not. finite_real(self%cand(irank,iptcl)%weight) )&
                     &softmax_nonfinite = softmax_nonfinite + 1
             end do
@@ -990,6 +999,11 @@ contains
             logit_range_vals(logit_range_count) = logit_max - logit_min
             weight_sum_vals(logit_range_count) = weight_sum
             if( .not. finite_real(weight_sum) ) softmax_nonfinite = softmax_nonfinite + 1
+            if( supported_candidates >= 2 ) multi_support_count = multi_support_count + 1
+            if( weight_sq_sum > TINY )then
+                effective_k_count = effective_k_count + 1
+                effective_k_vals(effective_k_count) = 1.0 / weight_sq_sum
+            endif
             if( nc >= 2 )then
                 gap21_count = gap21_count + 1
                 gap21_vals(gap21_count) = dist2 - dist1
@@ -1005,6 +1019,7 @@ contains
         call diagnostic_quantiles(pack(self%norm_entropy, self%ncand > 0), nonempty, norm_entropy_q)
         call diagnostic_quantiles(pack(self%winner_weight, self%ncand > 0), nonempty, winner_weight_q)
         call diagnostic_quantiles(weight_sum_vals, logit_range_count, weight_sum_q)
+        call diagnostic_quantiles(effective_k_vals, effective_k_count, effective_k_q)
         call diagnostic_quantiles(pack(self%particle_weight, self%particle_weight > 0.),&
             &contributing_count, particle_weight_q)
         write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0)')&
@@ -1052,6 +1067,11 @@ contains
             &'logit_source=', 'negative_distance_plus_updates', 'samples=', logit_range_count,&
             &'weight_sum_p10=', weight_sum_q(1), 'weight_sum_p50=', weight_sum_q(2),&
             &'weight_sum_p90=', weight_sum_q(3), 'nonfinite=', softmax_nonfinite
+        write(logfhandle,'(A,1X,A,1X,A,ES10.3,1X,A,I0,1X,A,I0,1X,A,F8.5,1X,A,F8.5,1X,A,F8.5)')&
+            &'>>> JOINT2D SGD POSTERIOR SUPPORT:', trim(label), 'weight_threshold=', POSTERIOR_SUPPORT_MIN,&
+            &'multi_candidate=', multi_support_count, 'samples=', effective_k_count,&
+            &'effective_k_p10=', effective_k_q(1), 'effective_k_p50=', effective_k_q(2),&
+            &'effective_k_p90=', effective_k_q(3)
         do irank = 1, topk
             rank_weight_count = 0
             rank_weight_mean  = 0.
@@ -1069,7 +1089,7 @@ contains
                 &'mean=', rank_weight_mean, 'p10=', rank_weight_q(1), 'p50=', rank_weight_q(2),&
                 &'p90=', rank_weight_q(3)
         end do
-        deallocate(gap21_vals, gap31_vals, logit_range_vals, weight_sum_vals, rank_weight_vals)
+        deallocate(gap21_vals, gap31_vals, logit_range_vals, weight_sum_vals, rank_weight_vals, effective_k_vals)
     end subroutine write_diag
 
     subroutine diagnostic_quantiles( vals, nvals, quantiles )

@@ -85,9 +85,13 @@ rho = 4.0
 statsc = cmplx(40.0, 20.0, kind=c_float_complex)
 call opt%preconditioned_cavg_update_inplace(oldc, rho, statsc, diag, 7.5,&
     &effective_support=7.5, accepted=accepted)
-call require_true(.not. accepted, 'relative-step trust bound rejects an excessive class update')
-call require_true(diag%n_trust_rejected == 1, 'trust rejection is diagnosed')
-call require_close(real(statsc(1,1,1)), 40.0, 1.0e-6, 'rejected update leaves numerator unchanged')
+call require_true(accepted, 'relative-step trust bound clips and accepts a finite excessive class update')
+call require_true(diag%n_trust_rejected == 0, 'finite bounded update is not rejected')
+call require_true(diag%n_trust_clipped == 1, 'trust clipping is diagnosed')
+call require_close(diag%proposed_rel_step_max, 4.0, 1.0e-6, 'raw relative-step proposal is retained')
+call require_close(diag%applied_rel_step_max, 0.25, 1.0e-6, 'applied relative step equals the trust bound')
+call require_close(real(statsc(1,1,1)), 10.0, 1.0e-6, 'clipped update writes bounded numerator real part')
+call require_close(aimag(statsc(1,1,1)), 5.0, 1.0e-6, 'clipped update writes bounded numerator imaginary part')
 
 write(logfhandle,'(A)') 'simple_test_cavg_sgd_optimizer complete'
 

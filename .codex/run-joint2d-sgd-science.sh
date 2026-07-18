@@ -27,6 +27,10 @@ Default complete matrix (`profile=all`):
   latent_eta_0p1 / latent_eta_1p0
   cavg_eta_0p05 / cavg_eta_0p25
   balance_1p0
+  balance_eta_0p05
+  raw_likelihood
+  balance_topk5 / balance_topk5_raw
+  assignment_only
 
 The narrower `activation` and `hyperparameters` profiles remain available for
 targeted reruns. Every hyperparameter case uses `sgd_stage4_mode=alternate`.
@@ -104,6 +108,11 @@ science_all_cases=(
   cavg_eta_0p05
   cavg_eta_0p25
   balance_1p0
+  balance_eta_0p05
+  raw_likelihood
+  balance_topk5
+  balance_topk5_raw
+  assignment_only
 )
 science_activation_cases=( baseline stage4_off stage4_alternate stage4_on )
 science_hyperparameter_cases=(
@@ -115,6 +124,11 @@ science_hyperparameter_cases=(
   cavg_eta_0p05
   cavg_eta_0p25
   balance_1p0
+  balance_eta_0p05
+  raw_likelihood
+  balance_topk5
+  balance_topk5_raw
+  assignment_only
 )
 
 list_cases() {
@@ -333,6 +347,26 @@ run_selected_case() {
       # rescaling the Gaussian likelihood itself.
       run_case balance_1p0 "$rep" joint alternate 3 0.5 0.1 1.0 \
         sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=1.0 sgd_diag=yes sgd_shadow_stage3=yes
+      ;;
+    balance_eta_0p05)
+      run_case balance_eta_0p05 "$rep" joint alternate 3 0.5 0.05 1.0 \
+        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.05 sgd_eta_latent=0.5 sgd_balance_weight=1.0 sgd_diag=yes sgd_shadow_stage3=yes
+      ;;
+    raw_likelihood)
+      run_case raw_likelihood "$rep" joint alternate 3 0.5 0.1 0.0 \
+        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_inner_its=0 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes sgd_shadow_stage3=yes
+      ;;
+    balance_topk5)
+      run_case balance_topk5 "$rep" joint alternate 5 0.5 0.1 1.0 \
+        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=5 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=1.0 sgd_diag=yes sgd_shadow_stage3=yes
+      ;;
+    balance_topk5_raw)
+      run_case balance_topk5_raw "$rep" joint alternate 5 0.5 0.1 1.0 \
+        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=5 sgd_inner_its=0 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=1.0 sgd_diag=yes sgd_shadow_stage3=yes
+      ;;
+    assignment_only)
+      run_case assignment_only "$rep" joint alternate 3 0.5 0.1 0.0 \
+        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_assignment_only=yes sgd_diag=yes sgd_shadow_stage3=yes
       ;;
   esac
 }

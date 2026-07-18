@@ -64,7 +64,17 @@ NAS rule:
 EOF
 }
 
-smoke_cases=( baseline stage4_off stage4_alternate stage4_alternate_balance stage4_alternate_assignment_only )
+smoke_cases=(
+  baseline
+  stage4_off
+  stage4_alternate
+  stage4_alternate_balance
+  stage4_alternate_balance_eta0p05
+  stage4_alternate_raw_likelihood
+  stage4_alternate_balance_topk5
+  stage4_alternate_balance_topk5_raw
+  stage4_alternate_assignment_only
+)
 
 list_cases() {
   printf '%s\n' "${smoke_cases[@]}"
@@ -247,6 +257,28 @@ run_selected_case() {
       joint2d_sgd_make_joint_args alternate 3 0.5 0.1 1.0
       joint2d_sgd_print_stage_policy alternate
       run_configured_case stage4_alternate_balance "${joint2d_sgd_case_args[@]}"
+      ;;
+    stage4_alternate_balance_eta0p05)
+      joint2d_sgd_make_joint_args alternate 3 0.5 0.05 1.0
+      joint2d_sgd_print_stage_policy alternate
+      run_configured_case stage4_alternate_balance_eta0p05 "${joint2d_sgd_case_args[@]}"
+      ;;
+    stage4_alternate_raw_likelihood)
+      joint2d_sgd_make_joint_args alternate 3 0.5 0.1 0.0
+      joint2d_sgd_case_args+=( sgd_inner_its=0 )
+      joint2d_sgd_print_stage_policy alternate
+      run_configured_case stage4_alternate_raw_likelihood "${joint2d_sgd_case_args[@]}"
+      ;;
+    stage4_alternate_balance_topk5)
+      joint2d_sgd_make_joint_args alternate 5 0.5 0.1 1.0
+      joint2d_sgd_print_stage_policy alternate
+      run_configured_case stage4_alternate_balance_topk5 "${joint2d_sgd_case_args[@]}"
+      ;;
+    stage4_alternate_balance_topk5_raw)
+      joint2d_sgd_make_joint_args alternate 5 0.5 0.1 1.0
+      joint2d_sgd_case_args+=( sgd_inner_its=0 )
+      joint2d_sgd_print_stage_policy alternate
+      run_configured_case stage4_alternate_balance_topk5_raw "${joint2d_sgd_case_args[@]}"
       ;;
     stage4_alternate_assignment_only)
       # Causal ablation: joint scoring/refinement/assignments stay active, but

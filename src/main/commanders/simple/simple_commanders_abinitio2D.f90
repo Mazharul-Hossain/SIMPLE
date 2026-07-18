@@ -405,22 +405,31 @@ contains
             integer :: iter
             finalcavgs = CAVGS_ITER_FBODY//int2str_pad(iter,3)//params%ext%to_char()
             ! classes generation
-            cline_make_cavgs = cline ! ncls is transferred here
-            call cline_make_cavgs%delete('ptcl_src')
-            call cline_make_cavgs%delete('autoscale')
-            call cline_make_cavgs%delete('balance')
-            call cline_make_cavgs%delete('smpd_crop')
-            call cline_make_cavgs%delete('box_crop')
-            call cline_make_cavgs%set('prg',        'make_cavgs')
-            call cline_make_cavgs%set('sgd',        'no')
-            call cline_make_cavgs%set('refs',       finalcavgs)
-            call cline_make_cavgs%set('which_iter', iter)
-            ! Cavgs final output is regularized
-            call cline_make_cavgs%set('ml_reg', 'yes')
-            if( l_shmem )then
-                call xmake_cavgs%execute(cline_make_cavgs)
+            if( params%l_sgd .and. trim(params%sgd_mode) == 'joint' .and. params%l_sgd_assignment_only )then
+                if( .not. file_exists(finalcavgs) )then
+                    THROW_HARD('joint assignment-only terminal class averages are unavailable')
+                endif
+                write(logfhandle,'(A,1X,A,A,1X,A,L1)')&
+                    &'>>> JOINT2D SGD ABLATION TERMINAL:', 'refs=', finalcavgs%to_char(),&
+                    &'preserved=', .true.
             else
-                call xmake_cavgs_distr%execute(cline_make_cavgs)
+                cline_make_cavgs = cline ! ncls is transferred here
+                call cline_make_cavgs%delete('ptcl_src')
+                call cline_make_cavgs%delete('autoscale')
+                call cline_make_cavgs%delete('balance')
+                call cline_make_cavgs%delete('smpd_crop')
+                call cline_make_cavgs%delete('box_crop')
+                call cline_make_cavgs%set('prg',        'make_cavgs')
+                call cline_make_cavgs%set('sgd',        'no')
+                call cline_make_cavgs%set('refs',       finalcavgs)
+                call cline_make_cavgs%set('which_iter', iter)
+                ! Cavgs final output is regularized
+                call cline_make_cavgs%set('ml_reg', 'yes')
+                if( l_shmem )then
+                    call xmake_cavgs%execute(cline_make_cavgs)
+                else
+                    call xmake_cavgs_distr%execute(cline_make_cavgs)
+                endif
             endif
             ! adding cavgs & FRCs to project
             call spproj%read_segment('out', params%projfile)

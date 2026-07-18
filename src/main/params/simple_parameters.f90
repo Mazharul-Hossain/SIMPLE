@@ -469,7 +469,7 @@ type :: parameters
     integer :: shift_stage=0
     integer :: split_stage=6       !< splitting stage when multivol_mode==docked
     integer :: sgd_cavg_min_cands=2 !< joint-SGD min retained candidates for weighted class averages
-    integer :: sgd_inner_its=2     !< joint-SGD latent optimizer inner iterations
+    integer :: sgd_inner_its=2     !< joint-SGD latent optimizer inner iterations; 0 keeps raw likelihood logits
     integer :: sgd_topk=8          !< joint-SGD compact candidate count per particle
     integer :: startit=1           !< start iterating from here
     integer :: stage=0

@@ -1,5 +1,6 @@
 program simple_test_joint2D_candidate_table
 use simple_core_module_api
+use simple_eul_prob_tab_utils, only: eulprob_corr_switch_scaled
 use simple_strategy2D_joint_sgd_candidates, only: joint2D_candidate_table, joint2D_balance_diag
 use simple_type_defs, only: ptcl_ref
 implicit none
@@ -11,7 +12,7 @@ type(ptcl_ref) :: loc_tab(5,4)
 type(ptcl_ref) :: balance_loc_tab(3,3)
 type(ptcl_ref) :: assgn_map(4)
 type(ptcl_ref), allocatable :: batch_refs(:,:)
-type(joint2D_candidate_table) :: tab, tab_roundtrip, tab_shift, tab_inpl, tab_balance, tab_balance_zero
+type(joint2D_candidate_table) :: tab, tab_roundtrip, tab_shift, tab_inpl, tab_balance, tab_balance_zero, tab_raw
 type(joint2D_balance_diag) :: balance_diag, zero_diag
 real, allocatable :: batch_weights(:,:)
 integer, allocatable :: batch_ncands(:)
@@ -28,6 +29,14 @@ call init_loc_tab(loc_tab)
 call init_balance_loc_tab(balance_loc_tab)
 call init_base_shifts(base_shifts)
 likelihood_scales = [101.0, 202.0, 303.0, 404.0]
+call require_close(eulprob_corr_switch_scaled(6500.0, OBJFUN_EUCLID, 1500.0), exp(-6500.0 / 1500.0),&
+    &1.0e-7, 'Gaussian-NLL score conversion restores normalized-distance correlation')
+call tab_raw%build_from_loc_tab(loc_tab, 3)
+expected_weight = tab_raw%cand(1,4)%weight
+call tab_raw%optimize_logits(0, 0.5)
+call require_close(tab_raw%cand(1,4)%weight, expected_weight, 1.0e-7,&
+    &'zero latent iterations preserve raw likelihood SoftMax weights')
+call tab_raw%kill
 
 call tab%build_from_loc_tab(loc_tab, 3)
 call tab%set_base_shifts(base_shifts)

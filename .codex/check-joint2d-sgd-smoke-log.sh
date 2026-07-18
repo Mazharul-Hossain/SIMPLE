@@ -49,12 +49,23 @@ case "$case_name" in
     check_smoke_joint_log alternate 3
     check_nonzero_balance_prior
     ;;
+  stage4_alternate_balance_eta0p05)
+    check_smoke_joint_log alternate 3
+    check_nonzero_balance_prior
+    ;;
+  stage4_alternate_raw_likelihood)
+    check_smoke_joint_log alternate 3
+    ;;
+  stage4_alternate_balance_topk5|stage4_alternate_balance_topk5_raw)
+    check_smoke_joint_log alternate 5
+    check_nonzero_balance_prior
+    ;;
   stage4_alternate_assignment_only)
     check_assignment_only_ablation
     check_smoke_joint_log alternate 3
     ;;
   *)
-    fail "case must be baseline, stage4_off, stage4_alternate, stage4_alternate_balance, or stage4_alternate_assignment_only"
+    fail "unknown smoke case: $case_name"
     ;;
 esac
 

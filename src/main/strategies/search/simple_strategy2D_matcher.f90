@@ -30,7 +30,7 @@ use simple_strategy2D_joint_sgd_candidates, only: joint2D_candidate_table, joint
                                                   JOINT2D_CANDIDATES_FNAME, joint2D_candidate_part_fname
 use simple_strategy2D_joint_sgd_refs, only: joint2D_ref_refresh_policy
 use simple_eul_prob_tab2D,           only: eul_prob_tab2D
-use simple_eul_prob_tab_utils,       only: eulprob_corr_switch, eulprob_dist_switch
+use simple_eul_prob_tab_utils,       only: eulprob_corr_switch, eulprob_corr_switch_scaled, eulprob_dist_switch
 use simple_pftc_shsrch_grad,         only: pftc_shsrch_grad
 implicit none
 
@@ -900,7 +900,12 @@ contains
                         &joint_topk_candidates%cand(hard,iptcl_map)%y]
                 endif
                 total_shift = joint_topk_candidates%base_shift(:,iptcl_map) + cand_shift
-                corr = eulprob_corr_switch(joint_topk_candidates%cand(hard,iptcl_map)%dist, p_ptr%cc_objfun)
+                if( trim(p_ptr%sgd_likelihood_units) == 'gaussian_nll' .and. p_ptr%cc_objfun == OBJFUN_EUCLID )then
+                    corr = eulprob_corr_switch_scaled(joint_topk_candidates%cand(hard,iptcl_map)%dist,&
+                        &p_ptr%cc_objfun, joint_topk_candidates%likelihood_scale(iptcl_map))
+                else
+                    corr = eulprob_corr_switch(joint_topk_candidates%cand(hard,iptcl_map)%dist, p_ptr%cc_objfun)
+                endif
                 if( .not. finite_joint_real(total_shift(1)) .or. .not. finite_joint_real(total_shift(2)) .or.&
                     &.not. finite_joint_real(corr) )then
                     THROW_HARD('joint 2D shift refinement produced nonfinite hard assignment')
@@ -997,10 +1002,16 @@ contains
                 &'>>> JOINT2D SGD LIKELIHOOD UNITS:', 'context=', 'cluster2D_final',&
                 &'units=', trim(likelihood_units),&
                 &'active=', l_gaussian_nll
+            if( l_gaussian_nll ) write(logfhandle,'(A)')&
+                &'>>> JOINT2D SGD SCORE CALIBRATION: source=gaussian_nll output=exp(-nll/likelihood_scale) range=[0,1]'
 
             ! Candidate refinements reset logits from their new distances. Re-run
             ! the latent optimizer on the fully refined table, then apply one
             ! balance prior before making the only behavior-controlling gate.
+            write(logfhandle,'(A,1X,A,A,1X,A,I0,1X,A,L1,1X,A)')&
+                &'>>> JOINT2D SGD POSTERIOR MODE:', 'context=', 'cluster2D_final',&
+                &'inner_its=', p_ptr%sgd_inner_its, 'raw_likelihood=', p_ptr%sgd_inner_its == 0,&
+                &'temperature=none'
             call joint_topk_candidates%optimize_logits(p_ptr%sgd_inner_its, p_ptr%sgd_eta_latent)
             call joint_topk_candidates%apply_balance_prior(p_ptr%ncls, p_ptr%sgd_balance_weight, balance_diag)
             call joint_topk_candidates%write_balance_diag('cluster2D final', balance_diag)

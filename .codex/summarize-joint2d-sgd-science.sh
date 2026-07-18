@@ -178,7 +178,7 @@ population_metrics() {
 
 write_header() {
   cat <<'EOF'
-case,replicate,profile,mode,stage4_mode,status,project,ncls,mskdiam,nthr,topk,sgd_eta_latent,sgd_eta_cavg,sgd_balance_weight,accepted_frac,empty,accepted,too_few,high_entropy,avg_entropy,entropy_min,entropy_max,avg_norm_entropy,norm_entropy_min,norm_entropy_max,avg_winner_weight,winner_weight_min,winner_weight_max,expected_loss_delta,winner_churn,inpl_changed,shift_step_mean,shift_step_max,cavg_support_min,cavg_support_mean,cavg_support_max,cavg_updated,cavg_preserved,cavg_grad_norm,cavg_step_norm,cavg_rel_step_norm,cavg_nonfinite,frc_mean_peak,frc_max_peak,frc_usable_classes,active_classes,active_class_fraction,max_population_fraction,zero_population_classes,pop_entropy,collapse_index,population_source,log_file,run_dir
+case,replicate,profile,mode,stage4_mode,status,project,ncls,mskdiam,nthr,topk,sgd_eta_latent,sgd_eta_cavg,sgd_balance_weight,accepted_frac,empty,accepted,too_few,high_entropy,avg_entropy,entropy_min,entropy_max,avg_norm_entropy,norm_entropy_min,norm_entropy_max,avg_winner_weight,winner_weight_min,winner_weight_max,posterior_multi_candidate,effective_k_p50,effective_k_p90,expected_loss_delta,winner_churn,inpl_changed,shift_step_mean,shift_step_max,cavg_support_min,cavg_support_mean,cavg_support_max,cavg_updated,cavg_preserved,cavg_trust_clipped,cavg_grad_norm,cavg_step_norm,cavg_rel_step_norm,cavg_proposed_rel_step_max,cavg_applied_rel_step_max,cavg_nonfinite,frc_mean_peak,frc_max_peak,frc_usable_classes,active_classes,active_class_fraction,max_population_fraction,zero_population_classes,pop_entropy,collapse_index,population_source,log_file,run_dir
 EOF
 }
 
@@ -219,6 +219,9 @@ tail -n +2 "$manifest" | while IFS=$'\t' read -r case_name rep profile mode stag
   avg_winner_weight="$(kv_last "$log_file" 'JOINT2D SGD TOPK STATS:' 'avg_winner_weight')"
   winner_weight_min="$(kv_last "$log_file" 'JOINT2D SGD WINNER:' 'weight_min')"
   winner_weight_max="$(kv_last "$log_file" 'JOINT2D SGD WINNER:' 'weight_max')"
+  posterior_multi_candidate="$(kv_last "$log_file" 'JOINT2D SGD POSTERIOR SUPPORT:' 'multi_candidate')"
+  effective_k_p50="$(kv_last "$log_file" 'JOINT2D SGD POSTERIOR SUPPORT:' 'effective_k_p50')"
+  effective_k_p90="$(kv_last "$log_file" 'JOINT2D SGD POSTERIOR SUPPORT:' 'effective_k_p90')"
   expected_loss_delta="$(kv_last "$log_file" 'JOINT2D SGD LATENT:' 'avg_loss_delta')"
   winner_churn="$(kv_last "$log_file" 'JOINT2D SGD TOPK STATS:' 'winner_churn')"
   inpl_changed="$(kv_last "$log_file" 'JOINT2D SGD INPL:' 'changed')"
@@ -229,9 +232,12 @@ tail -n +2 "$manifest" | while IFS=$'\t' read -r case_name rep profile mode stag
   cavg_support_max="$(kv_last "$log_file" 'CAVG SGD SUPPORT:' 'max')"
   cavg_updated="$(kv_last "$log_file" 'CAVG SGD UPDATE:' 'updated')"
   cavg_preserved="$(kv_last "$log_file" 'CAVG SGD UPDATE:' 'preserved')"
+  cavg_trust_clipped="$(kv_last "$log_file" 'CAVG SGD UPDATE:' 'trust_clipped')"
   cavg_grad_norm="$(kv_last "$log_file" 'CAVG SGD NORMS:' 'grad')"
   cavg_step_norm="$(kv_last "$log_file" 'CAVG SGD NORMS:' 'step')"
   cavg_rel_step_norm="$(kv_last "$log_file" 'CAVG SGD NORMS:' 'rel_step')"
+  cavg_proposed_rel_step_max="$(kv_last "$log_file" 'CAVG SGD TRUST:' 'proposed_rel_step_max')"
+  cavg_applied_rel_step_max="$(kv_last "$log_file" 'CAVG SGD TRUST:' 'applied_rel_step_max')"
   cavg_nonfinite="$(kv_last "$log_file" 'CAVG SGD UPDATE:' 'nonfinite')"
   frc_mean_peak="$(kv_last "$log_file" 'CAVG SGD RESTORE FRC:' 'mean_peak')"
   frc_max_peak="$(kv_last "$log_file" 'CAVG SGD RESTORE FRC:' 'max_peak')"
@@ -245,10 +251,12 @@ tail -n +2 "$manifest" | while IFS=$'\t' read -r case_name rep profile mode stag
     "$topk" "$eta_latent" "$eta_cavg" "$balance_weight" "$accepted_frac" "$empty" \
     "$accepted" "$too_few" "$high_entropy" "$avg_entropy" "$entropy_min" "$entropy_max" \
     "$avg_norm_entropy" "$norm_entropy_min" "$norm_entropy_max" "$avg_winner_weight" \
-    "$winner_weight_min" "$winner_weight_max" "$expected_loss_delta" "$winner_churn" \
+    "$winner_weight_min" "$winner_weight_max" "$posterior_multi_candidate" "$effective_k_p50" \
+    "$effective_k_p90" "$expected_loss_delta" "$winner_churn" \
     "$inpl_changed" "$shift_step_mean" "$shift_step_max" "$cavg_support_min" \
-    "$cavg_support_mean" "$cavg_support_max" "$cavg_updated" "$cavg_preserved" \
-    "$cavg_grad_norm" "$cavg_step_norm" "$cavg_rel_step_norm" "$cavg_nonfinite" \
+    "$cavg_support_mean" "$cavg_support_max" "$cavg_updated" "$cavg_preserved" "$cavg_trust_clipped" \
+    "$cavg_grad_norm" "$cavg_step_norm" "$cavg_rel_step_norm" "$cavg_proposed_rel_step_max" \
+    "$cavg_applied_rel_step_max" "$cavg_nonfinite" \
     "$frc_mean_peak" "$frc_max_peak" "$frc_usable_classes" "$active_classes" \
     "$active_class_fraction" "$max_population_fraction" "$zero_population_classes" \
     "$pop_entropy" "$collapse_index" "$population_source" "$log_file" "$run_dir" >> "$metrics"

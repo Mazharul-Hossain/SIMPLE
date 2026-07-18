@@ -183,6 +183,10 @@ check_assignment_only_ablation() {
   if grep -F 'CAVG SGD OUTPUT INVARIANT:' "$log_file" | grep -Fvq 'compatible=T'; then
     fail 'assignment-only restored-output invariant failed'
   fi
+  require_contains 'JOINT2D SGD ABLATION TERMINAL:' 'assignment-only terminal-output preservation marker'
+  if grep -F 'JOINT2D SGD ABLATION TERMINAL:' "$log_file" | grep -Fvq 'preserved=T'; then
+    fail 'assignment-only terminal output was regenerated instead of preserved'
+  fi
 }
 
 check_assignment_only_mrc_invariant() {
@@ -259,6 +263,49 @@ check_likelihood_unit_continuity() {
     }
   ' "$log_file"; then
     fail 'provisional/final likelihood-unit discontinuity or inactive Gaussian-NLL calibration found'
+  fi
+}
+
+check_posterior_mode() {
+  # Older completed logs predate this marker and remain re-checkable. New
+  # executables emit it at both provisional and final posterior boundaries.
+  grep -Fq 'JOINT2D SGD POSTERIOR MODE:' "$log_file" || return 0
+  if ! awk '
+    /JOINT2D SGD POSTERIOR MODE:/ {
+      inner = raw = temperature = ""
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^inner_its=/)   { inner = $i; sub(/^inner_its=/, "", inner) }
+        if ($i ~ /^raw_likelihood=/) { raw = $i; sub(/^raw_likelihood=/, "", raw) }
+        if ($i ~ /^temperature=/) { temperature = $i; sub(/^temperature=/, "", temperature) }
+      }
+      if (inner == "" || raw == "" || temperature != "none") exit 1
+      inner += 0
+      if ((inner == 0 && raw != "T") || (inner > 0 && raw != "F")) exit 1
+      seen++
+    }
+    END { if (seen == 0) exit 1 }
+  ' "$log_file"; then
+    fail 'posterior calibration-state diagnostics are inconsistent or use temperature'
+  fi
+}
+
+check_score_calibration() {
+  grep -Fq 'JOINT2D SGD SCORE CALIBRATION:' "$log_file" || return 0
+  if ! awk '
+    /SCORE \[0,1\]/ && /AVG\/SDEV\/MIN\/MAX:/ {
+      seen++
+      values = 0
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /AVG\/SDEV\/MIN\/MAX:/) { values = 1; continue }
+        if (!values) continue
+        token = $i
+        gsub(/[^0-9.eE+-]/, "", token)
+        if (token != "" && (token + 0) > 0) nonzero = 1
+      }
+    }
+    END { if (seen == 0 || !nonzero) exit 1 }
+  ' "$log_file"; then
+    fail 'Gaussian-NLL score calibration is missing a nonzero [0,1] particle score'
   fi
 }
 
@@ -432,30 +479,35 @@ check_cavg_update_trust() {
     fail 'one or more half-class updates exceeded the trust bound'
   fi
   if ! awk '
-    /CAVG SGD NORMS:/ {
+    function value_after_key(i, prefix, value) {
+      value = $i
+      sub(prefix, "", value)
+      if (value == "" && i < NF) value = $(i + 1)
+      return value
+    }
+    /CAVG SGD NORMS: joint/ {
       have_rel = 0
       for (i = 1; i <= NF; i++) {
         if ($i ~ /^rel_step=/) {
-          rel = $i
-          sub(/^rel_step=/, "", rel)
+          rel = value_after_key(i, "^rel_step=")
           rel += 0
           have_rel = 1
         }
       }
     }
-    /CAVG SGD TRUST:/ {
-      proposed = bound = ""
+    /CAVG SGD TRUST: joint/ {
+      proposed = applied = bound = ""
       for (i = 1; i <= NF; i++) {
-        if ($i ~ /^proposed_rel_step_max=/) {
-          proposed = $i
-          sub(/^proposed_rel_step_max=/, "", proposed)
-        }
-        if ($i ~ /^bound=/) { bound = $i; sub(/^bound=/, "", bound) }
+        if ($i ~ /^proposed_rel_step_max=/) proposed = value_after_key(i, "^proposed_rel_step_max=")
+        if ($i ~ /^applied_rel_step_max=/)  applied  = value_after_key(i, "^applied_rel_step_max=")
+        if ($i ~ /^bound=/)                 bound    = value_after_key(i, "^bound=")
       }
       if (proposed == "" || bound == "" || !have_rel) exit 1
+      if (applied == "") applied = proposed
       proposed += 0
+      applied += 0
       bound += 0
-      if (proposed > bound || rel > bound) exit 1
+      if (applied > bound || rel > bound) exit 1
       have_rel = 0
     }
     END { if (have_rel) exit 1 }
@@ -501,6 +553,8 @@ check_smoke_joint_log() {
   require_contains 'CAVG SGD REPRESENTATION: old_space=restored_real batch_space=restored_real preconditioner=identity compatible=T' \
     'restored-output representation/unit invariant'
   check_likelihood_unit_continuity
+  check_posterior_mode
+  check_score_calibration
   check_refinement_deltas
   check_final_loss_scale
   check_class_starvation
@@ -547,6 +601,8 @@ check_science_joint_log() {
   require_contains 'CAVG SGD RESTORE' 'CAVG restoration diagnostics'
   require_contains 'CAVG SGD RESTORE FRC' 'CAVG restoration FRC diagnostics'
   check_likelihood_unit_continuity
+  check_posterior_mode
+  check_score_calibration
   check_shift_provenance
   check_refinement_roundtrip
   check_refinement_deltas

@@ -15,6 +15,7 @@ type :: cavg_sgd_diagnostics
     integer  :: n_preserved    = 0
     integer  :: n_low_support  = 0
     integer  :: n_trust_rejected = 0
+    integer  :: n_trust_clipped = 0
     integer  :: n_nonfinite    = 0
     real     :: support_sum    = 0.0
     real     :: support_min    = huge(1.0)
@@ -23,6 +24,7 @@ type :: cavg_sgd_diagnostics
     real     :: effective_support_min = huge(1.0)
     real     :: effective_support_max = 0.0
     real     :: proposed_rel_step_max = 0.0
+    real     :: applied_rel_step_max = 0.0
     real(dp) :: grad_sq_sum    = 0.0_dp
     real(dp) :: step_sq_sum    = 0.0_dp
     real(dp) :: old_sq_sum     = 0.0_dp
@@ -64,6 +66,7 @@ contains
         self%n_preserved = 0
         self%n_low_support = 0
         self%n_trust_rejected = 0
+        self%n_trust_clipped = 0
         self%n_nonfinite = 0
         self%support_sum = 0.0
         self%support_min = huge(1.0)
@@ -72,6 +75,7 @@ contains
         self%effective_support_min = huge(1.0)
         self%effective_support_max = 0.0
         self%proposed_rel_step_max = 0.0
+        self%applied_rel_step_max = 0.0
         self%grad_sq_sum = 0.0_dp
         self%step_sq_sum = 0.0_dp
         self%old_sq_sum  = 0.0_dp
@@ -184,7 +188,7 @@ contains
         logical,                    optional, intent(out)   :: accepted
         integer :: i, j, k
         integer :: n_nonfinite
-        real    :: eta_t, rho_ijk, precond, grad, step, updated, proposed_rel_step
+        real    :: eta_t, rho_ijk, precond, grad, step, updated, proposed_rel_step, applied_rel_step, step_scale
         real    :: support_val, effective_support_val
         real, allocatable :: steps(:,:,:)
         logical :: l_throw
@@ -234,6 +238,7 @@ contains
         else if( step_sq > DTINY )then
             proposed_rel_step = huge(1.0)
         endif
+        applied_rel_step = proposed_rel_step
         if( n_nonfinite > 0 )then
             deallocate(steps)
             if( present(diag) )then
@@ -245,10 +250,17 @@ contains
             return
         endif
         if( proposed_rel_step > self%max_rel_step )then
-            deallocate(steps)
-            if( present(diag) ) call diag%record_preserved(trust_rejected=.true., support=support_val,&
-                &effective_support=effective_support_val, proposed_rel_step=proposed_rel_step)
-            return
+            if( old_sq <= DTINY )then
+                deallocate(steps)
+                if( present(diag) ) call diag%record_preserved(trust_rejected=.true., support=support_val,&
+                    &effective_support=effective_support_val, proposed_rel_step=proposed_rel_step)
+                return
+            endif
+            step_scale = self%max_rel_step / proposed_rel_step
+            steps = step_scale * steps
+            step_sq = step_sq * real(step_scale,dp)**2
+            applied_rel_step = self%max_rel_step
+            if( present(diag) ) diag%n_trust_clipped = diag%n_trust_clipped + 1
         endif
         do k = 1, size(stats,3)
             do j = 1, size(stats,2)
@@ -264,6 +276,7 @@ contains
         enddo
         deallocate(steps)
         if( present(diag) ) call update_diag(diag, support_val, effective_support_val, proposed_rel_step,&
+            &applied_rel_step,&
             &grad_sq, step_sq, old_sq, n_nonfinite)
         if( present(accepted) ) accepted = .true.
     end subroutine preconditioned_real3_inplace
@@ -281,7 +294,7 @@ contains
         logical,                    optional, intent(out)   :: accepted
         integer :: i, j, k
         integer :: n_nonfinite
-        real    :: eta_t, rho_ijk, precond, proposed_rel_step
+        real    :: eta_t, rho_ijk, precond, proposed_rel_step, applied_rel_step, step_scale
         real    :: support_val, effective_support_val
         logical :: l_throw
         real(dp) :: grad_sq, step_sq, old_sq
@@ -332,6 +345,7 @@ contains
         else if( step_sq > DTINY )then
             proposed_rel_step = huge(1.0)
         endif
+        applied_rel_step = proposed_rel_step
         if( n_nonfinite > 0 )then
             deallocate(steps)
             if( present(diag) )then
@@ -343,10 +357,17 @@ contains
             return
         endif
         if( proposed_rel_step > self%max_rel_step )then
-            deallocate(steps)
-            if( present(diag) ) call diag%record_preserved(trust_rejected=.true., support=support_val,&
-                &effective_support=effective_support_val, proposed_rel_step=proposed_rel_step)
-            return
+            if( old_sq <= DTINY )then
+                deallocate(steps)
+                if( present(diag) ) call diag%record_preserved(trust_rejected=.true., support=support_val,&
+                    &effective_support=effective_support_val, proposed_rel_step=proposed_rel_step)
+                return
+            endif
+            step_scale = self%max_rel_step / proposed_rel_step
+            steps = cmplx(step_scale,0.0,kind=c_float_complex) * steps
+            step_sq = step_sq * real(step_scale,dp)**2
+            applied_rel_step = self%max_rel_step
+            if( present(diag) ) diag%n_trust_clipped = diag%n_trust_clipped + 1
         endif
         do k = 1, size(stats,3)
             do j = 1, size(stats,2)
@@ -363,6 +384,7 @@ contains
         enddo
         deallocate(steps)
         if( present(diag) ) call update_diag(diag, support_val, effective_support_val, proposed_rel_step,&
+            &applied_rel_step,&
             &grad_sq, step_sq, old_sq, n_nonfinite)
         if( present(accepted) ) accepted = .true.
     end subroutine preconditioned_complex3_inplace
@@ -400,17 +422,18 @@ contains
         step_norm = real(sqrt(diag%step_sq_sum))
         rel_step_norm = 0.0
         if( diag%old_sq_sum > DTINY ) rel_step_norm = real(sqrt(diag%step_sq_sum / diag%old_sq_sum))
-        write(logfhandle,'(a,1x,a,1x,a,i0,1x,a,i0,1x,a,i0,1x,a,i0,1x,a,i0,1x,a,i0)') '>>> CAVG SGD UPDATE:',&
+        write(logfhandle,'(a,1x,a,1x,a,i0,1x,a,i0,1x,a,i0,1x,a,i0,1x,a,i0,1x,a,i0,1x,a,i0)')&
+            &'>>> CAVG SGD UPDATE:',&
             &trim(label), 'updated=', diag%n_updated, 'preserved=', diag%n_preserved,&
             &'low_support=', diag%n_low_support, 'trust_rejected=', diag%n_trust_rejected,&
-            &'nonfinite=', diag%n_nonfinite, 'iter=', self%which_iter
+            &'trust_clipped=', diag%n_trust_clipped, 'nonfinite=', diag%n_nonfinite, 'iter=', self%which_iter
         write(logfhandle,'(a,1x,a,1x,a,es12.4,1x,a,es12.4,1x,a,es12.4)') '>>> CAVG SGD SUPPORT:',&
             &trim(label), 'min=', support_min, 'mean=', support_mean, 'max=', support_max
         write(logfhandle,'(a,1x,a,1x,a,es12.4,1x,a,es12.4,1x,a,es12.4)') '>>> CAVG SGD NORMS:',&
             &trim(label), 'grad=', grad_norm, 'step=', step_norm, 'rel_step=', rel_step_norm
-        write(logfhandle,'(a,1x,a,1x,a,es12.4,1x,a,es12.4,1x,a,es12.4,1x,a,es12.4)')&
+        write(logfhandle,'(a,1x,a,1x,a,es12.4,1x,a,es12.4,1x,a,es12.4,1x,a,es12.4,1x,a,es12.4)')&
             &'>>> CAVG SGD TRUST:', trim(label), 'proposed_rel_step_max=', diag%proposed_rel_step_max,&
-            &'bound=', self%max_rel_step, 'min_support=', self%min_support,&
+            &'applied_rel_step_max=', diag%applied_rel_step_max, 'bound=', self%max_rel_step, 'min_support=', self%min_support,&
             &'effective_support_min=', effective_support_min
     end subroutine write_update_diag
 
@@ -425,10 +448,11 @@ contains
         self%eta_decay  = 'const'
     end subroutine kill
 
-    subroutine update_diag( diag, support, effective_support, proposed_rel_step, grad_sq, step_sq, old_sq,&
+    subroutine update_diag( diag, support, effective_support, proposed_rel_step, applied_rel_step,&
+        &grad_sq, step_sq, old_sq,&
         &n_nonfinite )
         type(cavg_sgd_diagnostics), intent(inout) :: diag
-        real,                       intent(in)    :: support, effective_support, proposed_rel_step
+        real,                       intent(in)    :: support, effective_support, proposed_rel_step, applied_rel_step
         real(dp),                   intent(in)    :: grad_sq, step_sq, old_sq
         integer,                    intent(in)    :: n_nonfinite
         diag%n_updated = diag%n_updated + 1
@@ -439,6 +463,7 @@ contains
         diag%effective_support_min = min(diag%effective_support_min, effective_support)
         diag%effective_support_max = max(diag%effective_support_max, effective_support)
         diag%proposed_rel_step_max = max(diag%proposed_rel_step_max, proposed_rel_step)
+        diag%applied_rel_step_max = max(diag%applied_rel_step_max, applied_rel_step)
         diag%grad_sq_sum = diag%grad_sq_sum + grad_sq
         diag%step_sq_sum = diag%step_sq_sum + step_sq
         diag%old_sq_sum  = diag%old_sq_sum  + old_sq
