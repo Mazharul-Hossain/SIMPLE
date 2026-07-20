@@ -29,6 +29,10 @@ Default complete matrix (`profile=all`):
   balance_1p0
   balance_eta_0p05
   raw_likelihood
+  raw_likelihood_topk1
+  stage4_on_raw_likelihood
+  balance_raw_likelihood
+  balance_stage4_on_raw_likelihood
   balance_topk5 / balance_topk5_raw
   assignment_only
 
@@ -110,6 +114,10 @@ science_all_cases=(
   balance_1p0
   balance_eta_0p05
   raw_likelihood
+  raw_likelihood_topk1
+  stage4_on_raw_likelihood
+  balance_raw_likelihood
+  balance_stage4_on_raw_likelihood
   balance_topk5
   balance_topk5_raw
   assignment_only
@@ -355,6 +363,24 @@ run_selected_case() {
     raw_likelihood)
       run_case raw_likelihood "$rep" joint alternate 3 0.5 0.1 0.0 \
         sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_inner_its=0 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes sgd_shadow_stage3=yes
+      ;;
+    raw_likelihood_topk1)
+      # K=1 is the hard-assignment anchor.  Keep eta_cavg identical to the
+      # K=3 raw-likelihood case so only candidate support changes.
+      run_case raw_likelihood_topk1 "$rep" joint alternate 1 0.5 0.1 0.0 \
+        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=1 sgd_inner_its=0 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes sgd_shadow_stage3=yes
+      ;;
+    stage4_on_raw_likelihood)
+      run_case stage4_on_raw_likelihood "$rep" joint on 3 0.5 0.1 0.0 \
+        sgd=yes sgd_mode=joint sgd_stage4_mode=on sgd_topk=3 sgd_inner_its=0 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes sgd_shadow_stage3=yes
+      ;;
+    balance_raw_likelihood)
+      run_case balance_raw_likelihood "$rep" joint alternate 3 0.5 0.1 1.0 \
+        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_inner_its=0 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=1.0 sgd_diag=yes sgd_shadow_stage3=yes
+      ;;
+    balance_stage4_on_raw_likelihood)
+      run_case balance_stage4_on_raw_likelihood "$rep" joint on 3 0.5 0.1 1.0 \
+        sgd=yes sgd_mode=joint sgd_stage4_mode=on sgd_topk=3 sgd_inner_its=0 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=1.0 sgd_diag=yes sgd_shadow_stage3=yes
       ;;
     balance_topk5)
       run_case balance_topk5 "$rep" joint alternate 5 0.5 0.1 1.0 \
