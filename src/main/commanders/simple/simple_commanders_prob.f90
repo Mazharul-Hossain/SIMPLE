@@ -331,6 +331,11 @@ contains
             call build%spproj%write_segment_inside(params%oritype, params%projfile)
         endif
         frac_srch_space  = build%spproj_field%get_avg('frac')
+        ! Keep probabilistic scoring on the same Fourier support as cluster2D.
+        ! Once lp is no longer fixed, set_bp_range2D derives it from the saved
+        ! class FRCs; using the freshly allocated zero-filled table here gives
+        ! provisional scoring and refinement different likelihood units.
+        if( file_exists(params%frcs) ) call build%clsfrcs%read(params%frcs)
         call set_bp_range2D(params, build, cline, params%which_iter, frac_srch_space)
         ! reproduce particle sampling from exec_prob_align2D
         if( build%spproj_field%has_been_sampled() )then
