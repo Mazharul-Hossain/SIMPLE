@@ -60,7 +60,7 @@ contains
         if( build%spproj_field%has_been_sampled() )then
             call build%spproj_field%sample4update_reprod([params%fromp,params%top], nptcls, pinds)
         else
-            THROW_HARD('exec_prob_tab requires prior particle sampling (in exec_prob_align)')
+            THROW_HARD('exec_prob_tab requires particle sampling from exec_prob_align')
         endif
         if( nptcls < 1 ) THROW_HARD('exec_prob_tab selected no particles')
         batchsz_max = min(nptcls, params%nthr * BATCHTHRSZ)
@@ -118,7 +118,7 @@ contains
         if( build%spproj_field%has_been_sampled() )then
             call build%spproj_field%sample4update_reprod([params%fromp,params%top], nptcls, pinds)
         else
-            THROW_HARD('exec_prob_tab_neigh requires prior particle sampling (in exec_prob_align)')
+            THROW_HARD('exec_prob_tab_neigh requires particle sampling from exec_prob_align')
         endif
         if( nptcls < 1 ) THROW_HARD('exec_prob_tab_neigh selected no particles')
         ! All neighborhood modes can fill the table in matcher-sized batches; this
@@ -336,7 +336,7 @@ contains
         if( build%spproj_field%has_been_sampled() )then
             call build%spproj_field%sample4update_reprod([params%fromp,params%top], nptcls, pinds)
         else
-            THROW_HARD('exec_prob_tab2D requires prior particle sampling (in exec_prob_align2D)')
+            THROW_HARD('exec_prob_tab2D requires particle sampling from exec_prob_align2D')
         endif
         batchsz_max = min(nptcls, params%nthr * BATCHTHRSZ)
         nbatches    = ceiling(real(nptcls) / real(batchsz_max))
@@ -378,7 +378,7 @@ contains
     end subroutine exec_prob_tab2D
 
     subroutine exec_prob_align2D( self, cline )
-        use simple_eul_prob_tab2D,          only: eul_prob_tab2D, PRIOR2D_STAGE5_FNAME
+        use simple_eul_prob_tab2D,          only: eul_prob_tab2D
         use simple_eul_prob_tab_utils,      only: materialize_seed_shift
         use simple_strategy2D_joint_sgd_candidates, only: joint2D_candidate_table, joint2D_balance_diag,&
             &JOINT2D_CANDIDATES_FNAME
@@ -536,14 +536,6 @@ contains
         call eulprob_obj_glob%write_assignment(fname)
         write(logfhandle,'(A)') '>>> PROB_ALIGN2D: assignment written'
         call flush(logfhandle)
-        ! write per-particle prior ranking only when the controller has flagged this as the
-        ! prior-production stage (stage PROB_PRIOR_STAGE-1, i.e. stage 5 by default)
-        if( trim(params%write_prior) == 'yes' )then
-            fname = string(PRIOR2D_STAGE5_FNAME)
-            call eulprob_obj_glob%write_prior_topk(fname)
-            write(logfhandle,'(A,A)') '>>> PROB_ALIGN2D: prior ranking written ', fname%to_char()
-            call flush(logfhandle)
-        endif
         ! cleanup
         call eulprob_obj_glob%kill
         call cline_prob_tab%kill

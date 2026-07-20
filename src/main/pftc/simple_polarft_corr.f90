@@ -155,7 +155,7 @@ contains
         end select
     end subroutine gen_prob_objfun_val
 
-    module subroutine gen_prob_likelihood_objfun_val( self, iref, iptcl, shift, nsample, dist, corr, irot,&
+    module subroutine gen_likelihood_val( self, iref, iptcl, shift, nsample, dist, corr, irot,&
         &pvec_sorted, sorted_inds, calibrated_nll )
         class(polarft_calc), intent(inout) :: self
         integer,             intent(in)    :: iref, iptcl, nsample
@@ -181,7 +181,7 @@ contains
                         &pvec_sorted, sorted_inds, calibrated_nll=l_calibrated_nll)
                 endif
         end select
-    end subroutine gen_prob_likelihood_objfun_val
+    end subroutine gen_likelihood_val
 
     module subroutine gen_prob_power_objfun_val( self, iref, iptcl, shift, power, nsample, dist, corr, irot,&
         &pvec_sorted, sorted_inds )

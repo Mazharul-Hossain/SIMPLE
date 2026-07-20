@@ -174,7 +174,6 @@ type :: parameters
     character(len=3)          :: verbose_exit='yes'   !< Whether to write a indicator file when task completes(yes|no){no}
     character(len=3)          :: volrec='yes'         !< volume reconstruction in 3D(yes|no){yes}
     character(len=3)          :: write_imgarr='no'    !< write out cavgs
-    character(len=3)          :: write_prior='no'     !< write prob_prior neighborhood artifact(yes|no){no}
     character(len=3)          :: zero='no'            !< zeroing(yes|no){no}
     ! files & directories strings in ascending alphabetical order
     ! default initialization is done in the init_strings method below
@@ -291,7 +290,6 @@ type :: parameters
     character(len=STDLEN)     :: imgkind='ptcl'       !< type of image(ptcl|cavg|mic|movie){ptcl}
     character(len=STDLEN)     :: import_type='auto'   !< type of import(auto|mic|ptcl2D|ptcl3D){auto}
     character(len=STDLEN)     :: mcconvention='simple'!< which frame of reference convention to use for motion correction(simple|unblur|relion){simple}
-    character(len=STDLEN)     :: model_family='logistic' !< class-average rejection learner family
     character(len=STDLEN)     :: multi_moldiams=''    !< list of molecular diameters to be used for multiple gaussian pick
     character(len=4)          :: objfun_den='no'      !< augment raw Euclidean objective with denoised-particle correlation(yes|no){no}
     character(len=7)          :: objfun='euclid'      !< objective function(euclid|cc){euclid}
@@ -310,7 +308,6 @@ type :: parameters
     character(len=STDLEN)     :: picker='new'         !< which picker to use (old|new|segdiam){new}
     character(len=STDLEN)     :: plot_key=''          !< plot using plot_key on y axis, sort on x
     character(len=STDLEN)     :: protocol=''          !< generic option
-    character(len=STDLEN)     :: prob_assign='likelihood' !< probabilistic assignment weighting(legacy|likelihood){likelihood}
     character(len=STDLEN)     :: prob_neigh_mode='state' !< prob_neigh neighborhood mode(state|geom|shc|snhc){state}
     character(len=STDLEN)     :: ptcl_src='raw' !< particle source for matching and 3D rec(raw|den){raw}
     character(len=STDLEN)     :: qsys_name='local'    !< name of queue system (local|coarray|slurm|pbs|lsf|sge)
@@ -318,7 +315,7 @@ type :: parameters
     character(len=STDLEN)     :: quality_mode='apply' !< class-average quality mode(apply|analyze|learn|evaluate|promote){apply}
     ! class-average quality context: sieve=small hard-gate-only chunks, chunk=larger learned chunks, pool=pre-3D pooled classes
     character(len=STDLEN)     :: quality_context='chunk' !< class-average quality hard-gate context(chunk|pool|sieve){chunk}
-    ! class-average quality model preset(chunk100mics|chunk100mics_linear|pool){chunk100mics}
+    ! class-average quality model preset(chunk100mics){chunk100mics}
     character(len=STDLEN)     :: quality_model='chunk100mics'
     character(len=STDLEN)     :: real_filter=''
     character(len=STDLEN)     :: refine='shc'         !< refinement mode(snhc|shc|neigh|shc_neigh|prob|prob_state|prob_neigh|prob_snhc){shc}
@@ -392,6 +389,8 @@ type :: parameters
     integer :: minits=0            !< minimum # iterations
     integer :: nboxes_max=0
     integer :: nchunks=0
+    integer :: nchunks_max=0       !< maximum candidate temporal chunk count for automatic selection
+    integer :: nchunks_min=0       !< minimum candidate temporal chunk count for automatic selection
     integer :: nchunksperset=0
     integer :: ncunits=0           !< # computing units, can be < nparts{nparts}
     integer :: ncls=500            !< # clusters
@@ -501,6 +500,7 @@ type :: parameters
     real    :: bfacerr=50.         !< bfactor error in simulated images(in A**2){0}
     real    :: bw_ratio=0.3        !< ratio between foreground-background pixel desired in edge detection
     real    :: cenlp=20.           !< low-pass limit for binarisation in centering(in A){30 A}
+    real    :: chunk_count_penalty=0.05 !< complexity penalty per additional temporal chunk
     real    :: cs=2.7              !< spherical aberration constant(in mm){2.7}
     real    :: corr_thres=0.5      !< per-atom validation correlation threshold for discarding atoms
     real    :: ctfresthreshold=CTFRES_THRESHOLD !< ctf resolution threshold{30A}

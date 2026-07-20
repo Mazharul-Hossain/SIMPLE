@@ -883,7 +883,7 @@ contains
         end select
         self%l_prob_align_mode = .false.
         select case(trim(self%refine))
-            case('prob','prob_state','prob_neigh','prob_snhc','prob_prior')
+            case('prob','prob_state','prob_neigh','prob_snhc')
                 self%l_prob_align_mode = .true.
             case DEFAULT
         end select
@@ -891,11 +891,6 @@ contains
             case('state','geom','shc','snhc')
             case DEFAULT
                 THROW_HARD('unsupported prob_neigh_mode; expected state|geom|shc|snhc')
-        end select
-        select case(trim(self%prob_assign))
-            case('legacy','likelihood')
-            case DEFAULT
-                THROW_HARD('unsupported prob_assign; expected legacy|likelihood')
         end select
         self%l_neigh = .false.
         if( str_has_substr(self%refine, 'neigh') )then
@@ -937,12 +932,7 @@ contains
         end select
         if( trim(self%prg%to_char()) == 'model_cavgs_rejection' .and. trim(self%quality_mode) == 'learn' )then
             if( cline%defined('quality_model') ) &
-                THROW_HARD('quality_mode=learn requires model_family=linear|logistic; quality_model is unsupported')
-            select case(trim(self%model_family))
-                case('linear','logistic')
-                case DEFAULT
-                    THROW_HARD('model_cavgs_rejection quality_mode=learn supports model_family=linear|logistic')
-            end select
+                THROW_HARD('quality_mode=learn uses relational logistic training; quality_model is unsupported')
         endif
         if( trim(self%prg%to_char()) == 'model_cavgs_rejection' )then
             select case(trim(self%quality_context))

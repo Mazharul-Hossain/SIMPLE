@@ -7,11 +7,16 @@ private
 
 public :: CAVG_QUALITY_NFEATS
 public :: CAVG_QUALITY_MAX_INTERACTIONS
-public :: CAVG_MODEL_FAMILY_LINEAR
-public :: CAVG_MODEL_FAMILY_PAIRWISE_LOGISTIC
+public :: CAVG_RELATIONAL_SCHEMA_NONE
+public :: CAVG_RELATIONAL_SCHEMA_CORR_KNN_SIGNAL_V1
+public :: CAVG_RELATIONAL_DEFAULT_KNN
+public :: CAVG_RELATIONAL_DEFAULT_CORR_HP
+public :: CAVG_RELATIONAL_DEFAULT_CORR_LP
+public :: CAVG_RELATIONAL_DEFAULT_CORR_TRS
 public :: CAVG_QUALITY_CONTEXT_CHUNK
 public :: CAVG_QUALITY_CONTEXT_SIEVE
 public :: CAVG_QUALITY_CONTEXT_POOL
+public :: CAVG_QUALITY_CONTEXT_HARD_GATES
 public :: CAVG_REJECT_REASON_NONE
 public :: CAVG_REJECT_REASON_POP
 public :: CAVG_REJECT_REASON_BAD_PIXELS
@@ -33,8 +38,12 @@ integer, parameter :: CAVG_QUALITY_NFEATS  = 14
 integer, parameter :: CAVG_QUALITY_MAX_INTERACTIONS = (CAVG_QUALITY_NFEATS * (CAVG_QUALITY_NFEATS - 1)) / 2
 real,    parameter :: EPS                  = 1.0e-6
 real,    parameter :: CLIP_Z               = 4.0
-character(len=*), parameter :: CAVG_MODEL_FAMILY_LINEAR               = 'linear_score'
-character(len=*), parameter :: CAVG_MODEL_FAMILY_PAIRWISE_LOGISTIC    = 'pairwise_logistic'
+character(len=*), parameter :: CAVG_RELATIONAL_SCHEMA_NONE            = 'none'
+character(len=*), parameter :: CAVG_RELATIONAL_SCHEMA_CORR_KNN_SIGNAL_V1 = 'corr_knn_signal_v1'
+integer,          parameter :: CAVG_RELATIONAL_DEFAULT_KNN             = 5
+real,             parameter :: CAVG_RELATIONAL_DEFAULT_CORR_HP         = 100.0
+real,             parameter :: CAVG_RELATIONAL_DEFAULT_CORR_LP         = 15.0
+real,             parameter :: CAVG_RELATIONAL_DEFAULT_CORR_TRS        = 10.0
 
 ! Class-average quality contexts form a workflow ladder:
 ! - sieve: very small 2D chunks; conservative hard gates only, no learned model.
@@ -43,6 +52,7 @@ character(len=*), parameter :: CAVG_MODEL_FAMILY_PAIRWISE_LOGISTIC    = 'pairwis
 character(len=*), parameter :: CAVG_QUALITY_CONTEXT_CHUNK             = 'chunk'
 character(len=*), parameter :: CAVG_QUALITY_CONTEXT_SIEVE             = 'sieve'
 character(len=*), parameter :: CAVG_QUALITY_CONTEXT_POOL              = 'pool'
+character(len=*), parameter :: CAVG_QUALITY_CONTEXT_HARD_GATES        = 'hard_gates'
 
 integer, parameter :: CAVG_REJECT_REASON_NONE                  = 0
 integer, parameter :: CAVG_REJECT_REASON_POP                   = 1
@@ -66,7 +76,6 @@ type :: cavg_quality_model_spec
     character(len=64) :: name                         = ''
     character(len=32) :: context                      = 'chunk'
     character(len=64) :: feature_policy               = 'microchunk_plus_score_signal'
-    character(len=32) :: model_family                 = CAVG_MODEL_FAMILY_LINEAR
     real              :: weights(CAVG_QUALITY_NFEATS) = 0.0
     real              :: intercept                    = 0.0
     real              :: linear_coefficients(CAVG_QUALITY_NFEATS) = 0.0
@@ -76,6 +85,12 @@ type :: cavg_quality_model_spec
     real              :: prob_threshold               = 0.5
     real              :: regularization_lambda        = 0.0
     real              :: calibration_temperature      = 1.0
+    character(len=64) :: relational_feature_schema    = CAVG_RELATIONAL_SCHEMA_NONE
+    integer           :: relational_knn               = 0
+    real              :: relational_corr_hp           = 0.0
+    real              :: relational_corr_lp           = 0.0
+    real              :: relational_corr_trs          = 0.0
+    real              :: relational_coefficient       = 0.0
     real              :: boundary_margin              = 0.0
     real              :: min_score_separation         = 0.0
     real              :: otsu_min_offset              = 0.0
@@ -114,8 +129,14 @@ end type cavg_quality_result
 type :: cavg_quality_training_dataset
     character(len=LONGSTRLEN) :: fname      = ''
     character(len=LONGSTRLEN) :: dataset_id = ''
+    character(len=64)         :: relational_feature_schema = CAVG_RELATIONAL_SCHEMA_NONE
+    integer                   :: relational_knn = 0
+    real                      :: relational_corr_hp = 0.0
+    real                      :: relational_corr_lp = 0.0
+    real                      :: relational_corr_trs = 0.0
     integer                   :: ncls       = 0
     real,    allocatable      :: features(:,:)
+    real,    allocatable      :: relational_feature(:)
     integer, allocatable      :: manual_states(:)
     logical, allocatable      :: hard_reject(:)
 end type cavg_quality_training_dataset

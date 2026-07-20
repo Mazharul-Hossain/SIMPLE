@@ -219,31 +219,32 @@ update" unless the ownership, artifacts, and update model actually change.
 `prob_neigh` dispatches to the neighborhood probability command. The matcher
 then consumes the generated assignment artifact.
 
-`prob_neigh_mode` controls how `prob_neigh` chooses sparse subspace
-neighborhoods before evaluating candidates:
+`prob_neigh_mode` controls how `prob_neigh` chooses candidate neighborhoods
+before evaluating candidates:
 
 - `state`: score coarse subspace representatives independently per state, pool
   the selected neighborhoods across states, and evaluate the same pooled
   projection search space for every active state.
-- `geom`: use the geometrically nearest subspace point to the current particle
-  projection, with no coarse scoring or pooled peaks.
+- `geom`: select the subspace containing the particle's current projection for
+  every active state, with no coarse scoring or pooled peaks.
+- `shc`: use the direct stochastic candidate path. When shifts are enabled, it
+  first estimates a shift seed before candidate scoring.
+- `snhc`: use the same direct stochastic candidate path without the initial
+  shift seed. It is consequently also the zero-shift default for this mode.
 
-`prob_assign` controls how evaluated probabilistic-table distances are turned
-into stochastic assignments:
+Probabilistic-table assignments use the calibrated likelihood path. The stored
+distances are noise-normalized negative log-likelihoods for the Euclidean
+objective, and evaluated candidates are sampled with weights proportional to
+`exp(-dist)` over an explicit top-K support. The implementation uses a
+per-particle minimum shift before exponentiation for numerical stability; this
+does not change normalized weights.
 
-- `legacy`: preserve the historical table normalization and threshold-based
-  sampling behavior.
-- `likelihood`: keep raw objective distances and sample evaluated candidates
-  with weights proportional to `exp(-dist)` over an explicit top-K support.
-
-For `prob_assign=likelihood`, the top-K truncation is deliberate. It defines
-the local discrete support actually evaluated by the pre-alignment step; it is
-not meant to represent a full posterior over all SO(3) grid points. Euclidean
-objective distances are variance-normalized by the shell noise model before
-they reach the probability table. `objfun=cc` is supported as a monotone
-pseudo-likelihood by using the distance `1 - clamp(cc, 0, 1)` and then the same
-`exp(-dist)` weighting. Do not describe the CC path as a calibrated Gaussian
-likelihood unless the objective model changes.
+The top-K truncation is deliberate. It defines the local discrete support
+actually evaluated by the pre-alignment step; it is not meant to represent a
+full posterior over all SO(3) grid points. If the CC objective is enabled, its
+existing likelihood-compatible transformation remains the source of the
+probability weights, but should not be described as a calibrated Gaussian
+likelihood.
 
 Likelihood-weighted probability-table modes may still profile or MAP-refine
 shifts, and sometimes in-plane rotation, after stochastic candidate selection.
@@ -315,9 +316,17 @@ The combined even/odd iteration is part of base `refine3D`, not a terminal
 ## 11. Finalization and Artifacts
 
 On each iteration, strategy benchmark files should stay simple: context plus
-one `TIMINGS (s)` section. Labels should be coarse operation buckets such as
+one `TIMINGS (s)` section. Labels should include the coarse operation buckets
 setup, probabilistic pre-step, matcher/scheduler, assembly/postprocess, and
-total time.
+total time, together with separately timed reprojection-model materialization
+and group-sigma consolidation. These two measurements keep a per-iteration
+sigma update distinguishable from reference preparation.
+
+Each refine3D stage also writes one stage-entry benchmark at its first
+iteration. It records the total stage initialization wall time and the nested
+`calc_pspec` wall time. The latter is the per-particle sigma estimation that
+may be reused across compatible stage changes; it must not be inferred from a
+per-iteration setup bucket.
 
 Distributed matching writes partition alignment documents and merges them into
 the project after worker completion. Shared-memory matching writes the project
