@@ -276,7 +276,8 @@ contains
         if( istage < PROBREFINE_STAGE )then
             cfg%prob_assign = 'inactive'
         else
-            cfg%prob_assign = trim(params%prob_assign)
+            ! Likelihood weighting is now the only probabilistic-assignment path.
+            cfg%prob_assign = 'likelihood'
         endif
         if( params%l_sgd .and. trim(params%sgd_mode) == 'joint' )then
             activation = joint2D_sgd_activation_for_stage(.true., istage, params%sgd_stage4_mode, .false.)

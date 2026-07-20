@@ -792,10 +792,6 @@ contains
                             &'>>> JOINT2D SGD ABLATION CONFIG: mode=assignment_only assignments=active '//&
                             &'cavg_update=preserve_previous'
                     endif
-                    if( trim(self%prob_assign) /= 'likelihood' )then
-                        self%prob_assign = 'likelihood'
-                        write(logfhandle,'(A)') '>>> JOINT 2D SGD: forcing prob_assign=likelihood'
-                    endif
                     if( trim(self%sgd_latent) /= 'st_topk' )then
                         THROW_HARD('joint SGD scaffold currently implements only sgd_latent=st_topk')
                     endif
