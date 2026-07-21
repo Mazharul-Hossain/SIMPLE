@@ -94,6 +94,39 @@ profile_sum() {
   ' "$file"
 }
 
+execution_seconds() {
+  local file="$1"
+  [[ -f "$file" ]] || { echo "NA"; return 0; }
+  awk '
+    /Execution time:/ {
+      for (i = 1; i <= NF; i++) {
+        if ($i == "seconds" && i > 1 && $(i-1) ~ /^[0-9.eE+-]+$/) value = $(i-1)
+      }
+    }
+    END { if (value == "") print "NA"; else print value }
+  ' "$file"
+}
+
+resolution_lt10_metrics() {
+  local file="$1"
+  [[ -f "$file" ]] || { echo "NA,NA"; return 0; }
+  awk '
+    /SIMPLE_MAKE_CAVGS NORMAL STOP/ { active = 1; count = 0; population = 0; next }
+    active && /^[[:space:]]*CLASS:/ {
+      pop = ""; res = ""
+      for (i = 1; i <= NF; i++) {
+        if ($i == "POP:" && i < NF) pop = $(i+1)
+        if ($i == "RES:" && i < NF) res = $(i+1)
+      }
+      if (pop ~ /^[0-9]+$/ && res ~ /^[0-9.eE+-]+$/ && res + 0 < 10.0) {
+        count++
+        population += pop
+      }
+    }
+    END { if (!active) print "NA,NA"; else printf "%d,%d\n", count, population }
+  ' "$file"
+}
+
 emit_iteration_rows() {
   local file="$1"
   local profile="$2"
@@ -206,7 +239,7 @@ population_metrics() {
 
 write_header() {
   cat <<'EOF'
-case,replicate,profile,mode,stage4_mode,status,project,ncls,mskdiam,nthr,topk,sgd_eta_latent,sgd_eta_cavg,sgd_balance_weight,accepted_frac,empty,accepted,too_few,high_entropy,avg_entropy,entropy_min,entropy_max,avg_norm_entropy,norm_entropy_min,norm_entropy_max,avg_winner_weight,winner_weight_min,winner_weight_max,posterior_multi_candidate,effective_k_p50,effective_k_p90,expected_loss_delta,winner_churn,inpl_changed,shift_step_mean,shift_step_max,cavg_support_min,cavg_support_mean,cavg_support_max,cavg_updated,cavg_preserved,cavg_trust_clipped,cavg_grad_norm,cavg_step_norm,cavg_rel_step_norm,cavg_proposed_rel_step_max,cavg_applied_rel_step_max,cavg_nonfinite,frc_mean_peak,frc_max_peak,frc_usable_classes,profile_provisional_seconds,profile_transport_seconds,profile_softmax_seconds,profile_inplane_seconds,profile_shift_seconds,profile_class_update_seconds,shift_objective_evals,shift_gradient_evals,shift_accepted_steps,active_classes,active_class_fraction,max_population_fraction,zero_population_classes,pop_entropy,collapse_index,population_source,log_file,run_dir
+case,replicate,profile,mode,stage4_mode,status,execution_seconds,res_lt10_classes,res_lt10_population,project,ncls,mskdiam,nthr,topk,sgd_eta_latent,sgd_eta_cavg,sgd_balance_weight,accepted_frac,empty,accepted,too_few,high_entropy,avg_entropy,entropy_min,entropy_max,avg_norm_entropy,norm_entropy_min,norm_entropy_max,avg_winner_weight,winner_weight_min,winner_weight_max,posterior_multi_candidate,effective_k_p50,effective_k_p90,expected_loss_delta,winner_churn,inpl_changed,shift_step_mean,shift_step_max,cavg_support_min,cavg_support_mean,cavg_support_max,cavg_updated,cavg_preserved,cavg_trust_clipped,cavg_grad_norm,cavg_step_norm,cavg_rel_step_norm,cavg_proposed_rel_step_max,cavg_applied_rel_step_max,cavg_nonfinite,frc_mean_peak,frc_max_peak,frc_usable_classes,profile_provisional_seconds,profile_transport_seconds,profile_softmax_seconds,profile_inplane_seconds,profile_shift_seconds,profile_class_update_seconds,shift_objective_evals,shift_gradient_evals,shift_accepted_steps,active_classes,active_class_fraction,max_population_fraction,zero_population_classes,pop_entropy,collapse_index,population_source,log_file,run_dir
 EOF
 }
 
@@ -232,6 +265,10 @@ tail -n +2 "$manifest" | while IFS=$'\t' read -r case_name rep profile mode stag
     status="missing_log"
   fi
   emit_iteration_rows "$log_file" "$profile" "$case_name" "$rep" "$stage4_mode" >> "$iterations"
+
+  run_seconds="$(execution_seconds "$log_file")"
+  resolution_csv="$(resolution_lt10_metrics "$log_file")"
+  IFS=, read -r res_lt10_classes res_lt10_population <<< "$resolution_csv"
 
   accepted_frac="$(kv_last "$log_file" 'JOINT2D SGD TOPK RANGES:' 'accepted_frac')"
   empty="$(kv_last "$log_file" 'JOINT2D SGD TOPK:' 'empty')"
@@ -284,7 +321,8 @@ tail -n +2 "$manifest" | while IFS=$'\t' read -r case_name rep profile mode stag
     pop_entropy collapse_index population_source <<< "$pop_csv"
 
   emit_csv_row \
-    "$case_name" "$rep" "$profile" "$mode" "$stage4_mode" "$status" "$project" "$ncls" "$mskdiam" "$nthr" \
+    "$case_name" "$rep" "$profile" "$mode" "$stage4_mode" "$status" \
+    "$run_seconds" "$res_lt10_classes" "$res_lt10_population" "$project" "$ncls" "$mskdiam" "$nthr" \
     "$topk" "$eta_latent" "$eta_cavg" "$balance_weight" "$accepted_frac" "$empty" \
     "$accepted" "$too_few" "$high_entropy" "$avg_entropy" "$entropy_min" "$entropy_max" \
     "$avg_norm_entropy" "$norm_entropy_min" "$norm_entropy_max" "$avg_winner_weight" \
@@ -310,6 +348,9 @@ done
   echo "Generated files:"
   echo
   echo "- \`science_runs.tsv\`"
+  if [[ -f "$root/science_checkpoints.tsv" ]]; then
+    echo "- \`science_checkpoints.tsv\`"
+  fi
   echo "- \`science_metrics.csv\`"
   echo "- \`science_iterations.csv\`"
   echo "- \`science_summary.md\`"
@@ -331,6 +372,79 @@ done
       printf "- %s rep %s: accepted_frac=%s, entropy=%s, winner_weight=%s, frc_mean_peak=%s, active_classes=%s, collapse_index=%s\n", \
         $1, $2, $(h["accepted_frac"]), $(h["avg_norm_entropy"]), $(h["avg_winner_weight"]), \
         $(h["frc_mean_peak"]), $(h["active_classes"]), $(h["collapse_index"])
+    }' "$metrics"
+  echo
+  echo "## Shift-Selection Replicate Means"
+  echo
+  awk -F, '
+    function numeric(v) { return v != "NA" && v ~ /^[-+0-9.eE]+$/ }
+    NR == 1 {
+      for (i = 1; i <= NF; i++) { gsub(/"/, "", $i); h[$i] = i }
+      order[1] = "checkpoint_baseline"
+      order[2] = "balance_raw_likelihood"
+      order[3] = "raw_likelihood_topk1"
+      next
+    }
+    {
+      for (i = 1; i <= NF; i++) gsub(/"/, "", $i)
+      if ($(h["profile"]) != "shift_selection") next
+      c = $(h["case"])
+      runs[c]++
+      if ($(h["status"]) == "pass") passed[c]++
+      if (numeric($(h["execution_seconds"]))) { runtime[c] += $(h["execution_seconds"]); runtime_n[c]++ }
+      if (numeric($(h["res_lt10_classes"]))) { res_count[c] += $(h["res_lt10_classes"]); res_count_n[c]++ }
+      if (numeric($(h["res_lt10_population"]))) { res_pop[c] += $(h["res_lt10_population"]); res_pop_n[c]++ }
+      if (numeric($(h["active_classes"]))) { active[c] += $(h["active_classes"]); active_n[c]++ }
+      if (numeric($(h["collapse_index"]))) { collapse[c] += $(h["collapse_index"]); collapse_n[c]++ }
+      found = 1
+    }
+    END {
+      if (!found) { print "- Not a shift-selection result set."; exit }
+      for (j = 1; j <= 3; j++) {
+        c = order[j]
+        rt = (runtime_n[c] ? sprintf("%.2f", runtime[c] / runtime_n[c]) : "NA")
+        rc = (res_count_n[c] ? sprintf("%.2f", res_count[c] / res_count_n[c]) : "NA")
+        rp = (res_pop_n[c] ? sprintf("%.2f", res_pop[c] / res_pop_n[c]) : "NA")
+        ac = (active_n[c] ? sprintf("%.2f", active[c] / active_n[c]) : "NA")
+        ci = (collapse_n[c] ? sprintf("%.4f", collapse[c] / collapse_n[c]) : "NA")
+        printf "- %s: pass=%d/%d, mean continuation=%ss, mean RES<10 classes=%s, mean RES<10 population=%s, mean active classes=%s, mean collapse index=%s\n", \
+          c, passed[c] + 0, runs[c] + 0, rt, rc, rp, ac, ci
+      }
+    }' "$metrics"
+  echo
+  echo "## Shift-Selection Paired Deltas"
+  echo
+  awk -F, '
+    function numeric(v) { return v != "NA" && v ~ /^[-+0-9.eE]+$/ }
+    NR == 1 {
+      for (i = 1; i <= NF; i++) { gsub(/"/, "", $i); h[$i] = i }
+      cases[1] = "balance_raw_likelihood"
+      cases[2] = "raw_likelihood_topk1"
+      next
+    }
+    {
+      for (i = 1; i <= NF; i++) gsub(/"/, "", $i)
+      if ($(h["profile"]) != "shift_selection") next
+      r = $(h["replicate"]); c = $(h["case"])
+      if (r + 0 > maxrep) maxrep = r + 0
+      runtime[r,c] = $(h["execution_seconds"])
+      res_count[r,c] = $(h["res_lt10_classes"])
+      res_pop[r,c] = $(h["res_lt10_population"])
+      status[r,c] = $(h["status"])
+      found = 1
+    }
+    END {
+      if (!found) { print "- Not a shift-selection result set."; exit }
+      for (r = 1; r <= maxrep; r++) {
+        for (j = 1; j <= 2; j++) {
+          c = cases[j]
+          dt = (numeric(runtime[r,c]) && numeric(runtime[r,"checkpoint_baseline"]) ? sprintf("%+.2f", runtime[r,c] - runtime[r,"checkpoint_baseline"]) : "NA")
+          dc = (numeric(res_count[r,c]) && numeric(res_count[r,"checkpoint_baseline"]) ? sprintf("%+.0f", res_count[r,c] - res_count[r,"checkpoint_baseline"]) : "NA")
+          dp = (numeric(res_pop[r,c]) && numeric(res_pop[r,"checkpoint_baseline"]) ? sprintf("%+.0f", res_pop[r,c] - res_pop[r,"checkpoint_baseline"]) : "NA")
+          printf "- rep %d %s vs checkpoint_baseline: status=%s, continuation delta=%ss, RES<10 class delta=%s, RES<10 population delta=%s\n", \
+            r, c, status[r,c], dt, dc, dp
+        }
+      }
     }' "$metrics"
   echo
   echo "## Joint Component Profile"
@@ -368,6 +482,7 @@ done
   echo "- Baseline runs intentionally have joint2D-SGD metric fields as \`NA\`."
   echo "- Population metrics are extracted from text STAR-like exports when available; otherwise they are \`NA\`."
   echo "- FRC peak metrics come from joint restoration diagnostics. If a baseline text FRC export is unavailable, baseline FRC fields remain \`NA\`."
+  echo "- Shift-selection execution time is the stage-4-and-later continuation only; every trio shares its replicate's stage-3 checkpoint cost."
   echo "- This report flags evidence for review; it does not claim scientific superiority automatically."
   echo "- Per-stage and per-iteration schedule/diagnostic records are retained in \`science_iterations.csv\`; run-level metrics remain compact summaries."
 } > "$summary"

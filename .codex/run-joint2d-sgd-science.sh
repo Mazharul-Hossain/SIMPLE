@@ -9,6 +9,7 @@ Usage:
   .codex/run-joint2d-sgd-science.sh --list-cases
   .codex/run-joint2d-sgd-science.sh [--root ROOT] [--shared-stage3] --case CASE [--case CASE ...]
   .codex/run-joint2d-sgd-science.sh --shared-stage3-from PATH --case CASE [--case CASE ...]
+  .codex/run-joint2d-sgd-science.sh --profile shift_selection [--reps 3]
   .codex/run-joint2d-sgd-science.sh --prepare-build
   .codex/run-joint2d-sgd-science.sh --prepare-betagal-extract
   .codex/run-joint2d-sgd-science.sh
@@ -40,8 +41,11 @@ Default complete matrix (`profile=all`):
   balance_topk5 / balance_topk5_raw
   assignment_only
 
-The narrower `activation` and `hyperparameters` profiles remain available for
-targeted reruns. Every hyperparameter case uses `sgd_stage4_mode=alternate`.
+The narrower `activation`, `hyperparameters`, and `shift_selection` profiles
+remain available for targeted runs. `shift_selection` is the paired decision
+experiment: it runs checkpoint_baseline, balanced raw top-K=3, and raw top-K=1
+from each of at least three independently generated stage-3 checkpoints.
+Every hyperparameter case uses `sgd_stage4_mode=alternate`.
 Repeat --case to rerun any subset; case selection overrides the profile matrix.
 
   --shared-stage3 Run each replicate's joint-SGD cases from one byte-identical
@@ -52,6 +56,9 @@ Repeat --case to rerun any subset; case selection overrides the profile matrix.
                   _shared_stage3_checkpoint_repN for every requested replicate.
   --root ROOT     Append into ROOT. Existing runs and manifest rows are kept;
                   reruns receive a _rerunN suffix.
+  --profile NAME  all, activation, hyperparameters, or shift_selection.
+  --reps N        Number of checkpoint replicates. shift_selection defaults to
+                  3 and rejects values below 3.
 
 When --root points to a previous run containing the matching checkpoint(s),
 --shared-stage3 reuses them automatically. Use --shared-stage3-from when the
@@ -64,7 +71,7 @@ Environment overrides:
   JOINT2D_SGD_SHARED_STAGE3_FROM   Optional completed checkpoint or prior run root.
   JOINT2D_SGD_SCIENCE_PROJECT      Existing extracted .simple project for validation.
   JOINT2D_SGD_SCIENCE_REPS         Number of replicates. Defaults to 1; recommended 3.
-  JOINT2D_SGD_SCIENCE_PROFILE      all, activation, or hyperparameters. Defaults to all.
+  JOINT2D_SGD_SCIENCE_PROFILE      all, activation, hyperparameters, or shift_selection. Defaults to all.
   JOINT2D_SGD_SCIENCE_NCLS         abinitio2D ncls. Defaults to 100.
   JOINT2D_SGD_SCIENCE_MSKDIAM      abinitio2D mskdiam. Defaults to 190.
   JOINT2D_SGD_SCIENCE_NTHR         abinitio2D nthr. Defaults to 64.
@@ -102,6 +109,49 @@ initialize_manifest() {
   else
     write_manifest_header
   fi
+}
+
+initialize_checkpoint_manifest() {
+  local expected_header
+  expected_header=$'replicate\tprofile\tcheckpoint_name\tcheckpoint_path\tlog_file\tlast_iteration\tstate_file\tsha256\tsource'
+  if [[ -f "$checkpoint_manifest" ]]; then
+    [[ "$(head -n 1 "$checkpoint_manifest")" == "$expected_header" ]] || \
+      fail "existing checkpoint manifest has an incompatible header: $checkpoint_manifest"
+  else
+    printf '%s\n' "$expected_header" > "$checkpoint_manifest"
+  fi
+}
+
+record_checkpoint() {
+  local rep="$1"
+  local checkpoint_name="$2"
+  local source="$3"
+  local iter_tag state_file fingerprint
+  iter_tag="$(printf '%03d' "$checkpoint_last_iter")"
+  state_file="$(find "$checkpoint_case_root" -type f -name "cavgs_iter${iter_tag}.mrc" -print -quit)"
+  [[ -n "$state_file" ]] || fail "stage-3 checkpoint state image not found for replicate $rep below: $checkpoint_case_root"
+  command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required to fingerprint stage-3 checkpoints"
+  fingerprint="$(sha256sum "$state_file" | awk '{print $1}')"
+  [[ "$fingerprint" =~ ^[[:xdigit:]]{64}$ ]] || fail "invalid stage-3 checkpoint fingerprint for replicate $rep"
+  checkpoint_fingerprints+=( "$fingerprint" )
+  checkpoint_paths+=( "$checkpoint_case_root" )
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$rep" "$manifest_profile" "$checkpoint_name" "$checkpoint_case_root" "$checkpoint_log" \
+    "$checkpoint_last_iter" "$state_file" "$fingerprint" "$source" >> "$checkpoint_manifest"
+  echo "Shared stage-3 checkpoint fingerprint: replicate=$rep sha256=$fingerprint state=$state_file"
+}
+
+validate_shift_selection_checkpoints() {
+  local unique_fingerprints unique_paths
+  [[ "${#checkpoint_fingerprints[@]}" -eq "$reps" ]] || \
+    fail "shift_selection recorded ${#checkpoint_fingerprints[@]} checkpoints; expected $reps"
+  unique_fingerprints="$(printf '%s\n' "${checkpoint_fingerprints[@]}" | sort -u | wc -l | tr -d '[:space:]')"
+  unique_paths="$(printf '%s\n' "${checkpoint_paths[@]}" | sort -u | wc -l | tr -d '[:space:]')"
+  [[ "$unique_paths" -eq "$reps" ]] || \
+    fail "shift_selection reused a checkpoint path; expected $reps independent checkpoint paths, found $unique_paths"
+  [[ "$unique_fingerprints" -eq "$reps" ]] || \
+    fail "shift_selection checkpoints are not independent: only $unique_fingerprints of $reps stage-3 state fingerprints are distinct"
+  echo "Shift-selection checkpoint invariant passed: replicates=$reps distinct_paths=$unique_paths distinct_states=$unique_fingerprints"
 }
 
 science_all_cases=(
@@ -143,6 +193,7 @@ science_hyperparameter_cases=(
   balance_topk5_raw
   assignment_only
 )
+science_shift_selection_cases=( checkpoint_baseline balance_raw_likelihood raw_likelihood_topk1 )
 
 list_cases() {
   printf '%s\n' "${science_known_cases[@]}"
@@ -279,10 +330,12 @@ prepare_shared_stage3_checkpoint() {
 
   if [[ -n "$shared_stage3_from" ]]; then
     joint2d_sgd_resolve_shared_stage3_checkpoint "$shared_stage3_from" "$checkpoint_name"
+    record_checkpoint "$rep" "$checkpoint_name" "reused:$shared_stage3_from"
     return
   fi
   if [[ -d "$scratch_root/$checkpoint_name" ]]; then
     joint2d_sgd_resolve_shared_stage3_checkpoint "$scratch_root" "$checkpoint_name"
+    record_checkpoint "$rep" "$checkpoint_name" "reused:$scratch_root"
     return
   fi
 
@@ -308,6 +361,7 @@ prepare_shared_stage3_checkpoint() {
   [[ -n "$checkpoint_last_iter" ]] || \
     fail "shared stage-3 checkpoint has no completion marker: $checkpoint_log"
   echo "Shared stage-3 checkpoint ready: replicate=$rep last_iter=$checkpoint_last_iter log=$checkpoint_log"
+  record_checkpoint "$rep" "$checkpoint_name" generated
 }
 
 selected_cases_include_joint() {
@@ -377,7 +431,7 @@ run_selected_case() {
       # K=1 is the hard-assignment anchor.  Keep eta_cavg identical to the
       # K=3 raw-likelihood case so only candidate support changes.
       run_case raw_likelihood_topk1 "$rep" joint alternate 1 0.5 0.1 0.0 \
-        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=1 sgd_inner_its=0 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes sgd_shadow_stage3=yes
+        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=1 sgd_inner_its=0 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_eta_shift=0.25 sgd_shift_its=4 sgd_balance_weight=0.0 sgd_diag=yes sgd_shadow_stage3=yes
       ;;
     stage4_on_raw_likelihood)
       run_case stage4_on_raw_likelihood "$rep" joint on 3 0.5 0.1 0.0 \
@@ -385,7 +439,7 @@ run_selected_case() {
       ;;
     balance_raw_likelihood)
       run_case balance_raw_likelihood "$rep" joint alternate 3 0.5 0.1 1.0 \
-        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_inner_its=0 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_balance_weight=1.0 sgd_diag=yes sgd_shadow_stage3=yes
+        sgd=yes sgd_mode=joint sgd_stage4_mode=alternate sgd_topk=3 sgd_inner_its=0 sgd_eta_cavg=0.1 sgd_eta_latent=0.5 sgd_eta_shift=0.25 sgd_shift_its=4 sgd_balance_weight=1.0 sgd_diag=yes sgd_shadow_stage3=yes
       ;;
     balance_stage4_on_raw_likelihood)
       run_case balance_stage4_on_raw_likelihood "$rep" joint on 3 0.5 0.1 1.0 \
@@ -422,6 +476,8 @@ case_filter_requested=no
 shared_stage3=no
 shared_stage3_from="$(env_or_legacy JOINT2D_SGD_SHARED_STAGE3_FROM JOINT_SGD_SHARED_STAGE3_FROM "")"
 root_override=""
+profile_override=""
+reps_override=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)
@@ -465,6 +521,16 @@ while [[ $# -gt 0 ]]; do
       root_override="$2"
       shift 2
       ;;
+    --profile)
+      [[ $# -ge 2 ]] || fail "--profile requires a profile name"
+      profile_override="$2"
+      shift 2
+      ;;
+    --reps)
+      [[ $# -ge 2 ]] || fail "--reps requires a positive integer"
+      reps_override="$2"
+      shift 2
+      ;;
     *)
       fail "unknown argument '$1'; use --help"
       ;;
@@ -500,22 +566,29 @@ fi
 common_project_probe JOINT2D_SGD_SCIENCE_PROJECT JOINT_SGD_SCIENCE_PROJECT
 
 if [[ "$action" == "check" ]]; then
+  check_profile="${profile_override:-$(env_or_legacy JOINT2D_SGD_SCIENCE_PROFILE JOINT_SGD_SCIENCE_PROFILE all)}"
+  check_default_reps=1
+  [[ "$check_profile" == shift_selection ]] && check_default_reps=3
+  check_reps="${reps_override:-$(env_or_legacy JOINT2D_SGD_SCIENCE_REPS JOINT_SGD_SCIENCE_REPS "$check_default_reps")}"
+  check_shared_stage3="$shared_stage3"
+  [[ "$check_profile" == shift_selection && "$case_filter_requested" == no ]] && check_shared_stage3=yes
   print_common_check "Default science root: $projects_home/simple_joint2d_sgd_science_<timestamp>"
-  echo "Replicates: $(env_or_legacy JOINT2D_SGD_SCIENCE_REPS JOINT_SGD_SCIENCE_REPS 1)"
+  echo "Replicates: $check_reps"
   echo "Science threads: $(env_or_legacy JOINT2D_SGD_SCIENCE_NTHR JOINT_SGD_SCIENCE_NTHR 64)"
-  echo "Profile: $(env_or_legacy JOINT2D_SGD_SCIENCE_PROFILE JOINT_SGD_SCIENCE_PROFILE all)"
+  echo "Profile: $check_profile"
   if [[ "$case_filter_requested" == yes ]]; then
     echo "Selected science cases: ${selected_cases[*]}"
   else
     echo "Selected science cases: profile matrix"
   fi
-  echo "Shared stage-3 checkpoint: $shared_stage3"
+  echo "Shared stage-3 checkpoint: $check_shared_stage3"
   echo "Shared stage-3 source: ${shared_stage3_from:-auto/new}"
   echo "Requested output root: ${root_override:-default timestamped root}"
   cat <<'EOF'
 All profile: baseline plus the complete activation and 015 hyperparameter matrices.
 Activation profile: baseline, stage4_off, stage4_alternate, stage4_on.
 Hyperparameters profile: the 015 sweep with stage4_alternate.
+Shift-selection profile: three paired checkpoint continuations per independently generated stage-3 state.
 Failure policy: each case/replicate is independent; failed cases are recorded and later cases continue.
 EOF
   exit 0
@@ -529,19 +602,26 @@ infer_workflow_root "$project_path"
 
 timestamp="$(date +%Y%m%d_%H%M%S)"
 scratch_root="${root_override:-$(env_or_legacy JOINT2D_SGD_SCIENCE_ROOT JOINT_SGD_SCIENCE_ROOT "$projects_home/simple_joint2d_sgd_science_${timestamp}")}"
-reps="$(env_or_legacy JOINT2D_SGD_SCIENCE_REPS JOINT_SGD_SCIENCE_REPS 1)"
 ncls="$(env_or_legacy JOINT2D_SGD_SCIENCE_NCLS JOINT_SGD_SCIENCE_NCLS 100)"
 mskdiam="$(env_or_legacy JOINT2D_SGD_SCIENCE_MSKDIAM JOINT_SGD_SCIENCE_MSKDIAM 190)"
 nthr="$(env_or_legacy JOINT2D_SGD_SCIENCE_NTHR JOINT_SGD_SCIENCE_NTHR 64)"
-profile="$(env_or_legacy JOINT2D_SGD_SCIENCE_PROFILE JOINT_SGD_SCIENCE_PROFILE all)"
+profile="${profile_override:-$(env_or_legacy JOINT2D_SGD_SCIENCE_PROFILE JOINT_SGD_SCIENCE_PROFILE all)}"
+default_reps=1
+[[ "$profile" == shift_selection ]] && default_reps=3
+reps="${reps_override:-$(env_or_legacy JOINT2D_SGD_SCIENCE_REPS JOINT_SGD_SCIENCE_REPS "$default_reps")}"
 manifest_profile="$profile"
 manifest="$scratch_root/science_runs.tsv"
+checkpoint_manifest="$scratch_root/science_checkpoints.tsv"
 
 [[ "$reps" =~ ^[0-9]+$ && "$reps" -ge 1 ]] || fail "JOINT2D_SGD_SCIENCE_REPS must be a positive integer"
 case "$profile" in
-  all|activation|hyperparameters) ;;
-  *) fail "JOINT2D_SGD_SCIENCE_PROFILE must be all, activation, or hyperparameters" ;;
+  all|activation|hyperparameters|shift_selection) ;;
+  *) fail "JOINT2D_SGD_SCIENCE_PROFILE must be all, activation, hyperparameters, or shift_selection" ;;
 esac
+if [[ "$profile" == shift_selection && "$case_filter_requested" == no ]]; then
+  [[ "$reps" -ge 3 ]] || fail "shift_selection requires at least 3 independently generated checkpoint replicates"
+  shared_stage3=yes
+fi
 
 if [[ "$case_filter_requested" == yes ]]; then
   manifest_profile=selected
@@ -550,6 +630,7 @@ else
     all) selected_cases=( "${science_all_cases[@]}" ) ;;
     activation) selected_cases=( "${science_activation_cases[@]}" ) ;;
     hyperparameters) selected_cases=( "${science_hyperparameter_cases[@]}" ) ;;
+    shift_selection) selected_cases=( "${science_shift_selection_cases[@]}" ) ;;
   esac
 fi
 
@@ -560,10 +641,13 @@ fi
 mkdir -p "$scratch_root"
 scratch_root="$(cd -- "$scratch_root" && pwd -P)"
 initialize_manifest
+initialize_checkpoint_manifest
 total_cases=0
 failed_cases=0
 failed_case_list=()
 failed_case_names=()
+checkpoint_fingerprints=()
+checkpoint_paths=()
 
 echo "Science root: $scratch_root"
 echo "Source project: $project_path"
@@ -584,6 +668,9 @@ for rep in $(seq 1 "$reps"); do
 done
 
 "$summarizer" "$scratch_root"
+if [[ "$profile" == shift_selection && "$case_filter_requested" == no ]]; then
+  validate_shift_selection_checkpoints
+fi
 echo "joint2D-SGD scientific validation complete: $scratch_root"
 echo "Cases completed: $total_cases"
 echo "Cases failed: $failed_cases"
