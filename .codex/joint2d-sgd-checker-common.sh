@@ -633,6 +633,7 @@ check_science_joint_log() {
   require_contains 'JOINT2D SGD INPL' 'in-plane refinement diagnostics'
   require_contains 'JOINT2D SGD INPL LOSSES' 'in-plane loss diagnostics'
   require_contains 'JOINT2D SGD SHIFT' 'shift refinement diagnostics'
+  require_contains 'JOINT2D SGD SHIFT OPTIMIZER:' 'bounded shift-optimizer configuration'
   require_contains 'JOINT2D SGD SHIFT PROVENANCE' 'candidate shift-provenance diagnostics'
   require_contains 'JOINT2D SGD BALANCE' 'class-balance diagnostics'
   require_contains 'JOINT2D SGD BALANCE SUPPORT' 'class-balance support diagnostics'
@@ -649,6 +650,7 @@ check_science_joint_log() {
   require_contains 'component=softmax_transport' 'SoftMax profile diagnostics'
   require_contains 'component=inplane_refinement' 'in-plane profile diagnostics'
   require_contains 'component=shift_refinement' 'shift-minimizer profile diagnostics'
+  require_contains 'optimizer=direct_gradient' 'bounded direct-gradient shift diagnostics'
   require_contains 'component=class_update_restoration' 'class-update/restoration profile diagnostics'
   check_likelihood_unit_continuity
   check_posterior_mode

@@ -27,6 +27,7 @@ contains
         write(logfhandle,'(a,a)')  'sgd_latent     : ', trim(params%sgd_latent)
         write(logfhandle,'(a,i0)') 'sgd_topk       : ', params%sgd_topk
         write(logfhandle,'(a,i0)') 'sgd_inner_its  : ', params%sgd_inner_its
+        write(logfhandle,'(a,i0)') 'sgd_shift_its  : ', params%sgd_shift_its
         write(logfhandle,'(a)') 'joint SGD will make the matcher a candidate generator, not the assignment owner'
         write(logfhandle,'(a)') 'joint SGD Phase B is implemented through prob_align2D top-K assignment handoff'
         call candidates%kill

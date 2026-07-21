@@ -425,6 +425,7 @@ contains
         call reg%add_int('split_stage', self%split_stage)
         call reg%add_int('sgd_cavg_min_cands', self%sgd_cavg_min_cands)
         call reg%add_int('sgd_inner_its', self%sgd_inner_its)
+        call reg%add_int('sgd_shift_its', self%sgd_shift_its)
         call reg%add_int('sgd_topk', self%sgd_topk)
         call reg%add_int('startit', self%startit)
         call reg%add_int('stage', self%stage)

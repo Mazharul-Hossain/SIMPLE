@@ -1,17 +1,19 @@
 !@descr: rotational origin shift alignment of band-pass limited polar projections in the Fourier domain, gradient based minimizer
 module simple_pftc_shsrch_grad
 use iso_fortran_env, only: int64
+use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
 use simple_core_module_api
 use simple_opt_spec,  only: opt_spec
 use simple_optimizer, only: optimizer
 use simple_builder,   only: builder
 implicit none
 
-public :: pftc_shsrch_grad
+public :: pftc_shsrch_grad, bounded_shift_trial
 private
 #include "simple_local_flags.inc"
 
 integer,  parameter :: coarse_num_steps = 5       ! no. of coarse search steps in x AND y (hence real no. is its square)
+integer,  parameter :: direct_max_backtracks = 8
 
 type :: pftc_shsrch_grad
     private
@@ -27,12 +29,14 @@ type :: pftc_shsrch_grad
     integer                   :: max_evals    = 5       !< max # inplrot/shsrch cycles
     logical                   :: opt_angle    = .true.  !< optimise in-plane angle with callback flag
     logical                   :: coarse_init  = .false. !< whether to perform an intial coarse search over the range
+    logical                   :: direct_only  = .false. !< skip allocating an L-BFGS-B object for direct-gradient use
     integer(int64)            :: profile_objective_evals = 0_int64
     integer(int64)            :: profile_gradient_evals  = 0_int64
 contains
     procedure          :: new         => grad_shsrch_new
     procedure          :: set_indices => grad_shsrch_set_indices
     procedure          :: minimize    => grad_shsrch_minimize
+    procedure          :: minimize_direct => grad_shsrch_minimize_direct
     procedure          :: kill        => grad_shsrch_kill
     procedure          :: does_opt_angle
     procedure          :: set_limits
@@ -44,7 +48,7 @@ end type pftc_shsrch_grad
 
 contains
 
-    subroutine grad_shsrch_new( self, build, lims, lims_init, shbarrier, maxits, opt_angle, coarse_init )
+    subroutine grad_shsrch_new( self, build, lims, lims_init, shbarrier, maxits, opt_angle, coarse_init, direct_only )
         use simple_opt_factory, only: opt_factory
         class(pftc_shsrch_grad),     intent(inout) :: self           !< instance
         class(builder),      target, intent(in)    :: build          !< builder object for pftc access 
@@ -54,6 +58,7 @@ contains
         integer,           optional, intent(in)    :: maxits         !< maximum iterations
         logical,           optional, intent(in)    :: opt_angle      !< optimise in-plane angle with callback flag
         logical,           optional, intent(in)    :: coarse_init    !< coarse inital search
+        logical,           optional, intent(in)    :: direct_only    !< configure for the bounded direct-gradient path only
         type(opt_factory) :: opt_fact
         call self%kill
         ! set pointer to pftc instance for cost function evaluations
@@ -69,11 +74,13 @@ contains
         if( present(opt_angle) ) self%opt_angle = opt_angle
         self%coarse_init = .false.
         if( present(coarse_init) ) self%coarse_init = coarse_init
+        self%direct_only = .false.
+        if( present(direct_only) ) self%direct_only = direct_only
         ! make optimizer spec
         call self%ospec%specify('lbfgsb', 2, factr=1.0d+7, pgtol=1.0d-5, limits=lims,&
             max_step=0.01, limits_init=lims_init, maxits=self%maxits)
         ! generate the optimizer object
-        call opt_fact%new(self%ospec, self%opt_obj)
+        if( .not. self%direct_only ) call opt_fact%new(self%ospec, self%opt_obj)
         ! get # rotations
         self%nrots = self%b_ptr%pftc%get_nrots()
         ! set costfun pointers
@@ -181,6 +188,7 @@ contains
         real(dp) :: init_xy(2), lowest_cost_overall, coarse_cost, initial_cost
         integer  :: loc, i, lowest_rot, init_rot
         logical  :: found_better, l_sh_rot, coarse_init_orig
+        if( self%direct_only ) THROW_HARD('L-BFGS-B minimize requested from a direct-only shift search object')
         l_sh_rot = .true.
         if( present(sh_rot)  ) l_sh_rot = sh_rot
         if( present(xy_in)   )then
@@ -268,6 +276,107 @@ contains
         if( present(xy_in) ) self%coarse_init = coarse_init_orig
     end function grad_shsrch_minimize
 
+    !> Bounded direct-gradient minimization for the joint-SGD candidate path.
+    !! The current candidate shift is the initial state.  Each normalized step
+    !! is projected into the legal shift box and accepted only when it lowers
+    !! the objective; otherwise a short backtracking line search is used.
+    function grad_shsrch_minimize_direct( self, irot, xy_in, step_size, max_steps,&
+            &sh_rot, accepted_steps ) result( cxy )
+        class(pftc_shsrch_grad), intent(inout) :: self
+        integer,                 intent(inout) :: irot
+        real,                    intent(in)    :: xy_in(2), step_size
+        integer,                 intent(in)    :: max_steps
+        logical,       optional, intent(in)    :: sh_rot
+        integer,       optional, intent(out)   :: accepted_steps
+        real :: cxy(3), rotmat(2,2)
+        real(dp) :: current_xy(2), trial_xy(2), grad(2), corr_grad(2)
+        real(dp) :: current_corr, current_cost, initial_cost, trial_corr, trial_cost
+        real(dp) :: alpha, improve_tol
+        integer :: istep, iback, naccepted
+        logical :: accepted, l_sh_rot
+
+        if( self%opt_angle ) THROW_HARD('direct joint shift minimizer requires a fixed in-plane angle')
+        if( irot < 1 .or. irot > self%nrots ) THROW_HARD('direct joint shift minimizer received invalid rotation')
+        if( step_size <= 0. ) THROW_HARD('direct joint shift minimizer step_size must be > 0')
+        if( max_steps < 1 ) THROW_HARD('direct joint shift minimizer max_steps must be >= 1')
+        l_sh_rot = .true.
+        if( present(sh_rot) ) l_sh_rot = sh_rot
+        naccepted = 0
+        if( present(accepted_steps) ) accepted_steps = 0
+        cxy = 0.
+        self%cur_inpl_idx = irot
+        current_xy = real(xy_in,dp)
+        self%profile_objective_evals = self%profile_objective_evals + 1_int64
+        current_corr = self%b_ptr%pftc%gen_corr_for_rot_8(&
+            &self%reference, self%particle, current_xy, self%cur_inpl_idx)
+        if( .not. ieee_is_finite(current_corr) )then
+            irot = 0
+            return
+        endif
+        current_cost = -current_corr
+        initial_cost = current_cost
+
+        do istep = 1, max_steps
+            self%profile_objective_evals = self%profile_objective_evals + 1_int64
+            self%profile_gradient_evals  = self%profile_gradient_evals  + 1_int64
+            call self%b_ptr%pftc%gen_corr_grad_for_rot_8(self%reference, self%particle,&
+                &current_xy, self%cur_inpl_idx, current_corr, corr_grad)
+            grad = -corr_grad
+            if( .not. ieee_is_finite(current_corr) .or. any(.not. ieee_is_finite(grad)) ) exit
+            if( sqrt(sum(grad * grad)) <= real(DTINY,dp) ) exit
+            current_cost = -current_corr
+            alpha = real(step_size,dp)
+            accepted = .false.
+            do iback = 0, direct_max_backtracks - 1
+                trial_xy = bounded_shift_trial(current_xy, grad, alpha, real(self%ospec%limits,dp))
+                if( maxval(abs(trial_xy - current_xy)) <= real(DTINY,dp) )then
+                    alpha = 0.5_dp * alpha
+                    cycle
+                endif
+                self%profile_objective_evals = self%profile_objective_evals + 1_int64
+                trial_corr = self%b_ptr%pftc%gen_corr_for_rot_8(&
+                    &self%reference, self%particle, trial_xy, self%cur_inpl_idx)
+                if( ieee_is_finite(trial_corr) )then
+                    trial_cost = -trial_corr
+                    improve_tol = 64.0_dp * epsilon(1.0_dp) *&
+                        &max(1.0_dp, abs(current_cost), abs(trial_cost))
+                    if( trial_cost < current_cost - improve_tol )then
+                        current_xy   = trial_xy
+                        current_cost = trial_cost
+                        naccepted    = naccepted + 1
+                        accepted     = .true.
+                        exit
+                    endif
+                endif
+                alpha = 0.5_dp * alpha
+            end do
+            if( .not. accepted ) exit
+        end do
+
+        if( present(accepted_steps) ) accepted_steps = naccepted
+        improve_tol = 64.0_dp * epsilon(1.0_dp) * max(1.0_dp, abs(initial_cost), abs(current_cost))
+        if( naccepted < 1 .or. current_cost >= initial_cost - improve_tol )then
+            irot = 0
+            return
+        endif
+        cxy(1)  = -real(current_cost)
+        cxy(2:) = real(current_xy)
+        if( l_sh_rot )then
+            call rotmat2d(self%b_ptr%pftc%get_rot(irot), rotmat)
+            cxy(2:) = matmul(cxy(2:), rotmat)
+        endif
+    end function grad_shsrch_minimize_direct
+
+    pure function bounded_shift_trial( xy, gradient, step_size, limits ) result( trial )
+        real(dp), intent(in) :: xy(2), gradient(2), step_size, limits(2,2)
+        real(dp) :: trial(2), grad_norm
+        grad_norm = sqrt(sum(gradient * gradient))
+        trial = xy
+        if( step_size <= 0.0_dp .or. grad_norm <= real(DTINY,dp) ) return
+        trial = xy - step_size * gradient / grad_norm
+        trial = max(limits(:,1), min(limits(:,2), trial))
+    end function bounded_shift_trial
+
     subroutine coarse_search(self, lowest_cost, init_xy)
         class(pftc_shsrch_grad), intent(inout) :: self
         real(dp),                intent(out)   :: lowest_cost, init_xy(2)
@@ -339,11 +448,12 @@ contains
     subroutine grad_shsrch_kill( self )
         class(pftc_shsrch_grad), intent(inout) :: self
         if( associated(self%opt_obj) )then
-            call self%ospec%kill
             call self%opt_obj%kill
             nullify(self%opt_obj)
-            nullify(self%b_ptr)
         end if
+        call self%ospec%kill
+        nullify(self%b_ptr)
+        self%direct_only = .false.
         call self%reset_profile
     end subroutine grad_shsrch_kill
 

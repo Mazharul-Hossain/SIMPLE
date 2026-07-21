@@ -689,6 +689,7 @@ contains
             integer :: roundtrip_checked_total, roundtrip_mismatch_total
             integer(int64) :: objective_evals_t(nthr_glob), gradient_evals_t(nthr_glob)
             integer(int64) :: objective_evals, gradient_evals, candidate_objective_evals, candidate_gradient_evals
+            integer :: accepted_steps_t(nthr_glob), candidate_accepted_steps, accepted_steps_total
             real    :: cxy(3), old_shift(2), old_shift_opt(2), opt_shift(2), damped_shift(2)
             real    :: score_shift(2), rotmat(2,2), refined_corr, refined_dist, old_corr, old_dist, step
             real    :: roundtrip_dist, roundtrip_error, roundtrip_tol, roundtrip_error_mean
@@ -723,6 +724,10 @@ contains
                 return
             endif
             profile_start = tic()
+            write(logfhandle,'(A,1X,A,1X,A,ES12.4,1X,A,I0,1X,A)')&
+                &'>>> JOINT2D SGD SHIFT OPTIMIZER:', 'optimizer=direct_gradient',&
+                &'step_pixels=', p_ptr%sgd_eta_shift, 'max_steps=', p_ptr%sgd_shift_its,&
+                &'projection=box backtracking=monotone preserve_on_no_improvement=yes'
 
             lims(:,1)      = -p_ptr%trs
             lims(:,2)      =  p_ptr%trs
@@ -730,7 +735,7 @@ contains
             lims_init(:,2) =  SHC_INPL_TRSHWDTH
             do ithr_init = 1, nthr_glob
                 call grad_shsrch_obj(ithr_init)%new(b_ptr, lims, lims_init=lims_init,&
-                    &maxits=p_ptr%maxits_sh, opt_angle=.false.)
+                    &maxits=p_ptr%maxits_sh, opt_angle=.false., direct_only=.true.)
             end do
 
             cand_count_t       = 0
@@ -752,11 +757,12 @@ contains
             roundtrip_tol_max_t   = 0.
             objective_evals_t     = 0_int64
             gradient_evals_t      = 0_int64
+            accepted_steps_t      = 0
             !$omp parallel do private(iloc,iptcl_map,iptcl,irank,ithr,nc,irot,hard_before,hard_after,cxy)&
             !$omp private(old_shift,old_shift_opt,opt_shift,damped_shift,score_shift,rotmat)&
             !$omp private(refined_corr,refined_dist,old_corr,old_dist,step,loss_delta,winner_shift,updated)&
             !$omp private(roundtrip_dist,roundtrip_error,roundtrip_tol,provisional_scale)&
-            !$omp private(candidate_objective_evals,candidate_gradient_evals)&
+            !$omp private(candidate_objective_evals,candidate_gradient_evals,candidate_accepted_steps)&
             !$omp default(shared) schedule(static) proc_bind(close)
             do iloc = 1, batchsz
                 ithr = omp_get_thread_num() + 1
@@ -808,16 +814,19 @@ contains
                     endif
                     call grad_shsrch_obj(ithr)%set_indices(joint_topk_candidates%cand(irank,iptcl_map)%icls, iptcl)
                     call grad_shsrch_obj(ithr)%reset_profile
-                    cxy = grad_shsrch_obj(ithr)%minimize(irot=irot, sh_rot=.true., xy_in=old_shift_opt)
+                    cxy = grad_shsrch_obj(ithr)%minimize_direct(irot=irot, xy_in=old_shift_opt,&
+                        &step_size=p_ptr%sgd_eta_shift, max_steps=p_ptr%sgd_shift_its,&
+                        &sh_rot=.true., accepted_steps=candidate_accepted_steps)
                     call grad_shsrch_obj(ithr)%get_profile(candidate_objective_evals, candidate_gradient_evals)
                     objective_evals_t(ithr) = objective_evals_t(ithr) + candidate_objective_evals
                     gradient_evals_t(ithr)  = gradient_evals_t(ithr)  + candidate_gradient_evals
+                    accepted_steps_t(ithr)  = accepted_steps_t(ithr)  + candidate_accepted_steps
                     if( irot <= 0 )then
                         no_better_t(ithr) = no_better_t(ithr) + 1
                         cycle
                     endif
                     opt_shift    = cxy(2:3)
-                    damped_shift = old_shift + p_ptr%sgd_eta_shift * (opt_shift - old_shift)
+                    damped_shift = opt_shift
                     score_shift  = matmul(damped_shift, transpose(rotmat))
                     refined_corr = real(b_ptr%pftc%gen_corr_for_rot_8(&
                         &joint_topk_candidates%cand(irank,iptcl_map)%icls, iptcl, real(score_shift,dp), irot))
@@ -831,7 +840,7 @@ contains
                         cycle
                     endif
                     call joint_topk_candidates%apply_shift_refinement(iptcl_map, irank, opt_shift, refined_dist,&
-                        &p_ptr%sgd_eta_shift, old_shift=old_shift,&
+                        &1.0, old_shift=old_shift,&
                         &new_shift=damped_shift, step_norm=step, updated=updated)
                     if( updated )then
                         refined_t(ithr) = refined_t(ithr) + 1
@@ -872,6 +881,7 @@ contains
             roundtrip_mismatch_total = sum(roundtrip_mismatch_t)
             objective_evals = sum(objective_evals_t)
             gradient_evals  = sum(gradient_evals_t)
+            accepted_steps_total = sum(accepted_steps_t)
             mean_step        = 0.
             mean_loss_delta  = 0.
             mean_winner_shift = 0.
@@ -905,10 +915,11 @@ contains
                 THROW_HARD('joint 2D stored-candidate shift-refinement round-trip invariant failed')
             endif
             profile_seconds = toc(profile_start)
-            write(logfhandle,'(A,1X,A,1X,A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,ES12.4)')&
-                &'>>> JOINT2D SGD PROFILE:', 'component=shift_refinement', 'optimizer=lbfgsb', 'batch=', ibatch,&
+            write(logfhandle,'(A,1X,A,1X,A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,ES12.4)')&
+                &'>>> JOINT2D SGD PROFILE:', 'component=shift_refinement', 'optimizer=direct_gradient', 'batch=', ibatch,&
                 &'candidates=', sum(cand_count_t), 'objective_evals=', objective_evals,&
-                &'gradient_evals=', gradient_evals, 'seconds=', profile_seconds
+                &'gradient_evals=', gradient_evals, 'accepted_steps=', accepted_steps_total,&
+                &'seconds=', profile_seconds
         end subroutine refine_joint_topk_shifts_for_batch
 
         subroutine sync_joint_hard_assignments( first_ptcl, last_ptcl )
