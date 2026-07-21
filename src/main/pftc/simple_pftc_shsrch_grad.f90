@@ -1,5 +1,6 @@
 !@descr: rotational origin shift alignment of band-pass limited polar projections in the Fourier domain, gradient based minimizer
 module simple_pftc_shsrch_grad
+use iso_fortran_env, only: int64
 use simple_core_module_api
 use simple_opt_spec,  only: opt_spec
 use simple_optimizer, only: optimizer
@@ -26,6 +27,8 @@ type :: pftc_shsrch_grad
     integer                   :: max_evals    = 5       !< max # inplrot/shsrch cycles
     logical                   :: opt_angle    = .true.  !< optimise in-plane angle with callback flag
     logical                   :: coarse_init  = .false. !< whether to perform an intial coarse search over the range
+    integer(int64)            :: profile_objective_evals = 0_int64
+    integer(int64)            :: profile_gradient_evals  = 0_int64
 contains
     procedure          :: new         => grad_shsrch_new
     procedure          :: set_indices => grad_shsrch_set_indices
@@ -35,6 +38,8 @@ contains
     procedure          :: set_limits
     procedure          :: coarse_search
     procedure          :: coarse_search_opt_angle
+    procedure          :: reset_profile => grad_shsrch_reset_profile
+    procedure          :: get_profile   => grad_shsrch_get_profile
 end type pftc_shsrch_grad
 
 contains
@@ -96,6 +101,7 @@ contains
         real(dp)                :: cost
         select type(self)
             class is (pftc_shsrch_grad)
+                self%profile_objective_evals = self%profile_objective_evals + 1_int64
                 cost = - self%b_ptr%pftc%gen_corr_for_rot_8(self%reference, self%particle, vec, self%cur_inpl_idx)
             class default
                 THROW_HARD('error in grad_shsrch_costfun: unknown type; grad_shsrch_costfun')
@@ -111,6 +117,7 @@ contains
         grad = 0.
         select type(self)
             class is (pftc_shsrch_grad)
+                self%profile_gradient_evals = self%profile_gradient_evals + 1_int64
                 call self%b_ptr%pftc%gen_corr_grad_only_for_rot_8(self%reference, self%particle, vec, self%cur_inpl_idx, corrs_grad)
                 grad = - corrs_grad
             class default
@@ -129,6 +136,8 @@ contains
         grad = 0.
         select type(self)
             class is (pftc_shsrch_grad)
+                self%profile_objective_evals = self%profile_objective_evals + 1_int64
+                self%profile_gradient_evals  = self%profile_gradient_evals  + 1_int64
                 call self%b_ptr%pftc%gen_corr_grad_for_rot_8(self%reference, self%particle, vec, self%cur_inpl_idx, corrs, corrs_grad)
                 f    = - corrs
                 grad = - corrs_grad
@@ -226,6 +235,7 @@ contains
             endif
         else
             self%cur_inpl_idx   = irot
+            self%profile_objective_evals = self%profile_objective_evals + 1_int64
             lowest_cost_overall = -self%b_ptr%pftc%gen_corr_for_rot_8(self%reference, self%particle, self%ospec%x_8, self%cur_inpl_idx)
             initial_cost        = lowest_cost_overall
             if( self%coarse_init )then
@@ -272,6 +282,7 @@ contains
             x = self%ospec%limits(1,1)+stepx/2. + real(ix-1,dp)*stepx
             do iy = 1,coarse_num_steps
                 y    = self%ospec%limits(2,1)+stepy/2. + real(iy-1,dp)*stepy
+                self%profile_objective_evals = self%profile_objective_evals + 1_int64
                 cost = -self%b_ptr%pftc%gen_corr_for_rot_8(self%reference, self%particle, [x,y], self%cur_inpl_idx)
                 if (cost < lowest_cost) then
                     lowest_cost = cost
@@ -298,6 +309,7 @@ contains
             x = self%ospec%limits(1,1)+stepx/2. + real(ix-1,dp)*stepx
             do iy = 1,coarse_num_steps
                 y = self%ospec%limits(2,1)+stepy/2. + real(iy-1,dp)*stepy
+                self%profile_objective_evals = self%profile_objective_evals + int(self%nrots,int64)
                 call self%b_ptr%pftc%gen_objfun_vals(self%reference, self%particle, real([x,y]), corrs)
                 loc  = maxloc(corrs,dim=1)
                 cost = - corrs(loc)
@@ -311,6 +323,19 @@ contains
         end do
     end subroutine coarse_search_opt_angle
 
+    subroutine grad_shsrch_reset_profile( self )
+        class(pftc_shsrch_grad), intent(inout) :: self
+        self%profile_objective_evals = 0_int64
+        self%profile_gradient_evals  = 0_int64
+    end subroutine grad_shsrch_reset_profile
+
+    subroutine grad_shsrch_get_profile( self, objective_evals, gradient_evals )
+        class(pftc_shsrch_grad), intent(in) :: self
+        integer(int64), intent(out) :: objective_evals, gradient_evals
+        objective_evals = self%profile_objective_evals
+        gradient_evals  = self%profile_gradient_evals
+    end subroutine grad_shsrch_get_profile
+
     subroutine grad_shsrch_kill( self )
         class(pftc_shsrch_grad), intent(inout) :: self
         if( associated(self%opt_obj) )then
@@ -319,6 +344,7 @@ contains
             nullify(self%opt_obj)
             nullify(self%b_ptr)
         end if
+        call self%reset_profile
     end subroutine grad_shsrch_kill
 
 end module simple_pftc_shsrch_grad

@@ -324,6 +324,8 @@ contains
         real    :: frac_srch_space
         integer :: nptcls, batchsz_max, nbatches, ibatch, batch_start, batch_end, batchsz
         integer, allocatable :: batches(:,:)
+        integer(timer_int_kind) :: profile_start
+        real(timer_int_kind)    :: profile_seconds
         call cline%set('mkdir', 'no')
         call build%init_params_and_build_general_tbox(cline, params, do3d=.false.)
         if( build%spproj_field%get_nevenodd() == 0 )then
@@ -357,6 +359,7 @@ contains
         call prep_pftc4align2D(params, build, ptcl_match_imgs_pad, batchsz_max, params%which_iter, .false.)
         ! Fill the partition table in matcher-sized batches to cap polar FT memo memory.
         call eulprob_obj_part%new_worker(params,build,pinds)
+        profile_start = tic()
         do ibatch = 1, nbatches
             batch_start = batches(ibatch,1)
             batch_end   = batches(ibatch,2)
@@ -365,6 +368,12 @@ contains
                 &ptcl_imgs(1:batchsz), ptcl_match_imgs, ptcl_match_imgs_pad)
             call eulprob_obj_part%fill_tab_range(batch_start, batch_end)
         end do
+        profile_seconds = toc(profile_start)
+        if( params%l_sgd_diag )then
+            write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,I0,1X,A,ES12.4)')&
+                &'>>> JOINT2D SGD PROFILE:', 'component=provisional_scoring', 'particles=', nptcls,&
+                &'batches=', nbatches, 'seconds=', profile_seconds
+        endif
         ! write the 2D probability table
         fname = string(DIST_FBODY)//int2str_pad(params%part,params%numlen)//'.dat'
         call eulprob_obj_part%write_tab(fname)
@@ -404,6 +413,8 @@ contains
         real, allocatable :: base_shifts(:,:)
         integer, allocatable :: part_pinds(:)
         integer :: nptcls, nptcls_part, ipart, iptcl
+        integer(timer_int_kind) :: profile_start
+        real(timer_int_kind)    :: profile_seconds
         call cline%set('mkdir',  'no')
         call cline%set('stream', 'no')
         call build%init_params_and_build_general_tbox(cline, params, do3d=.false.)
@@ -459,10 +470,17 @@ contains
         write(logfhandle,'(A)') '>>> PROB_ALIGN2D: prob_tab2D workers completed; merging partition tables'
         call flush(logfhandle)
         ! merge all partition tables into global
+        profile_start = tic()
         do ipart = 1, params%nparts
             fname = string(DIST_FBODY)//int2str_pad(ipart,params%numlen)//'.dat'
             call eulprob_obj_glob%read_tab_to_glob(fname)
         end do
+        profile_seconds = toc(profile_start)
+        if( params%l_sgd_diag )then
+            write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,I0,1X,A,ES12.4)')&
+                &'>>> JOINT2D SGD PROFILE:', 'component=candidate_transport', 'particles=', nptcls,&
+                &'partitions=', params%nparts, 'seconds=', profile_seconds
+        endif
         ! Emit exactly one observational record from the fully merged table.
         ! This keeps stage-3 diagnostics independent of matcher-memory batches
         ! and of the number of distributed table partitions.
@@ -478,6 +496,7 @@ contains
         endif
         call flush(logfhandle)
         if( params%l_sgd .and. trim(params%sgd_mode) == 'joint' )then
+            profile_start = tic()
             call joint_candidates%build_from_loc_tab(eulprob_obj_glob%loc_tab, params%sgd_topk, pinds=pinds)
             call joint_candidates%set_likelihood_scales(eulprob_obj_glob%diag_nll_scales)
             write(logfhandle,'(A)')&
@@ -529,6 +548,10 @@ contains
                 endif
             end do
             if( allocated(base_shifts) ) deallocate(base_shifts)
+            profile_seconds = toc(profile_start)
+            write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,I0,1X,A,ES12.4)')&
+                &'>>> JOINT2D SGD PROFILE:', 'component=softmax_transport', 'particles=', nptcls,&
+                &'topk=', params%sgd_topk, 'seconds=', profile_seconds
             call joint_candidates_part%kill
             call joint_candidates%kill
         else

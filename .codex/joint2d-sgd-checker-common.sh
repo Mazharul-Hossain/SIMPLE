@@ -644,6 +644,12 @@ check_science_joint_log() {
   require_contains 'CAVG SGD TRUST' 'CAVG trust-bound diagnostics'
   require_contains 'CAVG SGD RESTORE' 'CAVG restoration diagnostics'
   require_contains 'CAVG SGD RESTORE FRC' 'CAVG restoration FRC diagnostics'
+  require_contains 'component=provisional_scoring' 'provisional-scoring profile diagnostics'
+  require_contains 'component=candidate_transport' 'candidate-transport profile diagnostics'
+  require_contains 'component=softmax_transport' 'SoftMax profile diagnostics'
+  require_contains 'component=inplane_refinement' 'in-plane profile diagnostics'
+  require_contains 'component=shift_refinement' 'shift-minimizer profile diagnostics'
+  require_contains 'component=class_update_restoration' 'class-update/restoration profile diagnostics'
   check_likelihood_unit_continuity
   check_posterior_mode
   check_score_calibration

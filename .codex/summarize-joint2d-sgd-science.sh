@@ -66,6 +66,34 @@ kv_last() {
     }' "$file"
 }
 
+profile_sum() {
+  local file="$1"
+  local component="$2"
+  local key="$3"
+  [[ -f "$file" ]] || { echo "NA"; return 0; }
+  awk -v component="$component" -v key="$key" '
+    function value(line, wanted,    n,a,i,prefix,v) {
+      n = split(line, a, /[[:space:]]+/)
+      prefix = wanted "="
+      for (i = 1; i <= n; i++) {
+        if (a[i] == prefix && i < n) return a[i+1]
+        if (index(a[i], prefix) == 1) {
+          v = substr(a[i], length(prefix) + 1)
+          if (v != "") return v
+          if (i < n) return a[i+1]
+        }
+      }
+      return ""
+    }
+    /JOINT2D SGD PROFILE:/ {
+      if (value($0, "component") != component) next
+      v = value($0, key)
+      if (v != "" && v ~ /^[-+0-9.eE]+$/) { total += v; found = 1 }
+    }
+    END { if (found) printf "%.6f\n", total; else print "NA" }
+  ' "$file"
+}
+
 emit_iteration_rows() {
   local file="$1"
   local profile="$2"
@@ -103,7 +131,7 @@ emit_iteration_rows() {
       print quoted(profile) "," quoted(case_name) "," quoted(rep) "," quoted(stage4_mode) "," quoted(stage) "," quoted(iteration) "," quoted(stage_iter) "," quoted(policy) "," quoted(mode) "," quoted("schedule") "," quoted($0)
       next
     }
-    /JOINT2D SGD (TOPK|LATENT|WINNER|INPL|SHIFT|BALANCE|REFS)|CAVG SGD (UPDATE|SUPPORT|NORMS|RESTORE)/ {
+    /JOINT2D SGD (TOPK|LATENT|WINNER|INPL|SHIFT|BALANCE|REFS|PROFILE)|CAVG SGD (UPDATE|SUPPORT|NORMS|RESTORE)/ {
       marker = ($0 ~ /JOINT2D SGD/ ? "joint_diagnostic" : "cavg_diagnostic")
       print quoted(profile) "," quoted(case_name) "," quoted(rep) "," quoted(stage4_mode) "," quoted(stage) "," quoted(iteration) "," quoted(stage_iter) "," quoted(policy) "," quoted(mode) "," quoted(marker) "," quoted($0)
     }
@@ -178,7 +206,7 @@ population_metrics() {
 
 write_header() {
   cat <<'EOF'
-case,replicate,profile,mode,stage4_mode,status,project,ncls,mskdiam,nthr,topk,sgd_eta_latent,sgd_eta_cavg,sgd_balance_weight,accepted_frac,empty,accepted,too_few,high_entropy,avg_entropy,entropy_min,entropy_max,avg_norm_entropy,norm_entropy_min,norm_entropy_max,avg_winner_weight,winner_weight_min,winner_weight_max,posterior_multi_candidate,effective_k_p50,effective_k_p90,expected_loss_delta,winner_churn,inpl_changed,shift_step_mean,shift_step_max,cavg_support_min,cavg_support_mean,cavg_support_max,cavg_updated,cavg_preserved,cavg_trust_clipped,cavg_grad_norm,cavg_step_norm,cavg_rel_step_norm,cavg_proposed_rel_step_max,cavg_applied_rel_step_max,cavg_nonfinite,frc_mean_peak,frc_max_peak,frc_usable_classes,active_classes,active_class_fraction,max_population_fraction,zero_population_classes,pop_entropy,collapse_index,population_source,log_file,run_dir
+case,replicate,profile,mode,stage4_mode,status,project,ncls,mskdiam,nthr,topk,sgd_eta_latent,sgd_eta_cavg,sgd_balance_weight,accepted_frac,empty,accepted,too_few,high_entropy,avg_entropy,entropy_min,entropy_max,avg_norm_entropy,norm_entropy_min,norm_entropy_max,avg_winner_weight,winner_weight_min,winner_weight_max,posterior_multi_candidate,effective_k_p50,effective_k_p90,expected_loss_delta,winner_churn,inpl_changed,shift_step_mean,shift_step_max,cavg_support_min,cavg_support_mean,cavg_support_max,cavg_updated,cavg_preserved,cavg_trust_clipped,cavg_grad_norm,cavg_step_norm,cavg_rel_step_norm,cavg_proposed_rel_step_max,cavg_applied_rel_step_max,cavg_nonfinite,frc_mean_peak,frc_max_peak,frc_usable_classes,profile_provisional_seconds,profile_transport_seconds,profile_softmax_seconds,profile_inplane_seconds,profile_shift_seconds,profile_class_update_seconds,shift_objective_evals,shift_gradient_evals,active_classes,active_class_fraction,max_population_fraction,zero_population_classes,pop_entropy,collapse_index,population_source,log_file,run_dir
 EOF
 }
 
@@ -242,6 +270,14 @@ tail -n +2 "$manifest" | while IFS=$'\t' read -r case_name rep profile mode stag
   frc_mean_peak="$(kv_last "$log_file" 'CAVG SGD RESTORE FRC:' 'mean_peak')"
   frc_max_peak="$(kv_last "$log_file" 'CAVG SGD RESTORE FRC:' 'max_peak')"
   frc_usable_classes="$(kv_last "$log_file" 'CAVG SGD RESTORE:' 'usable_frc')"
+  profile_provisional_seconds="$(profile_sum "$log_file" provisional_scoring seconds)"
+  profile_transport_seconds="$(profile_sum "$log_file" candidate_transport seconds)"
+  profile_softmax_seconds="$(profile_sum "$log_file" softmax_transport seconds)"
+  profile_inplane_seconds="$(profile_sum "$log_file" inplane_refinement seconds)"
+  profile_shift_seconds="$(profile_sum "$log_file" shift_refinement seconds)"
+  profile_class_update_seconds="$(profile_sum "$log_file" class_update_restoration seconds)"
+  shift_objective_evals="$(profile_sum "$log_file" shift_refinement objective_evals)"
+  shift_gradient_evals="$(profile_sum "$log_file" shift_refinement gradient_evals)"
   pop_csv="$(population_metrics "$run_dir" "$ncls")"
   IFS=, read -r active_classes active_class_fraction max_population_fraction zero_population_classes \
     pop_entropy collapse_index population_source <<< "$pop_csv"
@@ -257,7 +293,10 @@ tail -n +2 "$manifest" | while IFS=$'\t' read -r case_name rep profile mode stag
     "$cavg_support_mean" "$cavg_support_max" "$cavg_updated" "$cavg_preserved" "$cavg_trust_clipped" \
     "$cavg_grad_norm" "$cavg_step_norm" "$cavg_rel_step_norm" "$cavg_proposed_rel_step_max" \
     "$cavg_applied_rel_step_max" "$cavg_nonfinite" \
-    "$frc_mean_peak" "$frc_max_peak" "$frc_usable_classes" "$active_classes" \
+    "$frc_mean_peak" "$frc_max_peak" "$frc_usable_classes" \
+    "$profile_provisional_seconds" "$profile_transport_seconds" "$profile_softmax_seconds" \
+    "$profile_inplane_seconds" "$profile_shift_seconds" "$profile_class_update_seconds" \
+    "$shift_objective_evals" "$shift_gradient_evals" "$active_classes" \
     "$active_class_fraction" "$max_population_fraction" "$zero_population_classes" \
     "$pop_entropy" "$collapse_index" "$population_source" "$log_file" "$run_dir" >> "$metrics"
 done
@@ -291,6 +330,20 @@ done
       printf "- %s rep %s: accepted_frac=%s, entropy=%s, winner_weight=%s, frc_mean_peak=%s, active_classes=%s, collapse_index=%s\n", \
         $1, $2, $(h["accepted_frac"]), $(h["avg_norm_entropy"]), $(h["avg_winner_weight"]), \
         $(h["frc_mean_peak"]), $(h["active_classes"]), $(h["collapse_index"])
+    }' "$metrics"
+  echo
+  echo "## Joint Component Profile"
+  echo
+  awk -F, '
+    NR == 1 { for (i = 1; i <= NF; i++) { gsub(/"/, "", $i); h[$i] = i }; next }
+    {
+      for (i = 1; i <= NF; i++) gsub(/"/, "", $i)
+      printf "- %s rep %s: score=%ss, transport=%ss, SoftMax=%ss, in-plane=%ss, shift=%ss, class-update=%ss, shift-objective-evals=%s, shift-gradient-evals=%s\n", \
+        $(h["case"]), $(h["replicate"]), $(h["profile_provisional_seconds"]), \
+        $(h["profile_transport_seconds"]), $(h["profile_softmax_seconds"]), \
+        $(h["profile_inplane_seconds"]), $(h["profile_shift_seconds"]), \
+        $(h["profile_class_update_seconds"]), $(h["shift_objective_evals"]), \
+        $(h["shift_gradient_evals"])
     }' "$metrics"
   echo
   echo "## Review Flags"

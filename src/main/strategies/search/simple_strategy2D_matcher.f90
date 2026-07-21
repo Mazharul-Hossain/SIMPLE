@@ -1,5 +1,6 @@
 !@descr: high-level search routines for the cluster2D and abinitio2D applications
 module simple_strategy2D_matcher
+use iso_fortran_env, only: int64
 use simple_pftc_srch_api
 use simple_classaverager
 use simple_binoris_io,               only: binwrite_oritab
@@ -432,6 +433,8 @@ contains
             real    :: provisional_scale, current_scale, stored_norm_dist, scale_rel_error, scale_rel_mean
             real    :: exact_old_corr, exact_old_dist
             logical :: updated
+            integer(timer_int_kind) :: profile_start
+            real(timer_int_kind)    :: profile_seconds
 
             if( .not. ctrl%l_joint_topk ) return
             if( .not. allocated(joint_topk_candidates%ncand) )then
@@ -452,6 +455,7 @@ contains
                     &'candidates=', cand_batch, 'changed=', 0
                 return
             endif
+            profile_start = tic()
 
             allocate(inpl_scores(nrots,nthr_glob), inpl_dists(nrots,nthr_glob), source=0.)
             cand_count_t      = 0
@@ -663,6 +667,10 @@ contains
             if( roundtrip_mismatch_total > 0 )then
                 THROW_HARD('joint 2D stored-candidate distance/shift round-trip invariant failed')
             endif
+            profile_seconds = toc(profile_start)
+            write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,I0,1X,A,ES12.4)')&
+                &'>>> JOINT2D SGD PROFILE:', 'component=inplane_refinement', 'batch=', ibatch,&
+                &'candidates=', cand_total, 'seconds=', profile_seconds
         end subroutine refine_joint_topk_inpls_for_batch
 
         subroutine refine_joint_topk_shifts_for_batch()
@@ -679,12 +687,16 @@ contains
             integer :: eligible_batch, cand_batch, refined_total, nonfinite_total, ithr_init
             integer :: invalid_total, no_better_total, hard_churn_total
             integer :: roundtrip_checked_total, roundtrip_mismatch_total
+            integer(int64) :: objective_evals_t(nthr_glob), gradient_evals_t(nthr_glob)
+            integer(int64) :: objective_evals, gradient_evals, candidate_objective_evals, candidate_gradient_evals
             real    :: cxy(3), old_shift(2), old_shift_opt(2), opt_shift(2), damped_shift(2)
             real    :: score_shift(2), rotmat(2,2), refined_corr, refined_dist, old_corr, old_dist, step
             real    :: roundtrip_dist, roundtrip_error, roundtrip_tol, roundtrip_error_mean
             real    :: provisional_scale
             real    :: loss_delta, winner_shift(2)
             logical :: updated
+            integer(timer_int_kind) :: profile_start
+            real(timer_int_kind)    :: profile_seconds
 
             if( .not. ctrl%l_joint_topk ) return
             if( .not. allocated(joint_topk_candidates%ncand) )then
@@ -710,6 +722,7 @@ contains
                 write(logfhandle,'(A,1X,A)') '>>> JOINT2D SGD SHIFT HARD:', 'shift search disabled'
                 return
             endif
+            profile_start = tic()
 
             lims(:,1)      = -p_ptr%trs
             lims(:,2)      =  p_ptr%trs
@@ -737,10 +750,13 @@ contains
             roundtrip_error_sum_t = 0.
             roundtrip_error_max_t = 0.
             roundtrip_tol_max_t   = 0.
+            objective_evals_t     = 0_int64
+            gradient_evals_t      = 0_int64
             !$omp parallel do private(iloc,iptcl_map,iptcl,irank,ithr,nc,irot,hard_before,hard_after,cxy)&
             !$omp private(old_shift,old_shift_opt,opt_shift,damped_shift,score_shift,rotmat)&
             !$omp private(refined_corr,refined_dist,old_corr,old_dist,step,loss_delta,winner_shift,updated)&
             !$omp private(roundtrip_dist,roundtrip_error,roundtrip_tol,provisional_scale)&
+            !$omp private(candidate_objective_evals,candidate_gradient_evals)&
             !$omp default(shared) schedule(static) proc_bind(close)
             do iloc = 1, batchsz
                 ithr = omp_get_thread_num() + 1
@@ -791,7 +807,11 @@ contains
                         cycle
                     endif
                     call grad_shsrch_obj(ithr)%set_indices(joint_topk_candidates%cand(irank,iptcl_map)%icls, iptcl)
+                    call grad_shsrch_obj(ithr)%reset_profile
                     cxy = grad_shsrch_obj(ithr)%minimize(irot=irot, sh_rot=.true., xy_in=old_shift_opt)
+                    call grad_shsrch_obj(ithr)%get_profile(candidate_objective_evals, candidate_gradient_evals)
+                    objective_evals_t(ithr) = objective_evals_t(ithr) + candidate_objective_evals
+                    gradient_evals_t(ithr)  = gradient_evals_t(ithr)  + candidate_gradient_evals
                     if( irot <= 0 )then
                         no_better_t(ithr) = no_better_t(ithr) + 1
                         cycle
@@ -850,6 +870,8 @@ contains
             hard_churn_total = sum(hard_churn_t)
             roundtrip_checked_total  = sum(roundtrip_checked_t)
             roundtrip_mismatch_total = sum(roundtrip_mismatch_t)
+            objective_evals = sum(objective_evals_t)
+            gradient_evals  = sum(gradient_evals_t)
             mean_step        = 0.
             mean_loss_delta  = 0.
             mean_winner_shift = 0.
@@ -882,6 +904,11 @@ contains
             if( roundtrip_mismatch_total > 0 )then
                 THROW_HARD('joint 2D stored-candidate shift-refinement round-trip invariant failed')
             endif
+            profile_seconds = toc(profile_start)
+            write(logfhandle,'(A,1X,A,1X,A,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,I0,1X,A,ES12.4)')&
+                &'>>> JOINT2D SGD PROFILE:', 'component=shift_refinement', 'optimizer=lbfgsb', 'batch=', ibatch,&
+                &'candidates=', sum(cand_count_t), 'objective_evals=', objective_evals,&
+                &'gradient_evals=', gradient_evals, 'seconds=', profile_seconds
         end subroutine refine_joint_topk_shifts_for_batch
 
         subroutine sync_joint_hard_assignments( first_ptcl, last_ptcl )

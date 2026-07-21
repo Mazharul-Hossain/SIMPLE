@@ -749,10 +749,13 @@ contains
         integer           :: eo_pop(2), icls, ithr, find, pop, filtsz_crop
         real              :: eo_support(2), support
         logical           :: l_regularize_avg, l_joint_cavg_sgd
+        integer(timer_int_kind) :: profile_start
+        real(timer_int_kind)    :: profile_seconds
         ! temporary objects for frc calculation & regularization
         filtsz_crop = fdim(ldim_crop(1))-1
         l_regularize_avg   = p_ptr%l_ml_reg
         l_joint_cavg_sgd    = p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'joint') .and. p_ptr%l_prob_align_mode
+        if( l_joint_cavg_sgd ) profile_start = tic()
         allocate(frcs(filtsz_crop,ncls),source=0.0)
         call cavgs_bak%new_set(ldim_crop, ncls)
         call even_tmp%new_stack(ldim_crop, nthr_glob, alloc_ctfsq=.false.)
@@ -865,6 +868,12 @@ contains
             !$omp end parallel do
         endif
         if( l_joint_cavg_sgd ) call write_joint_restore_diag(frcs)
+        if( l_joint_cavg_sgd )then
+            profile_seconds = toc(profile_start)
+            write(logfhandle,'(A,1X,A,1X,A,I0,1X,A,ES12.4)')&
+                &'>>> JOINT2D SGD PROFILE:', 'component=class_update_restoration',&
+                &'classes=', ncls, 'seconds=', profile_seconds
+        endif
         ! write FRCs
         call b_ptr%clsfrcs%write(frcs_fname)
         ! cleanup
