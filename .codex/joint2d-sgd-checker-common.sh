@@ -546,6 +546,27 @@ check_baseline_log() {
   reject_contains 'CAVG SGD UPDATE' 'joint CAVG update marker in baseline log'
 }
 
+check_checkpoint_baseline_log() {
+  check_abinitio_stage_matrix off off
+  check_stage3_shadow_assignment
+  reject_contains 'CAVG SGD UPDATE' 'class-average SGD update in checkpoint-matched baseline'
+  if ! awk '
+    /ABINITIO2D SGD STAGE: stage=terminal/ { stage = 99; next }
+    /ABINITIO2D SGD STAGE: stage=[0-9]+/ {
+      line = $0
+      sub(/^.*stage=/, "", line)
+      sub(/ .*/, "", line)
+      stage = line + 0
+      next
+    }
+    /JOINT2D SGD (SCHEDULE|TOPK|LATENT|WINNER|INPL|SHIFT|BALANCE|REFS|PARTICLE SUPPORT)|CAVG SGD/ {
+      if (stage >= 4 || stage == 99) exit 1
+    }
+  ' "$log_file"; then
+    fail 'joint-SGD update diagnostic found after stage 3 in checkpoint-matched baseline'
+  fi
+}
+
 check_smoke_joint_log() {
   local stage4_mode="${1:-alternate}"
   local expected_topk="${2:-3}"

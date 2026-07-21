@@ -18,7 +18,11 @@ Workstation layout:
   Test runs:   ~/Projects/simple_joint2d_sgd_science_<timestamp>
 
 Default complete matrix (`profile=all`):
-  baseline:          sgd=no
+  baseline:          sgd=no, independent end-to-end workflow
+  checkpoint_baseline:
+                     sgd=no continuation from the same stage-3 checkpoint as
+                     the joint cases (requires --shared-stage3 or
+                     --shared-stage3-from)
   stage4_off:        stage 4 off; stages 5+ on
   stage4_alternate:  stage 4 off/on by local iteration; stages 5+ on
   stage4_on:         stage 4 on; stages 5+ on
@@ -122,6 +126,7 @@ science_all_cases=(
   balance_topk5_raw
   assignment_only
 )
+science_known_cases=( checkpoint_baseline "${science_all_cases[@]}" )
 science_activation_cases=( baseline stage4_off stage4_alternate stage4_on )
 science_hyperparameter_cases=(
   baseline
@@ -140,13 +145,13 @@ science_hyperparameter_cases=(
 )
 
 list_cases() {
-  printf '%s\n' "${science_all_cases[@]}"
+  printf '%s\n' "${science_known_cases[@]}"
 }
 
 add_selected_case() {
   local requested="$1"
   local known selected
-  for known in "${science_all_cases[@]}"; do
+  for known in "${science_known_cases[@]}"; do
     if [[ "$requested" == "$known" ]]; then
       for selected in "${selected_cases[@]}"; do
         [[ "$requested" == "$selected" ]] && return 0
@@ -214,7 +219,7 @@ run_case() {
   local status="pass"
 
   total_cases=$((total_cases + 1))
-  if [[ "$shared_stage3" == yes && "$mode" == joint ]]; then
+  if [[ "$shared_stage3" == yes && ( "$mode" == joint || "$mode" == checkpoint_baseline ) ]]; then
     local case_parent="$scratch_root/$case_id"
     local resume_dir resume_project
     mkdir -p "$case_parent"
@@ -320,6 +325,10 @@ run_selected_case() {
   case "$case_name" in
     baseline)
       run_case baseline "$rep" baseline off NA NA NA NA sgd=no
+      ;;
+    checkpoint_baseline)
+      run_case checkpoint_baseline "$rep" checkpoint_baseline off NA NA NA NA \
+        sgd=no sgd_shadow_stage3=no sgd_diag=no
       ;;
     stage4_off|stage4_alternate|stage4_on)
       stage4_mode="${case_name#stage4_}"
@@ -542,6 +551,10 @@ else
     activation) selected_cases=( "${science_activation_cases[@]}" ) ;;
     hyperparameters) selected_cases=( "${science_hyperparameter_cases[@]}" ) ;;
   esac
+fi
+
+if [[ " ${selected_cases[*]} " == *" checkpoint_baseline "* && "$shared_stage3" != yes ]]; then
+  fail "checkpoint_baseline requires --shared-stage3 or --shared-stage3-from so it can resume the matched stage-3 state"
 fi
 
 mkdir -p "$scratch_root"
