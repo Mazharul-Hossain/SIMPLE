@@ -365,10 +365,6 @@ contains
                 &ptcl_imgs(1:batchsz), ptcl_match_imgs, ptcl_match_imgs_pad)
             call eulprob_obj_part%fill_tab_range(batch_start, batch_end)
         end do
-        ! Diagnostics must describe the complete sampled table, not individual
-        ! matcher-memory batches.  For the smoke case this is one 4,393-particle
-        ! record per iteration rather than two unrelated half-batch records.
-        call eulprob_obj_part%write_likelihood_diag(1, nptcls)
         ! write the 2D probability table
         fname = string(DIST_FBODY)//int2str_pad(params%part,params%numlen)//'.dat'
         call eulprob_obj_part%write_tab(fname)
@@ -467,6 +463,10 @@ contains
             fname = string(DIST_FBODY)//int2str_pad(ipart,params%numlen)//'.dat'
             call eulprob_obj_glob%read_tab_to_glob(fname)
         end do
+        ! Emit exactly one observational record from the fully merged table.
+        ! This keeps stage-3 diagnostics independent of matcher-memory batches
+        ! and of the number of distributed table partitions.
+        call eulprob_obj_glob%write_likelihood_diag(1, nptcls)
         ! global probabilistic class assignment
         if( params%l_sgd .and. trim(params%sgd_mode) == 'joint' )then
             call ref_policy%new(params%refs%to_char(), params%which_iter)

@@ -11,6 +11,7 @@ implicit none
 
 public :: angle_sampling, build_pind_lookup, calc_athres, calc_num2sample
 public :: eulprob_corr_switch, eulprob_corr_switch_scaled, eulprob_dist_switch
+public :: eulprob_should_cache_nll_scale
 public :: materialize_seed_shift, read_seed_shift_table, write_seed_shift_table
 public :: sample_bounded_dist, sample_likelihood_dist, sample_power_dist, sample_likelihood_index
 public :: prob_candidate, prob_candidate_buffer, prob_candidate_store
@@ -322,6 +323,18 @@ contains
                 endif
         end select
     end function eulprob_corr_switch_scaled
+
+    pure logical function eulprob_should_cache_nll_scale( l_sgd_diag, sgd_mode, likelihood_units,&
+        &cc_objfun, l_objfun_den ) result(should_cache)
+        logical,          intent(in) :: l_sgd_diag, l_objfun_den
+        character(len=*), intent(in) :: sgd_mode, likelihood_units
+        integer,          intent(in) :: cc_objfun
+        logical :: known_units
+        known_units = trim(likelihood_units) == 'normalized' .or.&
+            &trim(likelihood_units) == 'gaussian_nll'
+        should_cache = l_sgd_diag .and. trim(sgd_mode) == 'joint' .and. known_units .and.&
+            &cc_objfun == OBJFUN_EUCLID .and. .not. l_objfun_den
+    end function eulprob_should_cache_nll_scale
 
     function angle_sampling_1( pvec, athres_ub_in, prob_athres ) result( which )
         real,    intent(in)  :: pvec(:)        !< probabilities

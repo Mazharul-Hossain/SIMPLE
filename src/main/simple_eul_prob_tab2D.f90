@@ -7,7 +7,8 @@ use simple_builder,            only: builder
 use simple_pftc_shsrch_grad,   only: pftc_shsrch_grad
 use simple_decay_funs,         only: extremal_decay2D
 use simple_eul_prob_tab_utils, only: build_pind_lookup, eulprob_dist_switch, materialize_seed_shift,&
-    &read_seed_shift_table, write_seed_shift_table, sample_likelihood_index
+    &read_seed_shift_table, write_seed_shift_table, sample_likelihood_index,&
+    &eulprob_should_cache_nll_scale
 use simple_type_defs,          only: OBJFUN_EUCLID
 implicit none
 
@@ -352,10 +353,11 @@ contains
         integer,               intent(in)    :: i_first, i_last
         integer :: i, i_from, i_to, iptcl
         if( .not. allocated(self%diag_nll_scales) ) return
-        ! This scale is part of the active likelihood unit and must survive the
-        ! provisional-worker -> refinement handoff even when diagnostics are off.
-        if( trim(self%p_ptr%sgd_likelihood_units) /= 'gaussian_nll' ) return
-        if( self%p_ptr%cc_objfun /= OBJFUN_EUCLID .or. self%p_ptr%l_objfun_den ) return
+        ! Cache the Gaussian calibration for both active NLL scoring and the
+        ! stage-3 normalized-distance shadow diagnostic.  Caching the scale is
+        ! observational; it does not change the active likelihood unit.
+        if( .not. eulprob_should_cache_nll_scale(self%p_ptr%l_sgd_diag, self%p_ptr%sgd_mode,&
+            &self%p_ptr%sgd_likelihood_units, self%p_ptr%cc_objfun, self%p_ptr%l_objfun_den) ) return
         i_from = max(1, i_first)
         i_to   = min(self%nptcls, i_last)
         do i = i_from, i_to
@@ -394,8 +396,8 @@ contains
         logical :: l_active_nll
         character(len=STDLEN) :: behavior, units
 
-        if( .not. self%p_ptr%l_sgd_diag .or. trim(self%p_ptr%sgd_mode) /= 'joint' ) return
-        if( self%p_ptr%cc_objfun /= OBJFUN_EUCLID .or. self%p_ptr%l_objfun_den ) return
+        if( .not. eulprob_should_cache_nll_scale(self%p_ptr%l_sgd_diag, self%p_ptr%sgd_mode,&
+            &self%p_ptr%sgd_likelihood_units, self%p_ptr%cc_objfun, self%p_ptr%l_objfun_den) ) return
         if( .not. allocated(self%diag_nll_scales) ) return
         l_active_nll = use_calibrated_joint_nll(self)
         if( l_active_nll )then
