@@ -173,15 +173,79 @@ emit_iteration_rows() {
 
 first_existing_star() {
   local run_dir="$1"
+  local preferred
   [[ -d "$run_dir" ]] || return 1
-  find "$run_dir" -type f \( -iname '*cls2D*.star' -o -iname '*class*.star' -o -iname '*.star' \) \
-    -size -25M 2>/dev/null | sort | tail -n 1
+  preferred="$(find "$run_dir" -type f -iname 'clusters2D_iter*.star' -size -25M 2>/dev/null \
+    | sort -V | tail -n 1)"
+  if [[ -n "$preferred" ]]; then
+    printf '%s\n' "$preferred"
+    return 0
+  fi
+  find "$run_dir" -type f \( -iname '*cls2D*.star' -o -iname '*class*.star' \) \
+    -size -25M 2>/dev/null | sort -V | tail -n 1
 }
 
 population_metrics() {
-  local run_dir="$1"
-  local ncls="$2"
-  local star_file
+  local log_file="$1"
+  local run_dir="$2"
+  local ncls="$3"
+  local log_metrics star_file
+
+  # The final ranked CLASS block is the most direct occupancy record and is
+  # present even when the run directory contains unrelated sigma/CTF STAR
+  # files. Prefer it over guessing a population-bearing STAR file by name.
+  log_metrics="$(awk -v ncls_in="$ncls" -v source="$log_file" '
+    /SIMPLE_MAKE_CAVGS NORMAL STOP/ {
+      in_final_block = 1
+      total = 0
+      delete population
+      next
+    }
+    in_final_block && /^[[:space:]]*CLASS:/ {
+      cls = ""; pop = ""
+      for (i = 1; i <= NF; i++) {
+        if ($i == "CLASS:" && i < NF) cls = $(i+1)
+        if ($i == "POP:"   && i < NF) pop = $(i+1)
+      }
+      if (cls ~ /^[0-9]+$/ && pop ~ /^[0-9]+$/ && cls + 0 > 0) {
+        population[cls + 0] = pop + 0
+      }
+    }
+    END {
+      K = ncls_in + 0
+      if (!in_final_block || K < 1) exit
+      active = 0
+      maxpop = 0
+      total = 0
+      for (i = 1; i <= K; i++) {
+        c = population[i] + 0
+        if (c > 0) {
+          active++
+          total += c
+          if (c > maxpop) maxpop = c
+        }
+      }
+      if (total < 1) exit
+      entropy = 0.0
+      for (i = 1; i <= K; i++) {
+        c = population[i] + 0
+        if (c > 0) {
+          p = c / total
+          entropy -= p * log(p)
+        }
+      }
+      if (K > 1) norm_entropy = entropy / log(K)
+      else norm_entropy = 0.0
+      collapse = 1.0 - norm_entropy
+      zero = K - active
+      printf "%d,%.6f,%.6f,%d,%.6f,%.6f,%s\n", active, active / K, maxpop / total, zero, norm_entropy, collapse, source
+    }
+  ' "$log_file")"
+  if [[ -n "$log_metrics" ]]; then
+    printf '%s\n' "$log_metrics"
+    return 0
+  fi
+
   star_file="$(first_existing_star "$run_dir" || true)"
   if [[ -z "$star_file" || ! -f "$star_file" ]]; then
     echo "NA,NA,NA,NA,NA,NA,NA"
@@ -316,7 +380,7 @@ tail -n +2 "$manifest" | while IFS=$'\t' read -r case_name rep profile mode stag
   shift_objective_evals="$(profile_sum "$log_file" shift_refinement objective_evals)"
   shift_gradient_evals="$(profile_sum "$log_file" shift_refinement gradient_evals)"
   shift_accepted_steps="$(profile_sum "$log_file" shift_refinement accepted_steps)"
-  pop_csv="$(population_metrics "$run_dir" "$ncls")"
+  pop_csv="$(population_metrics "$log_file" "$run_dir" "$ncls")"
   IFS=, read -r active_classes active_class_fraction max_population_fraction zero_population_classes \
     pop_entropy collapse_index population_source <<< "$pop_csv"
 
