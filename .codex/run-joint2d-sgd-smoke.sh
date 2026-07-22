@@ -68,6 +68,7 @@ smoke_cases=(
   baseline
   stage4_off
   stage4_alternate
+  stage4_alternate_stream
   stage4_alternate_balance
   stage4_alternate_balance_eta0p05
   stage4_alternate_raw_likelihood
@@ -250,6 +251,14 @@ run_selected_case() {
       joint2d_sgd_make_joint_args alternate 3 0.5 0.1 0.0
       joint2d_sgd_print_stage_policy alternate
       run_configured_case stage4_alternate "${joint2d_sgd_case_args[@]}"
+      ;;
+    stage4_alternate_stream)
+      # Design A: hard streaming class/angle argmin plus bounded analytical
+      # shift gradients; no probabilistic likelihood table or top-K transport.
+      joint2d_sgd_make_joint_args alternate 1 0.5 0.0
+      joint2d_sgd_case_args+=( sgd_path=stream sgd_inner_its=0 )
+      joint2d_sgd_print_stage_policy alternate
+      run_configured_case stage4_alternate_stream "${joint2d_sgd_case_args[@]}"
       ;;
     stage4_alternate_balance)
       # A separate controlled occupancy-prior experiment.  Weight 1.0 keeps the

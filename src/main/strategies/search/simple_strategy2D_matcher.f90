@@ -107,14 +107,22 @@ contains
         p_ptr => params
         b_ptr => build
         if( p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'joint') )then
-            if( p_ptr%l_prob_align_mode )then
+            if( p_ptr%l_prob_align_mode .and. .not. p_ptr%l_sgd_streaming_active )then
                 write(logfhandle,'(A)') '>>> JOINT 2D SGD: consuming top-K assignment from prob_align2D'
-            else
+            else if( .not. p_ptr%l_sgd_streaming_active )then
                 call cluster2D_joint_sgd_exec(params, build, cline, which_iter, converged)
                 return
+            else
+                write(logfhandle,'(A)') '>>> JOINT2D SGD STREAM: standard greedy class-angle search; direct shift gradients active'
             endif
         endif
         call init_ctrl()
+        if( p_ptr%l_sgd_streaming_active )then
+            write(logfhandle,'(A,I0,1X,A,A,1X,A,A,1X,A,A)')&
+                &'>>> JOINT2D SGD STREAM ACTIVE: iteration=', which_iter,&
+                &'assignment=', 'hard_argmin', 'shift=', 'direct_gradient',&
+                &'table=', 'disabled'
+        endif
         if( ctrl%do_bench )then
             t_startup = tic()
             t_tot     = t_startup

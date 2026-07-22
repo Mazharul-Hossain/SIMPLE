@@ -47,7 +47,11 @@ case "$mode" in
     if [[ "$case_name" == assignment_only ]]; then
       check_assignment_only_ablation
     fi
-    check_science_joint_log "$case_name" "$stage4_mode"
+    if [[ "$case_name" == stage4_alternate_stream ]]; then
+      check_stream_joint_log "$stage4_mode"
+    else
+      check_science_joint_log "$case_name" "$stage4_mode"
+    fi
     ;;
   *)
     fail "mode must be baseline, checkpoint_baseline, or joint"

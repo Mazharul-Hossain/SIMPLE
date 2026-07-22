@@ -609,6 +609,24 @@ check_smoke_joint_log() {
   fi
 }
 
+check_stream_joint_log() {
+  local stage4_mode="${1:-alternate}"
+  check_abinitio_stage_matrix "$stage4_mode" on
+  check_no_joint_outside_late_stages
+  check_stage4_iteration_policy "$stage4_mode"
+  check_stage3_shadow_assignment
+  require_contains 'JOINT2D SGD STREAM CONFIG:' 'stream Design-A configuration'
+  require_contains 'JOINT2D SGD PATH: stream hard class-angle assignment plus bounded direct shift gradients' \
+    'stream path activation diagnostics'
+  require_contains 'JOINT2D SGD STREAM ACTIVE:' 'active streaming iteration diagnostics'
+  reject_contains 'JOINT 2D SGD: consuming top-K assignment from prob_align2D' \
+    'probabilistic top-K transport in stream mode'
+  reject_contains 'JOINT2D SGD TOPK:' 'top-K diagnostics in stream mode'
+  require_contains 'standard greedy class-angle search; direct shift gradients active' \
+    'stream greedy search diagnostics'
+  require_contains 'SIMPLE_ABINITIO2D NORMAL STOP' 'normal completion'
+}
+
 check_science_joint_log() {
   local case_name="${1:-unknown}"
   local stage4_mode="${2:-alternate}"

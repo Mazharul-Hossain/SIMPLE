@@ -7,6 +7,7 @@ Usage:
   .codex/check-joint2d-sgd-smoke-log.sh baseline         <LOG> [RUN_DIR]
   .codex/check-joint2d-sgd-smoke-log.sh stage4_off       <LOG> [RUN_DIR]
   .codex/check-joint2d-sgd-smoke-log.sh stage4_alternate <LOG> [RUN_DIR]
+  .codex/check-joint2d-sgd-smoke-log.sh stage4_alternate_stream <LOG> [RUN_DIR]
   .codex/check-joint2d-sgd-smoke-log.sh stage4_alternate_balance <LOG> [RUN_DIR]
   .codex/check-joint2d-sgd-smoke-log.sh stage4_alternate_assignment_only <LOG> [RUN_DIR]
 
@@ -44,6 +45,9 @@ case "$case_name" in
     ;;
   stage4_alternate)
     check_smoke_joint_log alternate 3
+    ;;
+  stage4_alternate_stream)
+    check_stream_joint_log alternate
     ;;
   stage4_alternate_balance)
     check_smoke_joint_log alternate 3

@@ -158,6 +158,7 @@ science_all_cases=(
   baseline
   stage4_off
   stage4_alternate
+  stage4_alternate_stream
   stage4_on
   joint_topk1_equiv
   joint_default
@@ -177,7 +178,7 @@ science_all_cases=(
   assignment_only
 )
 science_known_cases=( checkpoint_baseline "${science_all_cases[@]}" )
-science_activation_cases=( baseline stage4_off stage4_alternate stage4_on )
+science_activation_cases=( baseline stage4_off stage4_alternate stage4_alternate_stream stage4_on )
 science_hyperparameter_cases=(
   baseline
   joint_topk1_equiv
@@ -388,6 +389,12 @@ run_selected_case() {
       stage4_mode="${case_name#stage4_}"
       joint2d_sgd_make_joint_args "$stage4_mode" 3 0.5 0.1 0.0
       run_case "$case_name" "$rep" joint "$stage4_mode" 3 0.5 0.1 0.0 "${joint2d_sgd_case_args[@]}"
+      ;;
+    stage4_alternate_stream)
+      run_case stage4_alternate_stream "$rep" joint alternate 1 0.5 0.1 0.0 \
+        sgd=yes sgd_mode=joint sgd_path=stream sgd_stage4_mode=alternate sgd_topk=1 \
+        sgd_inner_its=0 sgd_eta_shift=0.25 sgd_shift_its=4 sgd_eta_cavg=0.1 \
+        sgd_eta_latent=0.5 sgd_balance_weight=0.0 sgd_diag=yes sgd_shadow_stage3=yes
       ;;
     joint_topk1_equiv)
       run_case joint_topk1_equiv "$rep" joint alternate 1 0.5 1.0 0.0 \

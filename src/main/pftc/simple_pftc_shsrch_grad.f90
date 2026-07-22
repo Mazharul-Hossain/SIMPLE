@@ -276,7 +276,13 @@ contains
         if( present(xy_in) ) self%coarse_init = coarse_init_orig
     end function grad_shsrch_minimize
 
-    !> Bounded direct-gradient minimization for the joint-SGD candidate path.
+    !> Bounded direct-gradient minimization for the streaming SGD path.
+    !! The PFTC routine supplies grad(C) for the correlation objective.  We
+    !! minimize the equivalent loss L=-C, hence grad(L)=-grad(C), and update
+    !! s_{t+1}=Pi_bounds[s_t-eta_s grad(L)].  A trial is committed only when
+    !! its evaluated loss is strictly lower; otherwise the original state is
+    !! retained.  This is the continuous shift part of Design A; class and
+    !! angle remain a discrete argmax in the surrounding search strategy.
     !! The current candidate shift is the initial state.  Each normalized step
     !! is projected into the legal shift box and accepted only when it lowers
     !! the objective; otherwise a short backtracking line search is used.
