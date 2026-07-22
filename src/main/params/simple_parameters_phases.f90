@@ -717,6 +717,11 @@ contains
             case DEFAULT
                 THROW_HARD('sgd_mode must be joint or cavg_only')
         end select
+        select case(trim(self%sgd_path))
+            case('table','stream')
+            case DEFAULT
+                THROW_HARD('sgd_path must be table or stream')
+        end select
         ! Joint probabilistic scoring has one internal unit from the provisional
         ! table through candidate refinement and the final posterior.
         if( self%l_sgd .and. trim(self%sgd_mode) == 'joint' )&
@@ -790,6 +795,13 @@ contains
             endif
             select case(trim(self%sgd_mode))
                 case('joint')
+                    if( trim(self%sgd_path) == 'stream' )then
+                        if( self%l_sgd_assignment_only ) THROW_HARD(&
+                            'sgd_assignment_only is not supported with sgd_path=stream')
+                        write(logfhandle,'(A)')&
+                            &'>>> JOINT2D SGD STREAM CONFIG: assignments=hard class-angle argmin '//&
+                            &'shift=bounded_direct_gradient cavg_update=standard_restoration'
+                    endif
                     if( self%l_sgd_assignment_only )then
                         write(logfhandle,'(A)')&
                             &'>>> JOINT2D SGD ABLATION CONFIG: mode=assignment_only assignments=active '//&

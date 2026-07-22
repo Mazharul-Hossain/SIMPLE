@@ -325,6 +325,7 @@ type :: parameters
     character(len=STDLEN)     :: sgd_latent='st_topk' !< joint-SGD latent relaxation(st_topk|soft_topk|sample_topk){st_topk}
     character(len=STDLEN)     :: sgd_likelihood_units='normalized' !< internal joint-SGD likelihood units(normalized|gaussian_nll){normalized}
     character(len=STDLEN)     :: sgd_mode='joint'     !< SGD optimizer mode(joint|cavg_only){joint}
+    character(len=STDLEN)     :: sgd_path='table'     !< joint-SGD assignment path(table|stream){table}
     character(len=STDLEN)     :: sgd_activation='auto' !< internal SGD activation policy(auto|off|alternate|on){auto}
     character(len=STDLEN)     :: sgd_stage4_mode='alternate' !< abinitio2D stage-4 SGD mode(off|alternate|on){alternate}
     character(len=STDLEN)     :: sigma_est='group'    !< sigma estimation kind (group|global){group}
@@ -651,6 +652,7 @@ type :: parameters
     logical :: l_sgd_assignment_only = .false.
     logical :: l_sgd_diag        = .true.
     logical :: l_sgd_shadow_stage3 = .false.
+    logical :: l_sgd_streaming_active = .false. !< active iteration uses streaming hard assignment and direct shift gradients
     logical :: l_ptcl_src_den    = .false.
     logical :: l_sigma_glob      = .false.
     logical :: l_trail_rec       = .false.

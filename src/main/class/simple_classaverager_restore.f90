@@ -152,7 +152,8 @@ contains
         ! Zero sums or set to previous with weight
         l_cavg_sgd_pending = .false.
         l_joint_cavg_sgd_pending = .false.
-        l_joint_cavg_sgd = p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'joint') .and. p_ptr%l_prob_align_mode
+        l_joint_cavg_sgd = p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'joint') .and. &
+            &p_ptr%l_prob_align_mode .and. .not. p_ptr%l_sgd_streaming_active
         if( l_joint_cavg_sgd )then
             call cavg_sgd_opt%new(p_ptr, p_ptr%which_iter)
             if( p_ptr%l_distr_worker .and. p_ptr%nparts > 1 )then
@@ -233,7 +234,8 @@ contains
     end subroutine capture_joint_prev_cavgs
 
     module subroutine cavger_prepare_joint_sgd_update()
-        if( .not. (p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'joint') .and. p_ptr%l_prob_align_mode) ) return
+        if( .not. (p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'joint') .and. &
+            &p_ptr%l_prob_align_mode .and. .not. p_ptr%l_sgd_streaming_active) ) return
         if( p_ptr%l_distr_worker ) return
         call cavg_sgd_opt%new(p_ptr, p_ptr%which_iter)
         call capture_joint_prev_cavgs
@@ -370,7 +372,8 @@ contains
     end subroutine cavger_dealloc_online
 
     module subroutine cavger_apply_sgd_update()
-        if( p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'joint') .and. p_ptr%l_prob_align_mode )then
+        if( p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'joint') .and. &
+            &p_ptr%l_prob_align_mode .and. .not. p_ptr%l_sgd_streaming_active )then
             if( .not. l_joint_cavg_sgd_pending ) return
             ! The previous reference is already a fully restored image, whereas cavgs
             ! still contains raw Fourier numerator/CTF-density statistics here.  Mixing
@@ -754,7 +757,8 @@ contains
         ! temporary objects for frc calculation & regularization
         filtsz_crop = fdim(ldim_crop(1))-1
         l_regularize_avg   = p_ptr%l_ml_reg
-        l_joint_cavg_sgd    = p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'joint') .and. p_ptr%l_prob_align_mode
+        l_joint_cavg_sgd    = p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'joint') .and. &
+            &p_ptr%l_prob_align_mode .and. .not. p_ptr%l_sgd_streaming_active
         if( l_joint_cavg_sgd ) profile_start = tic()
         allocate(frcs(filtsz_crop,ncls),source=0.0)
         call cavgs_bak%new_set(ldim_crop, ncls)
@@ -1111,6 +1115,7 @@ contains
         call cavgs4reade%kill_stack
         call cavgs4reado%kill_stack
         if( p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'joint') .and. p_ptr%l_prob_align_mode .and.&
+            &.not. p_ptr%l_sgd_streaming_active .and.&
             &l_joint_cavg_sgd_pending )then
             call cavger_apply_sgd_update
             write(logfhandle,'(A,I0)') '>>> JOINT2D SGD DISTR REDUCE: master scheduled restored-output CAVG update nparts=',&

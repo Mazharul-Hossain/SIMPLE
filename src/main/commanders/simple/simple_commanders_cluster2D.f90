@@ -44,6 +44,7 @@ contains
         type(builder)          :: build
         type(simple_nice_comm) :: nice_comm
         logical                :: converged, l_sgd_requested, l_sgd_schedule, l_sgd_active
+        logical                :: l_sgd_stream_requested
         logical                :: l_update_frac_requested
         real                   :: update_frac_requested
         integer                :: niters, nactive, batch_size
@@ -55,6 +56,8 @@ contains
         call strategy%initialize(params, build, cline)
         l_sgd_requested = params%l_sgd
         l_sgd_schedule  = l_sgd_requested .and. trim(params%sgd_mode) == 'joint'
+        l_sgd_stream_requested = l_sgd_requested .and. trim(params%sgd_mode) == 'joint' .and.&
+            &trim(params%sgd_path) == 'stream'
         l_update_frac_requested = params%l_update_frac
         update_frac_requested   = params%update_frac
         if( params%l_nonuniform ) THROW_HARD('2D nonuniform filtering has been removed; exec_cluster2D')
@@ -79,11 +82,14 @@ contains
             niters            = niters + 1
             params%which_iter = params%which_iter + 1
             params%extr_iter  = params%extr_iter  + 1
-            ! Only the joint optimizer is scheduled; refine=prob and prob_assign=likelihood stay active.
+            ! Only the joint optimizer is scheduled.  The stream path deliberately
+            ! disables probabilistic-table orchestration for active iterations;
+            ! stages 1--3 and inactive alternate iterations retain the old path.
             l_sgd_active = l_sgd_requested
             if( l_sgd_schedule ) l_sgd_active = joint2D_sgd_active_for_policy(&
                 &params%sgd_activation, niters, params%which_iter)
             params%l_sgd = l_sgd_active
+            params%l_sgd_streaming_active = l_sgd_stream_requested .and. l_sgd_active
             params%l_update_frac = l_update_frac_requested
             params%update_frac   = update_frac_requested
             if( l_sgd_active .and. trim(params%sgd_mode) == 'joint' )then
@@ -117,6 +123,8 @@ contains
                     &'units=', trim(params%sgd_likelihood_units),&
                     &'warmup_through=', JOINT2D_SGD_WARMUP_ITS,&
                     &'alternate_through=', JOINT2D_SGD_ALTERNATE_UNTIL
+                if( params%l_sgd_streaming_active ) write(logfhandle,'(A)')&
+                    &'>>> JOINT2D SGD PATH: stream hard class-angle assignment plus bounded direct shift gradients'
             endif
             nice_comm%stat_root%stage = "iteration " // int2str(params%which_iter)
             call nice_comm%cycle()
@@ -132,6 +140,7 @@ contains
         call strategy%finalize_run(params, build, cline)
         ! Preserve the user's requested mode for a following abinitio2D stage.
         params%l_sgd = l_sgd_requested
+        params%l_sgd_streaming_active = .false.
         params%l_update_frac = l_update_frac_requested
         params%update_frac   = update_frac_requested
         if( l_sgd_requested )then

@@ -151,7 +151,7 @@ contains
         call cline%set('startit',    params%startit)
         call cline%set('which_iter', params%which_iter)
         call cline%set('extr_iter',  params%extr_iter)
-        if( params%l_prob_align_mode )then
+        if( params%l_prob_align_mode .and. .not. params%l_sgd_streaming_active )then
             ! Joint SGD reference semantics stay block-coordinate here:
             ! prob_align2D scores old refs, cluster2D restores new refs for the next iteration.
             cline_prob_align = cline
@@ -268,7 +268,7 @@ contains
         call self%job_descr%set('sgd',        trim(params%sgd))
         call self%job_descr%set('frcs',       FRCS_FILE)
         call cleanup_distributed_iteration_artifacts(params)
-        if( params%l_prob_align_mode )then
+        if( params%l_prob_align_mode .and. .not. params%l_sgd_streaming_active )then
             cline_prob_align = cline
             call cline_prob_align%set('prg', 'prob_align2D')
             call cline_prob_align%set('which_iter', params%which_iter)
@@ -368,7 +368,7 @@ contains
         real    :: effective_support
 
         if( .not. params%l_sgd .or. trim(params%sgd_mode) /= 'joint' .or.&
-            &.not. params%l_prob_align_mode ) return
+            &.not. params%l_prob_align_mode .or. params%l_sgd_streaming_active ) return
         eligible         = 0
         soft_accepted    = 0
         contributing     = 0

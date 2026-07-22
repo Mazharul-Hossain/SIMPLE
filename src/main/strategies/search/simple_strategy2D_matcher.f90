@@ -228,7 +228,13 @@ contains
             ctrl%l_frac_restore    = ctrl%l_sample_updates
             ctrl%l_partial_sums    = ctrl%l_frac_restore .or. &
                 (p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'cavg_only'))
-            ctrl%l_prob_align      = p_ptr%l_prob_align_mode
+            ctrl%l_prob_align      = p_ptr%l_prob_align_mode .and. .not. p_ptr%l_sgd_streaming_active
+            if( p_ptr%l_sgd_streaming_active )then
+                ! The stream path keeps the same full discrete class/angle search,
+                ! but consumes scores immediately and never materializes a table.
+                ctrl%refine_flag = 'greedy'
+                ctrl%l_greedy    = .true.
+            endif
             ctrl%l_joint_topk      = p_ptr%l_sgd .and. (trim(p_ptr%sgd_mode) == 'joint') .and. ctrl%l_prob_align
             ctrl%l_restore_cavgs   = (trim(p_ptr%restore_cavgs) == 'yes')
             ctrl%l_require_full_assignment = cluster2D_requires_full_assignment(p_ptr)

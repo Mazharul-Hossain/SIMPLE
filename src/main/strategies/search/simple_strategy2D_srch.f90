@@ -168,10 +168,17 @@ contains
         integer :: irot
         self%best_shvec = [0.,0.]
         if( .not. self%l_sh_first ) return
-        ! BFGS
+        ! In the streaming SGD path the previous class/angle is only a seed;
+        ! refine its two continuous shifts with the analytical gradient.  The
+        ! angle is fixed here because class and angle remain a discrete search.
         irot = 0
         call self%grad_shsrch_first_obj%set_indices(self%prev_class, self%iptcl)
-        if( .not.self%grad_shsrch_first_obj%does_opt_angle() )then
+        if( self%p_ptr%l_sgd_streaming_active )then
+            irot = self%prev_rot
+            cxy = self%grad_shsrch_first_obj%minimize_direct(irot=irot, xy_in=[0.,0.],&
+                &step_size=self%p_ptr%sgd_eta_shift, max_steps=self%p_ptr%sgd_shift_its,&
+                &sh_rot=.false.)
+        else if( .not.self%grad_shsrch_first_obj%does_opt_angle() )then
             ! shift-only optimization
             irot = self%prev_rot
         endif
@@ -197,9 +204,24 @@ contains
         irot = 0
         self%best_shvec = [0.,0.]
         if( s2D%do_inplsrch(self%iptcl_batch) )then
-            ! BFGS
+            ! Streaming SGD replaces particle-shift L-BFGS-B with bounded
+            ! analytical-gradient steps after the discrete class/angle winner.
             call self%grad_shsrch_obj%set_indices(self%best_class, self%iptcl)
-            if( .not.self%grad_shsrch_obj%does_opt_angle() )then
+            if( self%p_ptr%l_sgd_streaming_active )then
+                irot = self%best_rot
+                if( self%l_sh_first )then
+                    ! The previous tested state is the accepted fallback when
+                    ! no bounded trial improves the objective.
+                    self%best_shvec = self%xy_first
+                    cxy = self%grad_shsrch_obj%minimize_direct(irot=irot, xy_in=self%xy_first,&
+                        &step_size=self%p_ptr%sgd_eta_shift, max_steps=self%p_ptr%sgd_shift_its,&
+                        &sh_rot=.false.)
+                else
+                    cxy = self%grad_shsrch_obj%minimize_direct(irot=irot, xy_in=[0.,0.],&
+                        &step_size=self%p_ptr%sgd_eta_shift, max_steps=self%p_ptr%sgd_shift_its,&
+                        &sh_rot=.false.)
+                endif
+            else if( .not.self%grad_shsrch_obj%does_opt_angle() )then
                 ! shift-only optimization
                 irot = self%best_rot
             endif

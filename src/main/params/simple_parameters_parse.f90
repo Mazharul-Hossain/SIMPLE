@@ -200,6 +200,7 @@ contains
         call reg%add_char('sgd_latent', self%sgd_latent)
         call reg%add_char('sgd_likelihood_units', self%sgd_likelihood_units)
         call reg%add_char('sgd_mode', self%sgd_mode)
+        call reg%add_char('sgd_path', self%sgd_path)
         call reg%add_char('sgd_activation', self%sgd_activation)
         call reg%add_char('sgd_stage4_mode', self%sgd_stage4_mode)
         call reg%add_char('sgd_shadow_stage3', self%sgd_shadow_stage3)
