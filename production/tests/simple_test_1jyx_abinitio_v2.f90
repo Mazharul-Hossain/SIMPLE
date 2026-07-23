@@ -1,4 +1,20 @@
 ! Standalone end-to-end test for a simulated single-particle workflow.
+! tmux new -As work
+!
+! cd ~/Projects/SIMPLE
+! git pull --ff-only
+!
+! rm -rf ~/Project/SIMPLE_joint2d_sgd_build
+! mkdir -p ~/Project/SIMPLE_joint2d_sgd_build
+! cd ~/Project/SIMPLE_joint2d_sgd_build
+!
+! module load gcc/15.2.0
+! cmake /usr/local/data/mazhar/Projects/SIMPLE -DUSE_OPENMP_OFFLOAD=OFF -DCMAKE_BUILD_TYPE=debug
+! make -j install
+! SIMPLE_PATH="/usr/local/data/mazhar/Projects/SIMPLE_joint2d_sgd_build" && export PATH="$SIMPLE_PATH/bin:$SIMPLE_PATH/scripts:/ucrt64/bin:/usr/bin:$PATH"
+!
+! simple_test_1jyx_abinitio_v2
+!
 program simple_test_1jyx_abinitio_v2
 use simple_core_module_api
 use simple_atoms,                    only: atoms
@@ -12,8 +28,13 @@ use simple_commanders_abinitio,      only: commander_abinitio3D
 use simple_procimgstk,               only: add_noise_imgfile
 use simple_imghead,                  only: find_ldim_nptcls
 use simple_sp_project,               only: sp_project
+use simple_pftc_srch_api
+use simple_matcher_smpl_and_lplims,  only: set_bp_range3D
+use simple_builder,                  only: builder
+use simple_pftc_shsrch_grad,         only: pftc_shsrch_grad
 use simple_ui,                       only: make_ui
 use simple_image,                    only: image
+use, intrinsic :: ieee_arithmetic,    only: ieee_is_finite
 implicit none
 #include "simple_local_flags.inc"
 
@@ -37,10 +58,16 @@ type(commander_abinitio3D)         :: xabinitio3D
 type(molecule_data)                :: mol
 type(atoms)                        :: molecule
 type(sp_project)                   :: spproj
+type(parameters)                   :: pft_params
+type(builder)                      :: pft_builder
+type(pftc_shsrch_grad)             :: direct_shift_search
 type(string) :: original_cwd, workflow_root, project_root, project_path
 type(string) :: volume_path, clean_path, noisy_path, orientations_path
+type(cmdline) :: cline_pft
 integer      :: ldim(3), nimgs, status
 integer      :: vol_dim(3)
+integer      :: pdim_srch(3), direct_irot, direct_accepted
+real         :: shift_limits(2,2), direct_cxy(3)
 
 type :: alignment_truth
     integer :: class_id
@@ -144,6 +171,36 @@ call observed%rtsq(0.0, &
                    -truth%shift(2), &
                    corrected)
 
+write(logfhandle,'(a)') '>>> Step 5/6: invoke the production Fourier/polar direct shift gradient'
+call cline_pft%set('vol1',    volume_path)
+call cline_pft%set('smpd',    smpd)
+call cline_pft%set('mskdiam', mskdiam)
+call cline_pft%set('nptcls',  1)
+call cline_pft%set('ctf',     'no')
+call cline_pft%set('lp',      8.0)
+call pft_builder%init_params_and_build_strategy3D_tbox(cline_pft, pft_params)
+call set_bp_range3D(pft_params, pft_builder, cline_pft)
+call pft_builder%pftc%new(pft_params, 1, [1,1], pft_params%kfromto)
+pdim_srch = pft_builder%pftc%get_pdim_srch()
+call pft_builder%pftc%polarize_ref_pft(reference, 1, iseven=.true., pdim=pdim_srch, oversamp=.false.)
+call pft_builder%pftc%polarize_ptcl_pft(observed, 1, pdim=pdim_srch, oversamp=.false.)
+call pft_builder%pftc%set_eo(1, .true.)
+
+shift_limits(:,1) = -5.0
+shift_limits(:,2) =  5.0
+call direct_shift_search%new(pft_builder, shift_limits, opt_angle=.false., direct_only=.true.)
+call direct_shift_search%set_indices(1, 1)
+direct_irot = 1
+direct_cxy = direct_shift_search%minimize_direct( &
+    direct_irot, [0.0, 0.0], 0.5, 5, sh_rot=.false., accepted_steps=direct_accepted)
+if( direct_irot == 0 ) THROW_HARD('direct shift search rejected every tested state')
+if( .not. ieee_is_finite(real(direct_cxy(1),dp)) ) THROW_HARD('direct shift objective is nonfinite')
+write(logfhandle,'(a,2f10.4)') '>>> DIRECT SHIFT RECOVERED: ', direct_cxy(2:3)
+write(logfhandle,'(a,i0)')     '>>> DIRECT SHIFT ACCEPTED STEPS: ', direct_accepted
+call direct_shift_search%kill
+call pft_builder%kill_strategy3D_tbox
+call pft_builder%kill_general_tbox
+
 write(logfhandle,'(A,2F10.4)') &
     '>>> SYNTHETIC APPLIED SHIFT: ', truth%shift
 write(logfhandle,'(A,2F10.4)') &
@@ -195,6 +252,7 @@ write(logfhandle,'(A,2F10.4)') &
 
 ! call simple_chdir(original_cwd, status)
 ! if( status /= 0 ) THROW_HARD('could not restore the original working directory')
+write(logfhandle,'(a)') '>>> Step 6/6: report synthetic alignment setup'
 write(logfhandle,'(a)') '>>> Results: '//workflow_root%to_char()
 call simple_end('**** SIMPLE_TEST_1JYX_ABINITIO_V2 NORMAL STOP ****')
 
