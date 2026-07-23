@@ -125,6 +125,7 @@ call find_ldim_nptcls(clean_path, ldim, nimgs)
 if( nimgs /= nptcls ) THROW_HARD('clean simulated stack has the wrong particle count')
 
 write(logfhandle,'(a)') '>>> Step 3/6: apply rotate by known angle and shift by known (sx, sy)'
+call reference%new([ldim(1), ldim(2), 1], smpd)
 call reference%read(string(CLEAN_FILE), 1)
 
 ! Generate shifted particle
