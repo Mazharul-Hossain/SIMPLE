@@ -3,25 +3,25 @@ use simple_core_module_api, only: dp
 use simple_pftc_shsrch_grad, only: bounded_shift_trial
 implicit none
 
-real(dp) :: xy(2), gradient(2), limits(2,2), trial(2)
+real(dp) :: shift(2), shift_gradient(2), shift_limits(2,2), trial_shift(2)
 
-xy = 0.0_dp
-gradient = [3.0_dp, 4.0_dp]
-limits(:,1) = -1.0_dp
-limits(:,2) =  1.0_dp
-trial = bounded_shift_trial(xy, gradient, 0.5_dp, limits)
-call require_close(trial, [-0.3_dp,-0.4_dp], 1.0e-12_dp,&
+shift = 0.0_dp
+shift_gradient = [3.0_dp, 4.0_dp]
+shift_limits(:,1) = -1.0_dp
+shift_limits(:,2) =  1.0_dp
+trial_shift = bounded_shift_trial(shift, shift_gradient, 0.5_dp, shift_limits)
+call require_close(trial_shift, [-0.3_dp,-0.4_dp], 1.0e-12_dp,&
     &'direct step is normalized so eta is a pixel-length bound')
 
-limits(:,1) = -0.25_dp
-limits(:,2) =  0.25_dp
-trial = bounded_shift_trial(xy, gradient, 0.5_dp, limits)
-call require_close(trial, [-0.25_dp,-0.25_dp], 1.0e-12_dp,&
+shift_limits(:,1) = -0.25_dp
+shift_limits(:,2) =  0.25_dp
+trial_shift = bounded_shift_trial(shift, shift_gradient, 0.5_dp, shift_limits)
+call require_close(trial_shift, [-0.25_dp,-0.25_dp], 1.0e-12_dp,&
     &'direct step is projected into the legal shift box')
 
-xy = [0.1_dp,-0.2_dp]
-trial = bounded_shift_trial(xy, [0.0_dp,0.0_dp], 0.5_dp, limits)
-call require_close(trial, xy, 1.0e-12_dp, 'zero gradient preserves the original shift')
+shift = [0.1_dp,-0.2_dp]
+trial_shift = bounded_shift_trial(shift, [0.0_dp,0.0_dp], 0.5_dp, shift_limits)
+call require_close(trial_shift, shift, 1.0e-12_dp, 'zero gradient preserves the original shift')
 
 write(*,'(A)') 'joint2D bounded direct-shift regression: PASS'
 
