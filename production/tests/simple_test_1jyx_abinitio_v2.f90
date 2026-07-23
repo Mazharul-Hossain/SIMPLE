@@ -1,20 +1,22 @@
 ! Standalone end-to-end test for a simulated single-particle workflow.
 ! tmux new -As work
 !
-! cd ~/Projects/SIMPLE
+! src=/usr/local/data/mazhar/Projects/SIMPLE
+! bld=/usr/local/data/mazhar/Projects/SIMPLE_joint2d_sgd_build
+! cd "$src"
 ! git pull --ff-only
 !
-! rm -rf ~/Project/SIMPLE_joint2d_sgd_build
-! mkdir -p ~/Project/SIMPLE_joint2d_sgd_build
-! cd ~/Project/SIMPLE_joint2d_sgd_build
+! rm -rf "$bld" && mkdir -p "$bld" && cd "$bld"
 !
 ! module load gcc/15.2.0
-! cmake /usr/local/data/mazhar/Projects/SIMPLE -DUSE_OPENMP_OFFLOAD=OFF -DCMAKE_BUILD_TYPE=debug
-! make -j install
-! SIMPLE_PATH="/usr/local/data/mazhar/Projects/SIMPLE_joint2d_sgd_build" && export PATH="$SIMPLE_PATH/bin:$SIMPLE_PATH/scripts:/ucrt64/bin:/usr/bin:$PATH"
+! cmake -S "$src" -DUSE_OPENMP_OFFLOAD=OFF -DBUILD_TESTS=ON -DCMAKE_BUILD_TYPE=debug
+! make -j"$(nproc)" install
+! export PATH="$bld/bin:$bld/scripts:$PATH"
 !
-! simple_test_1jyx_abinitio_v2
-!
+! rm -rf ~/Projects/simple_test_1jyx_abinitio_v2 && mkdir -p ~/Projects/simple_test_1jyx_abinitio_v2 && cd ~/Projects/simple_test_1jyx_abinitio_v2
+! simple_test_joint2D_direct_shift 2>&1 | tee simple_test_joint2D_direct_shift.log
+! simple_test_1jyx_abinitio_v2 2>&1 | tee simple_test_1jyx_abinitio_v2.log
+! 
 program simple_test_1jyx_abinitio_v2
 use simple_core_module_api
 use simple_atoms,                    only: atoms
@@ -68,6 +70,7 @@ integer      :: ldim(3), nimgs, status
 integer      :: vol_dim(3)
 integer      :: pdim_srch(3), direct_irot, direct_accepted
 real         :: shift_limits(2,2), direct_cxy(3)
+real, allocatable, target :: sigma2_noise(:,:)
 
 type :: alignment_truth
     integer :: class_id
@@ -181,6 +184,12 @@ call cline_pft%set('lp',      8.0)
 call pft_builder%init_params_and_build_strategy3D_tbox(cline_pft, pft_params)
 call set_bp_range3D(pft_params, pft_builder, cline_pft)
 call pft_builder%pftc%new(pft_params, 1, [1,1], pft_params%kfromto)
+! The production workflow normally attaches this calibration through
+! simple_euclid_sigma2.  This standalone synthetic test constructs the
+! polar calculator directly, so provide a finite positive variance for
+! every Fourier shell and the one test particle before evaluating NLL.
+allocate(sigma2_noise(pft_params%kfromto(1):pft_params%kfromto(2),1), source=1.0)
+call pft_builder%pftc%assign_sigma2_noise(sigma2_noise)
 pdim_srch = pft_builder%pftc%get_pdim_srch()
 call pft_builder%pftc%polarize_ref_pft(reference, 1, iseven=.true., pdim=pdim_srch, oversamp=.false.)
 call pft_builder%pftc%polarize_ptcl_pft(observed, 1, pdim=pdim_srch, oversamp=.false.)
@@ -200,6 +209,7 @@ write(logfhandle,'(a,i0)')     '>>> DIRECT SHIFT ACCEPTED STEPS: ', direct_accep
 call direct_shift_search%kill
 call pft_builder%kill_strategy3D_tbox
 call pft_builder%kill_general_tbox
+deallocate(sigma2_noise)
 
 write(logfhandle,'(A,2F10.4)') &
     '>>> SYNTHETIC APPLIED SHIFT: ', truth%shift
