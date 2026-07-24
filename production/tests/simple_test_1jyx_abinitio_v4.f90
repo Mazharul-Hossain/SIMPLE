@@ -91,6 +91,10 @@ call ref1%memoize4polarize(b%pftc%get_pdim_srch()); call ref2%memoize4polarize(b
 call b%pftc%polarize_ref_pft(ref1,1,.true.,b%pftc%get_pdim_srch(),.false.); call b%pftc%polarize_ref_pft(ref2,2,.true.,b%pftc%get_pdim_srch(),.false.)
 call b%pftc%polarize_ptcl_pft(observed,1,b%pftc%get_pdim_srch(),.false.); call b%pftc%set_eo(1,.true.)
 allocate(sigma2_noise(params%kfromto(1):params%kfromto(2),1),source=0.05); call b%pftc%assign_sigma2_noise(sigma2_noise)
+! polarize_ptcl_pft memoizes the weighted norm at polarization time.  Sigma
+! calibration is attached immediately afterward here, so refresh that cache
+! before evaluating the raw Euclidean loss; otherwise its denominator is zero.
+call b%pftc%memoize_sqsum_ptcl(1)
 pdim_srch=b%pftc%get_pdim_srch()
 allocate(ref_pft_diag(pdim_srch(1),pdim_srch(2):pdim_srch(3)))
 allocate(ptcl_pft_diag(pdim_srch(1),pdim_srch(2):pdim_srch(3)))
