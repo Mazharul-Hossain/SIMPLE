@@ -10,7 +10,8 @@
 ! module load gcc/15.2.0
 ! cmake -S "$src" -DUSE_OPENMP_OFFLOAD=OFF -DBUILD_TESTS=ON -DCMAKE_BUILD_TYPE=debug
 ! make -j"$(nproc)" install
-! export PATH="$bld/bin:$bld/scripts:$PATH"
+! export SIMPLE_PATH="$bld"
+! export PATH="$SIMPLE_PATH/bin:$SIMPLE_PATH/scripts:$PATH"
 !
 ! rm -rf ~/Projects/simple_test_1jyx_abinitio_v2 && mkdir -p ~/Projects/simple_test_1jyx_abinitio_v2 && cd ~/Projects/simple_test_1jyx_abinitio_v2
 ! simple_test_joint2D_direct_shift 2>&1 | tee simple_test_joint2D_direct_shift.log
@@ -76,6 +77,9 @@ integer      :: vol_dim(3)
 integer      :: pdim_srch(3), direct_irot, direct_accepted
 real         :: shift_limits(2,2), direct_cxy(3)
 real(dp)     :: objective_initial, objective_final
+real(dp)     :: raw_f, raw_grad(2), raw_f_xp, raw_f_xm, raw_f_yp, raw_f_ym
+real(dp)     :: ref_pft_energy, ptcl_pft_energy, sigma_min, sigma_max
+complex(sp), allocatable :: ref_pft_diag(:,:), ptcl_pft_diag(:,:)
 real, allocatable, target :: sigma2_noise(:,:)
 
 type :: alignment_truth
@@ -238,10 +242,42 @@ call observed%fft()
 call pft_builder%pftc%polarize_ref_pft(reference, 1, iseven=.true., pdim=pdim_srch, oversamp=.false.)
 call pft_builder%pftc%polarize_ptcl_pft(observed, 1, pdim=pdim_srch, oversamp=.false.)
 call pft_builder%pftc%set_eo(1, .true.)
+
+! DIAGNOSTIC BLOCK (temporary, P1): prove that the production context contains
+! nonzero reference/particle Fourier data before the optimizer is called.
+! A zero norm here means the failure is in image FFT/polarization or project
+! indexing, not in the SGD step rule.
+allocate(ref_pft_diag(pdim_srch(1),pdim_srch(2):pdim_srch(3)))
+allocate(ptcl_pft_diag(pdim_srch(1),pdim_srch(2):pdim_srch(3)))
+call pft_builder%pftc%get_ref_pft(1, .true., ref_pft_diag)
+call pft_builder%pftc%get_ptcl_pft(1, ptcl_pft_diag)
+ref_pft_energy   = sum(real(ref_pft_diag * conjg(ref_pft_diag),dp))
+ptcl_pft_energy  = sum(real(ptcl_pft_diag * conjg(ptcl_pft_diag),dp))
+write(logfhandle,'(a,3I8)')    '>>> DIAG POLAR DIMENSIONS: ', pdim_srch
+write(logfhandle,'(a,2es16.8)') '>>> DIAG IMAGE SUMSQ REF/OBS: ', reference%get_sumsq(), observed%get_sumsq()
+write(logfhandle,'(a,es16.8)') '>>> DIAG POLAR ENERGY REF: ', ref_pft_energy
+write(logfhandle,'(a,es16.8)') '>>> DIAG POLAR ENERGY PTCL: ', ptcl_pft_energy
+write(logfhandle,'(a,2es16.8)') '>>> DIAG POLAR ABS MAX REF/PTCL: ', maxval(abs(ref_pft_diag)), maxval(abs(ptcl_pft_diag))
+
 ! P1: calibrate each Fourier shell with the production convention
 ! sigma2(k)=sum_p|R-P|^2/(2*pftsz), then keep the existing Euclidean score.
 call pft_builder%pftc%gen_sigma_contrib(1, 1, [0.0, 0.0], 1, sigma2_noise(:,1))
+sigma_min = minval(sigma2_noise(:,1))
+sigma_max = maxval(sigma2_noise(:,1))
+write(logfhandle,'(a,es16.8)') '>>> DIAG SIGMA2 MIN: ', sigma_min
+write(logfhandle,'(a,es16.8)') '>>> DIAG SIGMA2 MAX: ', sigma_max
 sigma2_noise(:,1) = max(sigma2_noise(:,1), 1.0e-6)
+
+! DIAGNOSTIC BLOCK (temporary, P2): evaluate the finite raw loss and gradient
+! at the origin and at four small probes.  This distinguishes a genuinely
+! flat objective from a zero/invalid normalization before minimize_direct.
+call pft_builder%pftc%gen_raw_euclid_grad_for_rot_8(1, 1, [0.0_dp,0.0_dp], 1, raw_f, raw_grad)
+call pft_builder%pftc%gen_raw_euclid_grad_for_rot_8(1, 1, [ 1.0_dp,0.0_dp], 1, raw_f_xp, raw_grad)
+call pft_builder%pftc%gen_raw_euclid_grad_for_rot_8(1, 1, [-1.0_dp,0.0_dp], 1, raw_f_xm, raw_grad)
+call pft_builder%pftc%gen_raw_euclid_grad_for_rot_8(1, 1, [0.0_dp, 1.0_dp], 1, raw_f_yp, raw_grad)
+call pft_builder%pftc%gen_raw_euclid_grad_for_rot_8(1, 1, [0.0_dp,-1.0_dp], 1, raw_f_ym, raw_grad)
+write(logfhandle,'(a,es16.8,1x,2es16.8)') '>>> DIAG RAW AT ZERO (LOSS,GX,GY): ', raw_f, raw_grad
+write(logfhandle,'(a,4es16.8)') '>>> DIAG RAW PROBES (+X,-X,+Y,-Y): ', raw_f_xp, raw_f_xm, raw_f_yp, raw_f_ym
 
 shift_limits(:,1) = -5.0
 shift_limits(:,2) =  5.0
@@ -263,6 +299,7 @@ call direct_shift_search%kill
 call pft_builder%kill_strategy2D_tbox
 call pft_builder%kill_general_tbox
 deallocate(sigma2_noise)
+deallocate(ref_pft_diag, ptcl_pft_diag)
 
 write(logfhandle,'(A,2F10.4)') &
     '>>> SYNTHETIC APPLIED SHIFT: ', truth%shift
