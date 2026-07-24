@@ -287,13 +287,17 @@ contains
     !! is projected into the legal shift box and accepted only when it lowers
     !! the objective; otherwise a short backtracking line search is used.
     function grad_shsrch_minimize_direct( self, irot, xy_in, step_size, max_steps,&
-            &sh_rot, accepted_steps ) result( cxy )
+            &sh_rot, accepted_steps, objective_initial, objective_final ) result( cxy )
         class(pftc_shsrch_grad), intent(inout) :: self
         integer,                 intent(inout) :: irot
         real,                    intent(in)    :: xy_in(2), step_size
         integer,                 intent(in)    :: max_steps
         logical,       optional, intent(in)    :: sh_rot
         integer,       optional, intent(out)   :: accepted_steps
+        ! Optional diagnostics expose the minimized cost C=-score without
+        ! changing the default update path: accepted steps require
+        ! C_{t+1}<C_t, while the original state is retained on rejection.
+        real(dp),      optional, intent(out)   :: objective_initial, objective_final
         real :: cxy(3), rotmat(2,2)
         real(dp) :: current_xy(2), trial_xy(2), grad(2), corr_grad(2)
         real(dp) :: current_corr, current_cost, initial_cost, trial_corr, trial_cost
@@ -309,6 +313,8 @@ contains
         if( present(sh_rot) ) l_sh_rot = sh_rot
         naccepted = 0
         if( present(accepted_steps) ) accepted_steps = 0
+        if( present(objective_initial) ) objective_initial = 0.d0
+        if( present(objective_final) ) objective_final = 0.d0
         cxy = 0.
         self%cur_inpl_idx = irot
         current_xy = real(xy_in,dp)
@@ -321,6 +327,7 @@ contains
         endif
         current_cost = -current_corr
         initial_cost = current_cost
+        if( present(objective_initial) ) objective_initial = initial_cost
 
         do istep = 1, max_steps
             self%profile_objective_evals = self%profile_objective_evals + 1_int64
@@ -360,6 +367,7 @@ contains
         end do
 
         if( present(accepted_steps) ) accepted_steps = naccepted
+        if( present(objective_final) ) objective_final = current_cost
         improve_tol = 64.0_dp * epsilon(1.0_dp) * max(1.0_dp, abs(initial_cost), abs(current_cost))
         if( naccepted < 1 .or. current_cost >= initial_cost - improve_tol )then
             irot = 0
