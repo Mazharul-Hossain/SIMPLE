@@ -3,8 +3,7 @@
 !
 ! src=/usr/local/data/mazhar/Projects/SIMPLE
 ! bld=/usr/local/data/mazhar/Projects/SIMPLE_joint2d_sgd_build
-! cd "$src"
-! git pull --ff-only
+! cd "$src" && git pull --ff-only
 !
 ! rm -rf "$bld" && mkdir -p "$bld" && cd "$bld"
 !
@@ -34,6 +33,7 @@ use simple_pftc_srch_api
 use simple_matcher_smpl_and_lplims,  only: set_bp_range3D
 use simple_builder,                  only: builder
 use simple_pftc_shsrch_grad,         only: pftc_shsrch_grad
+use simple_type_defs,                only: OBJFUN_EUCLID
 use simple_ui,                       only: make_ui
 use simple_image,                    only: image
 use, intrinsic :: ieee_arithmetic,    only: ieee_is_finite
@@ -183,6 +183,10 @@ call cline_pft%set('ctf',     'no')
 call cline_pft%set('lp',      8.0)
 call pft_builder%init_params_and_build_strategy3D_tbox(cline_pft, pft_params)
 call set_bp_range3D(pft_params, pft_builder, cline_pft)
+! P1: retain the production Gaussian-Euclidean objective.  Its per-shell
+! variance is calibrated below from the same Fourier residual convention used
+! by simple_euclid_sigma2: sigma2(k)=sum_p|R-P|^2/(2*pftsz).
+pft_params%cc_objfun = OBJFUN_EUCLID
 call pft_builder%pftc%new(pft_params, 1, [1,1], pft_params%kfromto)
 ! The production workflow normally attaches this calibration through
 ! simple_euclid_sigma2.  This standalone synthetic test constructs the
@@ -194,6 +198,8 @@ pdim_srch = pft_builder%pftc%get_pdim_srch()
 call pft_builder%pftc%polarize_ref_pft(reference, 1, iseven=.true., pdim=pdim_srch, oversamp=.false.)
 call pft_builder%pftc%polarize_ptcl_pft(observed, 1, pdim=pdim_srch, oversamp=.false.)
 call pft_builder%pftc%set_eo(1, .true.)
+call pft_builder%pftc%gen_sigma_contrib(1, 1, [0.0, 0.0], 1, sigma2_noise(:,1))
+sigma2_noise(:,1) = max(sigma2_noise(:,1), 1.0e-6)
 
 shift_limits(:,1) = -5.0
 shift_limits(:,2) =  5.0
@@ -201,7 +207,7 @@ call direct_shift_search%new(pft_builder, shift_limits, opt_angle=.false., direc
 call direct_shift_search%set_indices(1, 1)
 direct_irot = 1
 direct_cxy = direct_shift_search%minimize_direct( &
-    direct_irot, [0.0, 0.0], 0.5, 5, sh_rot=.false., accepted_steps=direct_accepted)
+    direct_irot, [0.0, 0.0], 0.5, 5, sh_rot=.false., accepted_steps=direct_accepted, raw_euclid=.true.)
 if( direct_irot == 0 ) THROW_HARD('direct shift search rejected every tested state')
 if( .not. ieee_is_finite(real(direct_cxy(1),dp)) ) THROW_HARD('direct shift objective is nonfinite')
 write(logfhandle,'(a,2f10.4)') '>>> DIRECT SHIFT RECOVERED: ', direct_cxy(2:3)
