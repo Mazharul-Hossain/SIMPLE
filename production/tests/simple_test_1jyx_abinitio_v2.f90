@@ -246,7 +246,12 @@ write(logfhandle,'(a,2es16.8)') '>>> DIAG IMAGE SUMSQ REF/OBS: ', &
 deallocate(ref_rmat_diag, ptcl_rmat_diag)
 call reference%fft()
 call observed%fft()
+! Match the production matcher: build the image-specific Cartesian-to-polar
+! interpolation table before filling either polar Fourier buffer.  Without
+! this call polarize() has no valid interpolation weights and returns zeros.
+call reference%memoize4polarize(pdim_srch)
 call pft_builder%pftc%polarize_ref_pft(reference, 1, iseven=.true., pdim=pdim_srch, oversamp=.false.)
+call observed%memoize4polarize(pdim_srch)
 call pft_builder%pftc%polarize_ptcl_pft(observed, 1, pdim=pdim_srch, oversamp=.false.)
 call pft_builder%pftc%set_eo(1, .true.)
 
