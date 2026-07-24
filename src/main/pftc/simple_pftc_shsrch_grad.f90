@@ -287,19 +287,20 @@ contains
     !! is projected into the legal shift box and accepted only when it lowers
     !! the objective; otherwise a short backtracking line search is used.
     function grad_shsrch_minimize_direct( self, irot, xy_in, step_size, max_steps,&
-            &sh_rot, accepted_steps ) result( cxy )
+            &sh_rot, accepted_steps, raw_euclid ) result( cxy )
         class(pftc_shsrch_grad), intent(inout) :: self
         integer,                 intent(inout) :: irot
         real,                    intent(in)    :: xy_in(2), step_size
         integer,                 intent(in)    :: max_steps
         logical,       optional, intent(in)    :: sh_rot
         integer,       optional, intent(out)   :: accepted_steps
+        logical,       optional, intent(in)    :: raw_euclid
         real :: cxy(3), rotmat(2,2)
         real(dp) :: current_xy(2), trial_xy(2), grad(2), corr_grad(2)
         real(dp) :: current_corr, current_cost, initial_cost, trial_corr, trial_cost
         real(dp) :: alpha, improve_tol
         integer :: istep, iback, naccepted
-        logical :: accepted, l_sh_rot
+        logical :: accepted, l_sh_rot, l_raw_euclid
 
         if( self%opt_angle ) THROW_HARD('direct joint shift minimizer requires a fixed in-plane angle')
         if( irot < 1 .or. irot > self%nrots ) THROW_HARD('direct joint shift minimizer received invalid rotation')
@@ -307,30 +308,51 @@ contains
         if( max_steps < 1 ) THROW_HARD('direct joint shift minimizer max_steps must be >= 1')
         l_sh_rot = .true.
         if( present(sh_rot) ) l_sh_rot = sh_rot
+        l_raw_euclid = .false.
+        if( present(raw_euclid) ) l_raw_euclid = raw_euclid
         naccepted = 0
         if( present(accepted_steps) ) accepted_steps = 0
         cxy = 0.
         self%cur_inpl_idx = irot
         current_xy = real(xy_in,dp)
         self%profile_objective_evals = self%profile_objective_evals + 1_int64
-        current_corr = self%b_ptr%pftc%gen_corr_for_rot_8(&
-            &self%reference, self%particle, current_xy, self%cur_inpl_idx)
+        if( l_raw_euclid )then
+            call self%b_ptr%pftc%gen_raw_euclid_grad_for_rot_8(&
+                &self%reference, self%particle, current_xy, self%cur_inpl_idx, current_corr, grad)
+            current_cost = current_corr
+        else
+            current_corr = self%b_ptr%pftc%gen_corr_for_rot_8(&
+                &self%reference, self%particle, current_xy, self%cur_inpl_idx)
+            if( l_raw_euclid )then
+                current_cost = current_corr
+            else
+                current_cost = -current_corr
+            endif
+        endif
         if( .not. ieee_is_finite(current_corr) )then
             irot = 0
             return
         endif
-        current_cost = -current_corr
         initial_cost = current_cost
 
         do istep = 1, max_steps
             self%profile_objective_evals = self%profile_objective_evals + 1_int64
             self%profile_gradient_evals  = self%profile_gradient_evals  + 1_int64
-            call self%b_ptr%pftc%gen_corr_grad_for_rot_8(self%reference, self%particle,&
-                &current_xy, self%cur_inpl_idx, current_corr, corr_grad)
-            grad = -corr_grad
+            if( l_raw_euclid )then
+                call self%b_ptr%pftc%gen_raw_euclid_grad_for_rot_8(&
+                    &self%reference, self%particle, current_xy, self%cur_inpl_idx, current_corr, grad)
+            else
+                call self%b_ptr%pftc%gen_corr_grad_for_rot_8(self%reference, self%particle,&
+                    &current_xy, self%cur_inpl_idx, current_corr, corr_grad)
+                grad = -corr_grad
+            endif
             if( .not. ieee_is_finite(current_corr) .or. any(.not. ieee_is_finite(grad)) ) exit
             if( sqrt(sum(grad * grad)) <= real(DTINY,dp) ) exit
-            current_cost = -current_corr
+            if( l_raw_euclid )then
+                current_cost = current_corr
+            else
+                current_cost = -current_corr
+            endif
             alpha = real(step_size,dp)
             accepted = .false.
             do iback = 0, direct_max_backtracks - 1
@@ -340,10 +362,19 @@ contains
                     cycle
                 endif
                 self%profile_objective_evals = self%profile_objective_evals + 1_int64
-                trial_corr = self%b_ptr%pftc%gen_corr_for_rot_8(&
-                    &self%reference, self%particle, trial_xy, self%cur_inpl_idx)
+                if( l_raw_euclid )then
+                    call self%b_ptr%pftc%gen_raw_euclid_grad_for_rot_8(&
+                        &self%reference, self%particle, trial_xy, self%cur_inpl_idx, trial_corr, corr_grad)
+                else
+                    trial_corr = self%b_ptr%pftc%gen_corr_for_rot_8(&
+                        &self%reference, self%particle, trial_xy, self%cur_inpl_idx)
+                endif
                 if( ieee_is_finite(trial_corr) )then
-                    trial_cost = -trial_corr
+                    if( l_raw_euclid )then
+                        trial_cost = trial_corr
+                    else
+                        trial_cost = -trial_corr
+                    endif
                     improve_tol = 64.0_dp * epsilon(1.0_dp) *&
                         &max(1.0_dp, abs(current_cost), abs(trial_cost))
                     if( trial_cost < current_cost - improve_tol )then
