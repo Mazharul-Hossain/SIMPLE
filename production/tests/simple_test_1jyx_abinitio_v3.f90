@@ -14,6 +14,7 @@ use simple_commanders_abinitio2D,   only: commander_abinitio2D
 use simple_procimgstk,              only: add_noise_imgfile
 use simple_imghead,                 only: find_ldim_nptcls
 use simple_sp_project,              only: sp_project
+use simple_fileio,                  only: simple_list_dirs, simple_list_files_regexp
 use simple_ui,                      only: make_ui
 implicit none
 #include "simple_local_flags.inc"
@@ -37,6 +38,7 @@ type(molecule_data) :: mol
 type(atoms)         :: molecule
 type(sp_project)    :: spproj
 type(string) :: cwd, workflow_root, volume_path, clean_path, noisy_path, project_path, cavgs_jpeg
+logical :: found_cavgs
 
 smpd    = 1.3
 mskdiam = 120.0
@@ -76,7 +78,10 @@ call cline_sim%set('pgrp',    'c1')
 call cline_sim%set('ctf',     'no')
 call cline_sim%set('snr',     10.0)
 call cline_sim%set('bfac',    0.0)
-call cline_sim%set('sherr',   0.0)
+! simulate_particles samples random Euler orientations and applies a bounded
+! random in-plane shift when sherr is nonzero.  This keeps V3 representative
+! of real particles rather than testing noise-only images.
+call cline_sim%set('sherr',   2.0)
 call xsim%execute(cline_sim)
 call cline_sim%kill()
 clean_path = simple_abspath(string(CLEANSTK))
@@ -127,12 +132,35 @@ call spproj%kill()
 ! not guaranteed to be reattached to the input project on reread.  Validate
 ! the authoritative stage artifact instead of treating an empty os_cls2D
 ! container as a failed classification.
-cavgs_jpeg = string(PROJNAME)//'/1_abinitio2D/cavgs_iter005.jpg'
-if( .not. file_exists(cavgs_jpeg) ) THROW_HARD('abinitio2D produced no class-average image')
-cavgs_jpeg = simple_abspath(cavgs_jpeg)
+found_cavgs = .false.
+call find_cavgs(workflow_root, cavgs_jpeg, found_cavgs)
+if( .not. found_cavgs ) THROW_HARD('abinitio2D produced no class-average image anywhere below workflow root')
 write(logfhandle,'(a)') '>>> V3 CLASS OUTPUT: '//cavgs_jpeg%to_char()
 call simple_chdir(cwd, status)
 if( status /= 0 ) THROW_HARD('could not restore original working directory')
 write(logfhandle,'(a)') '>>> V3 RESULTS: '//workflow_root%to_char()
 call simple_end('**** SIMPLE_TEST_1JYX_ABINITIO_V3 NORMAL STOP ****')
+
+contains
+
+    recursive subroutine find_cavgs(root, result, found)
+        type(string), intent(in)    :: root
+        type(string), intent(inout)  :: result
+        logical,      intent(inout) :: found
+        type(string), allocatable :: files(:), dirs(:)
+        integer :: i
+        if( found ) return
+        call simple_list_files_regexp(root, '^cavgs_iter[0-9]+\.jpg$', files)
+        if( size(files) > 0 )then
+            result = files(1)
+            found = .true.
+            return
+        endif
+        dirs = simple_list_dirs(root)
+        do i = 1, size(dirs)
+            call find_cavgs(dirs(i), result, found)
+            if( found ) return
+        enddo
+    end subroutine find_cavgs
+
 end program simple_test_1jyx_abinitio_v3
