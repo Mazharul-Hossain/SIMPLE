@@ -36,7 +36,6 @@ use simple_procimgstk,               only: add_noise_imgfile
 use simple_imghead,                  only: find_ldim_nptcls
 use simple_sp_project,               only: sp_project
 use simple_pftc_srch_api
-use simple_matcher_smpl_and_lplims,  only: set_bp_range3D
 use simple_builder,                  only: builder
 use simple_pftc_shsrch_grad,         only: pftc_shsrch_grad
 use simple_type_defs,                only: OBJFUN_EUCLID
@@ -175,21 +174,54 @@ write(logfhandle,'(a,f7.3)') '>>> Step 4/6: add Gaussian noise to the stack; SNR
 ! Add noise to this one image
 call observed%add_gauran(noise_snr)
 
+! Materialize exactly the particle that the production workflow would import.
+! Keeping this one-image stack separate from the original simulated stack is
+! important: the direct test must exercise the same stack/project ownership
+! rules as abinitio2D without launching the full multi-class experiment.
+call observed%write(string(NOISY_FILE), 1, del_if_exists=.true.)
+call find_ldim_nptcls(string(NOISY_FILE), ldim, nimgs)
+if( nimgs /= 1 ) THROW_HARD('materialized synthetic stack has the wrong particle count')
+noisy_path = simple_abspath(string(NOISY_FILE))
+
 ! Optional manual correction for inspection
 call observed%rtsq(0.0, &
                    -truth%shift(1), &
                    -truth%shift(2), &
                    corrected)
 
-write(logfhandle,'(a)') '>>> Step 5/6: invoke the production Fourier/polar direct shift gradient'
-call cline_pft%set('vol1',    volume_path)
+write(logfhandle,'(a)') '>>> Step 5/6: prepare one-particle project and production Fourier/polar context'
+
+! This is the same preparation boundary used by abinitio2D: create a SIMPLE
+! project, import the particle stack, and let the builder read the project
+! metadata before constructing the 2D toolbox.  We intentionally stop before
+! commander_abinitio2D; a later v3 test will cover the complete classification.
+call cline_new_project%set('prg',      'new_project')
+call cline_new_project%set('projname',  PROJNAME)
+call cline_new_project%set('qsys_name', 'local')
+call cline_new_project%set('mkdir',     'no')
+call xnew_project%execute(cline_new_project)
+call cline_new_project%kill()
+call simple_getcwd(project_root)
+project_path = simple_abspath(string(PROJFILE))
+
+call cline_import%set('prg',     'import_particles')
+call cline_import%set('mkdir',   'no')
+call cline_import%set('projfile', project_path)
+call cline_import%set('stk',      noisy_path)
+call cline_import%set('smpd',     smpd)
+call cline_import%set('ctf',      'no')
+call ximport_particles%execute(cline_import)
+call cline_import%kill()
+
+write(logfhandle,'(a)') '>>> Step 6/6: invoke the production Fourier/polar direct shift gradient'
+call cline_pft%set('projfile', project_path)
 call cline_pft%set('smpd',    smpd)
 call cline_pft%set('mskdiam', mskdiam)
+call cline_pft%set('ncls',    1)
 call cline_pft%set('nptcls',  1)
 call cline_pft%set('ctf',     'no')
 call cline_pft%set('lp',      8.0)
-call pft_builder%init_params_and_build_strategy3D_tbox(cline_pft, pft_params)
-call set_bp_range3D(pft_params, pft_builder, cline_pft)
+call pft_builder%init_params_and_build_strategy2D_tbox(cline_pft, pft_params, wthreads=.false.)
 pft_params%cc_objfun = OBJFUN_EUCLID
 call pft_builder%pftc%new(pft_params, 1, [1,1], pft_params%kfromto)
 ! The production workflow normally attaches this calibration through
@@ -228,7 +260,7 @@ if( direct_irot == 0 ) THROW_HARD('direct shift search rejected every tested sta
 if( .not. ieee_is_finite(real(direct_cxy(1),dp)) ) THROW_HARD('direct shift objective is nonfinite')
 write(logfhandle,'(a,2f10.4)') '>>> DIRECT SHIFT RECOVERED: ', direct_cxy(2:3)
 call direct_shift_search%kill
-call pft_builder%kill_strategy3D_tbox
+call pft_builder%kill_strategy2D_tbox
 call pft_builder%kill_general_tbox
 deallocate(sigma2_noise)
 
@@ -283,7 +315,7 @@ write(logfhandle,'(A,2F10.4)') &
 
 ! call simple_chdir(original_cwd, status)
 ! if( status /= 0 ) THROW_HARD('could not restore the original working directory')
-write(logfhandle,'(a)') '>>> Step 6/6: report synthetic alignment setup'
+write(logfhandle,'(a)') '>>> Step 6/6: report synthetic alignment setup (full abinitio2D deferred to v3)'
 write(logfhandle,'(a)') '>>> Results: '//workflow_root%to_char()
 call simple_end('**** SIMPLE_TEST_1JYX_ABINITIO_V2 NORMAL STOP ****')
 
