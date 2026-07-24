@@ -3,8 +3,7 @@
 !
 ! src=/usr/local/data/mazhar/Projects/SIMPLE
 ! bld=/usr/local/data/mazhar/Projects/SIMPLE_joint2d_sgd_build
-! cd "$src"
-! git pull --ff-only
+! cd "$src" && git pull --ff-only
 !
 ! rm -rf "$bld" && mkdir -p "$bld" && cd "$bld"
 !
@@ -16,6 +15,12 @@
 ! rm -rf ~/Projects/simple_test_1jyx_abinitio_v2 && mkdir -p ~/Projects/simple_test_1jyx_abinitio_v2 && cd ~/Projects/simple_test_1jyx_abinitio_v2
 ! simple_test_joint2D_direct_shift 2>&1 | tee simple_test_joint2D_direct_shift.log
 ! simple_test_1jyx_abinitio_v2 2>&1 | tee simple_test_1jyx_abinitio_v2.log
+! 
+! ======== Rebuild path =============================================
+! cmake --build "$bld/build-debug" --target simple_test_1jyx_abinitio_v2 simple_test_joint2D_direct_shift --parallel 48 2>&1 | tee "$bld/build-debug/build.log"
+! cd ~/Projects/simple_test_1jyx_abinitio_v2
+! "$bld/build-debug/production/simple_test_joint2D_direct_shift" 2>&1 | tee direct_shift.log
+! "$bld/build-debug/production/simple_test_1jyx_abinitio_v2" 2>&1 | tee abinitio_v2.log
 ! 
 program simple_test_1jyx_abinitio_v2
 use simple_core_module_api
@@ -71,6 +76,7 @@ integer      :: ldim(3), nimgs, status
 integer      :: vol_dim(3)
 integer      :: pdim_srch(3), direct_irot, direct_accepted
 real         :: shift_limits(2,2), direct_cxy(3)
+real(dp)     :: objective_initial, objective_final
 real, allocatable, target :: sigma2_noise(:,:)
 
 type :: alignment_truth
@@ -207,11 +213,14 @@ call direct_shift_search%new(pft_builder, shift_limits, opt_angle=.false., direc
 call direct_shift_search%set_indices(1, 1)
 direct_irot = 1
 direct_cxy = direct_shift_search%minimize_direct( &
-    direct_irot, [0.0, 0.0], 0.5, 5, sh_rot=.false., accepted_steps=direct_accepted)
+    direct_irot, [0.0, 0.0], 0.5, 5, sh_rot=.false., accepted_steps=direct_accepted, &
+    objective_initial=objective_initial, objective_final=objective_final)
+write(logfhandle,'(a,es14.6)') '>>> DIRECT SHIFT OBJECTIVE INITIAL: ', objective_initial
+write(logfhandle,'(a,es14.6)') '>>> DIRECT SHIFT OBJECTIVE FINAL:   ', objective_final
+write(logfhandle,'(a,i0)')     '>>> DIRECT SHIFT ACCEPTED STEPS: ', direct_accepted
 if( direct_irot == 0 ) THROW_HARD('direct shift search rejected every tested state')
 if( .not. ieee_is_finite(real(direct_cxy(1),dp)) ) THROW_HARD('direct shift objective is nonfinite')
 write(logfhandle,'(a,2f10.4)') '>>> DIRECT SHIFT RECOVERED: ', direct_cxy(2:3)
-write(logfhandle,'(a,i0)')     '>>> DIRECT SHIFT ACCEPTED STEPS: ', direct_accepted
 call direct_shift_search%kill
 call pft_builder%kill_strategy3D_tbox
 call pft_builder%kill_general_tbox
