@@ -80,6 +80,7 @@ real(dp)     :: objective_initial, objective_final
 real(dp)     :: raw_f, raw_grad(2), raw_f_xp, raw_f_xm, raw_f_yp, raw_f_ym
 real(dp)     :: ref_pft_energy, ptcl_pft_energy, sigma_min, sigma_max
 complex(sp), allocatable :: ref_pft_diag(:,:), ptcl_pft_diag(:,:)
+real, allocatable :: ref_rmat_diag(:,:,:), ptcl_rmat_diag(:,:,:)
 real, allocatable, target :: sigma2_noise(:,:)
 
 type :: alignment_truth
@@ -237,6 +238,12 @@ call pft_builder%pftc%assign_sigma2_noise(sigma2_noise)
 pdim_srch = pft_builder%pftc%get_pdim_srch()
 ! Match SIMPLE's production image-to-polar workflow: polarize reads the
 ! image Fourier buffer, so explicitly FFT both synthetic spatial images first.
+! Capture spatial energies before FFT; ordinary image has no get_sumsq method.
+ref_rmat_diag  = reference%get_rmat()
+ptcl_rmat_diag = observed%get_rmat()
+write(logfhandle,'(a,2es16.8)') '>>> DIAG IMAGE SUMSQ REF/OBS: ', &
+    sum(real(ref_rmat_diag,dp)**2), sum(real(ptcl_rmat_diag,dp)**2)
+deallocate(ref_rmat_diag, ptcl_rmat_diag)
 call reference%fft()
 call observed%fft()
 call pft_builder%pftc%polarize_ref_pft(reference, 1, iseven=.true., pdim=pdim_srch, oversamp=.false.)
@@ -254,7 +261,6 @@ call pft_builder%pftc%get_ptcl_pft(1, ptcl_pft_diag)
 ref_pft_energy   = sum(real(ref_pft_diag * conjg(ref_pft_diag),dp))
 ptcl_pft_energy  = sum(real(ptcl_pft_diag * conjg(ptcl_pft_diag),dp))
 write(logfhandle,'(a,3I8)')    '>>> DIAG POLAR DIMENSIONS: ', pdim_srch
-write(logfhandle,'(a,2es16.8)') '>>> DIAG IMAGE SUMSQ REF/OBS: ', reference%get_sumsq(), observed%get_sumsq()
 write(logfhandle,'(a,es16.8)') '>>> DIAG POLAR ENERGY REF: ', ref_pft_energy
 write(logfhandle,'(a,es16.8)') '>>> DIAG POLAR ENERGY PTCL: ', ptcl_pft_energy
 write(logfhandle,'(a,2es16.8)') '>>> DIAG POLAR ABS MAX REF/PTCL: ', maxval(abs(ref_pft_diag)), maxval(abs(ptcl_pft_diag))
