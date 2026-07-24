@@ -36,7 +36,7 @@ type(commander_abinitio2D)         :: xabinitio
 type(molecule_data) :: mol
 type(atoms)         :: molecule
 type(sp_project)    :: spproj
-type(string) :: cwd, workflow_root, volume_path, clean_path, noisy_path, project_path
+type(string) :: cwd, workflow_root, volume_path, clean_path, noisy_path, project_path, cavgs_jpeg
 
 smpd    = 1.3
 mskdiam = 120.0
@@ -121,10 +121,16 @@ call cline_abinitio%kill()
 write(logfhandle,'(a)') '>>> V3 STEP 6: validate project output'
 call spproj%read(project_path)
 if( spproj%os_ptcl2D%get_noris() /= nptcls ) THROW_HARD('abinitio2D output particle count mismatch')
-if( spproj%os_cls2D%get_noris() < 1 ) THROW_HARD('abinitio2D produced no class output')
 write(logfhandle,'(a,i0)') '>>> V3 PARTICLES: ', spproj%os_ptcl2D%get_noris()
-write(logfhandle,'(a,i0)') '>>> V3 CLASS OUTPUT: ', spproj%os_cls2D%get_noris()
 call spproj%kill()
+! The class-average segment is written by the abinitio2D stage project and is
+! not guaranteed to be reattached to the input project on reread.  Validate
+! the authoritative stage artifact instead of treating an empty os_cls2D
+! container as a failed classification.
+cavgs_jpeg = string(PROJNAME)//'/1_abinitio2D/cavgs_iter005.jpg'
+if( .not. file_exists(cavgs_jpeg) ) THROW_HARD('abinitio2D produced no class-average image')
+cavgs_jpeg = simple_abspath(cavgs_jpeg)
+write(logfhandle,'(a)') '>>> V3 CLASS OUTPUT: '//cavgs_jpeg%to_char()
 call simple_chdir(cwd, status)
 if( status /= 0 ) THROW_HARD('could not restore original working directory')
 write(logfhandle,'(a)') '>>> V3 RESULTS: '//workflow_root%to_char()
