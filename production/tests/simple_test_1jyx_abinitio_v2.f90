@@ -34,6 +34,7 @@ use simple_pftc_srch_api
 use simple_matcher_smpl_and_lplims,  only: set_bp_range3D
 use simple_builder,                  only: builder
 use simple_pftc_shsrch_grad,         only: pftc_shsrch_grad
+use simple_type_defs,                only: OBJFUN_EUCLID
 use simple_ui,                       only: make_ui
 use simple_image,                    only: image
 use, intrinsic :: ieee_arithmetic,    only: ieee_is_finite
@@ -183,6 +184,7 @@ call cline_pft%set('ctf',     'no')
 call cline_pft%set('lp',      8.0)
 call pft_builder%init_params_and_build_strategy3D_tbox(cline_pft, pft_params)
 call set_bp_range3D(pft_params, pft_builder, cline_pft)
+pft_params%cc_objfun = OBJFUN_EUCLID
 call pft_builder%pftc%new(pft_params, 1, [1,1], pft_params%kfromto)
 ! The production workflow normally attaches this calibration through
 ! simple_euclid_sigma2.  This standalone synthetic test constructs the
@@ -194,6 +196,10 @@ pdim_srch = pft_builder%pftc%get_pdim_srch()
 call pft_builder%pftc%polarize_ref_pft(reference, 1, iseven=.true., pdim=pdim_srch, oversamp=.false.)
 call pft_builder%pftc%polarize_ptcl_pft(observed, 1, pdim=pdim_srch, oversamp=.false.)
 call pft_builder%pftc%set_eo(1, .true.)
+! P1: calibrate each Fourier shell with the production convention
+! sigma2(k)=sum_p|R-P|^2/(2*pftsz), then keep the existing Euclidean score.
+call pft_builder%pftc%gen_sigma_contrib(1, 1, [0.0, 0.0], 1, sigma2_noise(:,1))
+sigma2_noise(:,1) = max(sigma2_noise(:,1), 1.0e-6)
 
 shift_limits(:,1) = -5.0
 shift_limits(:,2) =  5.0
