@@ -36,6 +36,7 @@ real :: truth_angle, applied_shift(2), expected_shift(2), recovered(3)
 real :: angle_err, angle_err_alt, recovered_angle
 real(dp) :: loss, grad(2), best_loss, objective_initial, objective_final
 integer :: accepted_steps
+logical :: pass_class, pass_angle, pass_loss, pass_shift, pass_all
 real, allocatable, target :: sigma2_noise(:,:)
 complex(sp), allocatable :: ref_pft_diag(:,:), ptcl_pft_diag(:,:)
 type(cmdline) :: csim, cnew, cimport, cpft
@@ -128,14 +129,17 @@ do iref=1,2; do irot=1,b%pftc%get_nrots()
     endif
 enddo; enddo
 if(best_rot<1) THROW_HARD('V4 discrete class/rotation search produced no finite candidate')
-truth_rot=b%pftc%get_roind(real(truth_angle,sp))
+! Alignment reports the corrective rotation, so compare against -truth_angle.
+truth_rot=b%pftc%get_roind(real(-truth_angle,sp))
 shift_limits(:,1)=-5.; shift_limits(:,2)=5.; call search%new(b,shift_limits,opt_angle=.false.,direct_only=.true.); call search%set_indices(best_ref,1)
 irot=best_rot; recovered=search%minimize_direct(irot,[0.0,0.0],.5,8,sh_rot=.false.,accepted_steps=accepted_steps,&
     objective_initial=objective_initial,objective_final=objective_final,raw_euclid=.true.)
 write(logfhandle,'(a,2i8)') '>>> V4 CLASS TRUE/RECOVERED: ',truth_ref,best_ref
-write(logfhandle,'(a,2i8)') '>>> V4 ROTATION TRUE/RECOVERED: ',truth_rot,irot
+write(logfhandle,'(a,2i8)') '>>> V4 ROTATION TRUE/RECOVERED: ',b%pftc%get_roind(real(truth_angle,sp)),irot
+write(logfhandle,'(a,2i8)') '>>> V4 ROTATION CORRECTIVE/RECOVERED: ',truth_rot,irot
 write(logfhandle,'(a,2f10.4)') '>>> V4 ANGLE TRUE/RECOVERED: ',truth_angle,b%pftc%get_rot(irot)
-write(logfhandle,'(a,4f10.4)') '>>> V4 SHIFT EXPECTED/RECOVERED: ',expected_shift,recovered(2:3)
+write(logfhandle,'(a,"(",f10.4,1x,f10.4,") (",f10.4,1x,f10.4,")")') &
+    '>>> V4 SHIFT EXPECTED/RECOVERED: ',expected_shift(1),expected_shift(2),recovered(2),recovered(3)
 recovered_angle=b%pftc%get_rot(irot)
 angle_err=abs(truth_angle-recovered_angle); if(angle_err>180.) angle_err=360.-angle_err
 ! SIMPLE's in-plane rotation convention may report the corrective angle,
@@ -143,11 +147,17 @@ angle_err=abs(truth_angle-recovered_angle); if(angle_err>180.) angle_err=360.-an
 ! before selecting the closer one.
 angle_err_alt=abs(-truth_angle-recovered_angle); if(angle_err_alt>180.) angle_err_alt=360.-angle_err_alt
 angle_err=min(angle_err,angle_err_alt)
-if(best_ref/=truth_ref) THROW_HARD('V4 class assignment mismatch')
-if(angle_err>max(2.*b%pftc%get_dang(),5.)) THROW_HARD('V4 rotation error exceeds tolerance')
-if(accepted_steps<1 .or. objective_final>=objective_initial) THROW_HARD('V4 shift SGD did not improve loss')
-if(maxval(abs(real(recovered(2:3),dp)-real(expected_shift,dp)))>0.5) THROW_HARD('V4 shift error exceeds tolerance')
+pass_class = best_ref == truth_ref
+pass_angle = angle_err <= max(2.*b%pftc%get_dang(),5.)
+pass_loss  = accepted_steps >= 1 .and. objective_final < objective_initial
+pass_shift = maxval(abs(real(recovered(2:3),dp)-real(expected_shift,dp))) <= 0.5
+write(logfhandle,'(a,l1)') '>>> V4 CHECK CLASS: ', pass_class
+write(logfhandle,'(a,l1)') '>>> V4 CHECK ANGLE: ', pass_angle
+write(logfhandle,'(a,l1)') '>>> V4 CHECK LOSS:  ', pass_loss
+write(logfhandle,'(a,l1)') '>>> V4 CHECK SHIFT: ', pass_shift
+pass_all = pass_class .and. pass_angle .and. pass_loss .and. pass_shift
 call search%kill; call b%kill_strategy2D_tbox; call b%kill_general_tbox; deallocate(sigma2_noise)
 call simple_chdir(cwd,status); if(status/=0) THROW_HARD('could not restore original working directory')
+if(.not.pass_all) THROW_HARD('V4 truth-controlled assignment regression failed; see CHECK lines')
 write(logfhandle,'(a)') '>>> V4 RESULTS: '//root%to_char(); call simple_end('**** SIMPLE_TEST_1JYX_ABINITIO_V4 NORMAL STOP ****')
 end program simple_test_1jyx_abinitio_v4
