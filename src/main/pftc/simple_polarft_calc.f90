@@ -193,6 +193,7 @@ type :: polarft_calc
     procedure, private :: gen_denoised_corr_for_rot_8_1, gen_denoised_corr_for_rot_8_2
     procedure, private :: hybrid_dist_from_score
     procedure          :: gen_corr_grad_for_rot_8
+    procedure          :: gen_raw_euclid_grad_for_rot_8
     procedure, private :: gen_corr_cc_grad_for_rot_8
     procedure, private :: gen_euclid_grad_for_rot_8
     procedure, private :: gen_denoised_corr_grad_for_rot_8
@@ -848,6 +849,13 @@ interface
         real(dp),                    intent(out)   :: f, grad(2)
     end subroutine gen_corr_grad_for_rot_8
 
+    module subroutine gen_raw_euclid_grad_for_rot_8(self, iref, iptcl, shvec, irot, f, grad)
+        class(polarft_calc), target, intent(inout) :: self
+        integer,                     intent(in)    :: iref, iptcl, irot
+        real(dp),                    intent(in)    :: shvec(2)
+        real(dp),                    intent(out)   :: f, grad(2)
+    end subroutine gen_raw_euclid_grad_for_rot_8
+
     module subroutine gen_corr_cc_grad_for_rot_8( self, pft_ref, i, shvec, irot, f, grad)
         class(polarft_calc), target, intent(inout) :: self
         complex(dp),        pointer, intent(inout) :: pft_ref(:,:)
@@ -856,13 +864,14 @@ interface
         real(dp),                    intent(out)   :: f, grad(2)
     end subroutine gen_corr_cc_grad_for_rot_8
 
-    module subroutine gen_euclid_grad_for_rot_8(self, pft_ref, iptcl, shvec, irot, f, grad, shmat_8_ready)
+    module subroutine gen_euclid_grad_for_rot_8(self, pft_ref, iptcl, shvec, irot, f, grad, shmat_8_ready, raw_loss)
         class(polarft_calc), target, intent(inout) :: self
         complex(dp), pointer,        intent(inout) :: pft_ref(:,:)
         integer,                     intent(in)    :: iptcl, irot
         real(dp),                    intent(in)    :: shvec(2)
         real(dp),                    intent(out)   :: f, grad(2)
         logical, optional,           intent(in)    :: shmat_8_ready
+        logical, optional,           intent(in)    :: raw_loss
     end subroutine gen_euclid_grad_for_rot_8
 
     module subroutine gen_denoised_corr_grad_for_rot_8(self, pft_ref, iptcl, shvec, irot, f, grad, shmat_8_ready)
