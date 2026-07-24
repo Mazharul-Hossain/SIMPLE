@@ -11,6 +11,7 @@ use simple_commanders_project_core, only: commander_new_project
 use simple_commanders_project_ptcl, only: commander_import_particles
 use simple_imghead,                 only: find_ldim_nptcls
 use simple_sp_project,              only: sp_project
+use simple_parameters,               only: parameters
 use simple_builder,                 only: builder
 use simple_pftc_shsrch_grad,         only: pftc_shsrch_grad
 use simple_type_defs,               only: OBJFUN_EUCLID
@@ -68,7 +69,10 @@ call find_ldim_nptcls(clean_path,ldim,nimgs); if(nimgs/=nptcls) THROW_HARD('V4 c
 
 call ref1%new([ldim(1),ldim(2),1],smpd); call ref1%read(clean_path,1)
 call ref2%new([ldim(1),ldim(2),1],smpd); call ref2%read(clean_path,2)
-call ref2%rtsq(truth_angle,0.,0.,observed); call observed%add_gauran(snr)
+! The synthetic particle is the second reference, rotated and translated by
+! the known truth shift.  SIMPLE's alignment result is the corrective shift,
+! so the expected recovered value is -applied_shift.
+call ref2%rtsq(truth_angle,applied_shift(1),applied_shift(2),observed); call observed%add_gauran(snr)
 call observed%write(string(NOISYSTK),1,del_if_exists=.true.); noisy_path=simple_abspath(string(NOISYSTK))
 
 write(logfhandle,'(a)') '>>> V4 STEP 2: create one-particle project and production polar context'
@@ -93,7 +97,7 @@ do iref=1,2; do irot=1,b%pftc%get_nrots()
 enddo; enddo
 truth_rot=b%pftc%get_roind(real(truth_angle,sp))
 shift_limits(:,1)=-5.; shift_limits(:,2)=5.; call search%new(b,shift_limits,opt_angle=.false.,direct_only=.true.); call search%set_indices(best_ref,1)
-irot=best_rot; recovered=search%minimize_direct(irot,[0._dp,0._dp],.5,8,sh_rot=.false.,accepted_steps=accepted_steps,&
+irot=best_rot; recovered=search%minimize_direct(irot,[0.0,0.0],.5,8,sh_rot=.false.,accepted_steps=accepted_steps,&
     objective_initial=objective_initial,objective_final=objective_final,raw_euclid=.true.)
 write(logfhandle,'(a,2i0)') '>>> V4 CLASS TRUE/RECOVERED: ',truth_ref,best_ref
 write(logfhandle,'(a,2i0)') '>>> V4 ROTATION TRUE/RECOVERED: ',truth_rot,irot
