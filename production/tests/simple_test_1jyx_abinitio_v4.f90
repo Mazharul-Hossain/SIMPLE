@@ -33,7 +33,7 @@ integer :: nptcls, nthr, status, nimgs, ldim(3), vol_dim(3)
 integer :: iref, irot, best_ref, best_rot, truth_ref, truth_rot
 integer :: pdim_srch(3)
 real :: truth_angle, applied_shift(2), expected_shift(2), recovered(3)
-real :: angle_err
+real :: angle_err, angle_err_alt, recovered_angle
 real(dp) :: loss, grad(2), best_loss, objective_initial, objective_final
 integer :: accepted_steps
 real, allocatable, target :: sigma2_noise(:,:)
@@ -132,11 +132,17 @@ truth_rot=b%pftc%get_roind(real(truth_angle,sp))
 shift_limits(:,1)=-5.; shift_limits(:,2)=5.; call search%new(b,shift_limits,opt_angle=.false.,direct_only=.true.); call search%set_indices(best_ref,1)
 irot=best_rot; recovered=search%minimize_direct(irot,[0.0,0.0],.5,8,sh_rot=.false.,accepted_steps=accepted_steps,&
     objective_initial=objective_initial,objective_final=objective_final,raw_euclid=.true.)
-write(logfhandle,'(a,2i0)') '>>> V4 CLASS TRUE/RECOVERED: ',truth_ref,best_ref
-write(logfhandle,'(a,2i0)') '>>> V4 ROTATION TRUE/RECOVERED: ',truth_rot,irot
+write(logfhandle,'(a,2i8)') '>>> V4 CLASS TRUE/RECOVERED: ',truth_ref,best_ref
+write(logfhandle,'(a,2i8)') '>>> V4 ROTATION TRUE/RECOVERED: ',truth_rot,irot
 write(logfhandle,'(a,2f10.4)') '>>> V4 ANGLE TRUE/RECOVERED: ',truth_angle,b%pftc%get_rot(irot)
-write(logfhandle,'(a,2f10.4)') '>>> V4 SHIFT EXPECTED/RECOVERED: ',expected_shift,recovered(2:3)
-angle_err=abs(truth_angle-b%pftc%get_rot(irot)); if(angle_err>180.) angle_err=360.-angle_err
+write(logfhandle,'(a,4f10.4)') '>>> V4 SHIFT EXPECTED/RECOVERED: ',expected_shift,recovered(2:3)
+recovered_angle=b%pftc%get_rot(irot)
+angle_err=abs(truth_angle-recovered_angle); if(angle_err>180.) angle_err=360.-angle_err
+! SIMPLE's in-plane rotation convention may report the corrective angle,
+! i.e. the negative of the synthetic angle.  Circularize both alternatives
+! before selecting the closer one.
+angle_err_alt=abs(-truth_angle-recovered_angle); if(angle_err_alt>180.) angle_err_alt=360.-angle_err_alt
+angle_err=min(angle_err,angle_err_alt)
 if(best_ref/=truth_ref) THROW_HARD('V4 class assignment mismatch')
 if(angle_err>max(2.*b%pftc%get_dang(),5.)) THROW_HARD('V4 rotation error exceeds tolerance')
 if(accepted_steps<1 .or. objective_final>=objective_initial) THROW_HARD('V4 shift SGD did not improve loss')
