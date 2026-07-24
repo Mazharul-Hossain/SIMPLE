@@ -130,6 +130,59 @@ occupancy may override it explicitly.
 Angular proximity gates which comparisons are meaningful; registered image
 distance decides which gated particles are neighbors.
 
+### 3.1 Graph kernel bandwidth and density normalization
+
+The Gaussian graph kernel uses a single fixed convention,
+`w_ij = exp(-d_ij^2 / eps)`, where `eps` is the squared-distance bandwidth. The
+kernel, both bandwidth estimators, and the Ferguson log-bandwidth scan all use
+this same convention, so the estimated optimum is directly the kernel
+denominator. The kernel and normalization live in the shared engine
+`src/main/pca/simple_diff_map_graphs.f90` and are used by every diffusion-map
+program (`ppca_denoise`, `cls_split`, `denoise_project`, `flex_analysis`).
+
+`bandwidth_mode` selects the estimator for `eps`:
+
+- `median` — `eps` is the median of the k-th-nearest-neighbor squared
+  distances (`median_positive(kth_d2)`), with a mean fallback on underflow.
+- `ferguson` — the Coifman–Lafon / Ferguson tanh selector: a log-bandwidth
+  scan over `[d2med·10^-3, d2med·10^3]` computes `log sum_ij exp(-d_ij^2/eps)`
+  at each trial `eps`, a `d + c·tanh(a x + b)` model is fitted, and the
+  inflection `logeps* = -b/a` (clamped to the scanned range) gives
+  `eps = bandwidth_tune · exp(logeps*)`. A non-finite, non-positive, or
+  off-scale result (outside `[d2med/100, 100·d2med]`) is rejected and the
+  estimator falls back to `median`, so a degenerate fit degrades gracefully
+  instead of collapsing the embedding.
+
+`flex_analysis` defaults to `bandwidth_mode=ferguson`; the other diffusion-map
+programs default to `median`. `bandwidth_tune` is a linear multiplier of the
+Ferguson optimum (default `1.0`; larger broadens, smaller sharpens) and has no
+effect under `median`.
+
+Density normalization is controlled by `dm_alpha` (Coifman–Lafon α), applied in
+`normalize_diffmap_graph` before the symmetric degree normalization:
+
+- `dm_alpha = 0.0` (default) — plain graph Laplacian; sampling density retained.
+- `dm_alpha = 0.5` — Fokker–Planck diffusion.
+- `dm_alpha = 1.0` — Laplace–Beltrami; sampling density divided out, leaving
+  intrinsic manifold geometry.
+
+For `dm_alpha > 0` the weights are rescaled
+`w_ij <- w_ij / (d_i^alpha d_j^alpha)` on the raw degree and then symmetrically
+renormalized; `dm_alpha = 0` reproduces the original degree normalization
+exactly. Because cryo-EM orientation coverage is non-uniform (preferred
+orientations, angular gaps), `dm_alpha = 1` is recommended when intrinsic
+geometry is desired; the default remains `0.0` for backward compatibility and
+must be enabled explicitly.
+
+Example invocations:
+
+```bash
+# Ferguson data-adaptive bandwidth (flex default), explicit tune
+simple_exec prg=flex_analysis ... bandwidth_mode=ferguson bandwidth_tune=1
+# Laplace–Beltrami density normalization
+simple_exec prg=flex_analysis ... dm_alpha=1
+```
+
 ## 4. Embedding and feature selection
 
 The normalized sparse graph is embedded by the existing sparse diffusion-map
@@ -402,6 +455,8 @@ constructing trajectory chunks.
 | Discrete mean reprojection by `proj` | Implemented |
 | Phase-flipped, CTF-matched registered residual | Implemented |
 | Angular candidate cap and sparse residual kNN graph | Implemented |
+| Ferguson/median kernel bandwidth (`bandwidth_mode`, `bandwidth_tune`) | Implemented |
+| Coifman–Lafon α density normalization (`dm_alpha`) | Implemented |
 | Sparse diffusion embedding | Implemented |
 | ICM prefix rank selection, rank at least one | Implemented |
 | `icm=no` retention of every eigenpair returned by the `neigs` scan | Implemented |
@@ -420,7 +475,7 @@ constructing trajectory chunks.
 | Iterative PCA/PPCA and sigma estimation | Removed from flex workflow |
 | Even/odd maps and FSC per pre-image state | Forward-facing development |
 | Posterior covariance/model-variance map | Forward-facing development |
-| Project-FSC shrinkage of pre-image states | Implemented for weighted-state reconstruction |
+| Project-FSC low-pass filtering of pre-image states | Implemented for weighted-state reconstruction |
 
 A spatial variance map derived from posterior covariance or model variance
 would also be valuable, but it requires a clearly specified likelihood and
@@ -428,12 +483,12 @@ calibrated uncertainty model. It must not be inferred from diffusion
 eigenvalues alone.
 
 Project FSCs are already two-fold cross-validated. The weighted-state
-reconstruction path now applies continuous FSC-based shrinkage in Fourier space
+reconstruction path now applies FSC-based low-pass filtering in Fourier space
 before writing each state volume, using the original input project's
-state-1 FSC (from its `out` segment) for all states. Shrinkage uses the
+state-1 FSC (from its `out` segment) for all states. Filtering uses the
 existing `fsc2optlp_sub(..., merged=.false.)`
 mapping rather than a hard cutoff.
 
 If no compatible FSC metadata/file is available, or if FSC shell count is
-incompatible with the reconstruction Nyquist, shrinkage is skipped with an
-explicit log message and unshrunk volumes are written.
+incompatible with the reconstruction Nyquist, low-pass filtering is skipped with
+an explicit log message and unfiltered volumes are written.

@@ -68,26 +68,10 @@ would be applied.
 
 #### 3.2.1 Ferguson / tanh data-adaptive bandwidth (HIGH PRIORITY)
 
-**Implemented in SIMPLE (2026-07-22)**:
-
-- `src/main/pca/simple_diff_map_graphs.f90` now supports
-  `bandwidth_mode=(median|ferguson)` and `bandwidth_tune` in kNN graph
-  construction (`build_euclidean_knn_graph`,
-  `build_gated_euclidean_knn_graph`, `build_orientation_knn_graph`).
-- A Ferguson-style tanh fit is applied over a log-bandwidth scan when
-  `bandwidth_mode=ferguson`; if the fit is not usable, the code falls back to
-  the legacy median-kth-neighbor bandwidth.
-- New CLI-visible parameters were added for diffusion-map programs:
-  `bandwidth_mode` and `bandwidth_tune` (default `3.0`) in
-  `ppca_denoise`, `cls_split`, `denoise_project`, and `flex_analysis`.
-  `flex_analysis` now defaults to `bandwidth_mode=ferguson`; the other
-  programs keep `bandwidth_mode=median` unless overridden.
-
-Enable with, for example:
-
-```bash
-simple_exec prg=flex_analysis ... bandwidth_mode=ferguson bandwidth_tune=3
-```
+> **Implemented.** The production behavior, parameters, defaults, and safety
+> fallbacks now live in the
+> [`flex_analysis` policy, §3.1](../policies/flex_analysis_policy.md).
+> The review rationale below is retained for historical context.
 
 **ManifoldEM location**: `core.py`, function `fergusonE` (~line 182);
 called from `DMembeddingII.py`, function `op` (~line 576):
@@ -140,6 +124,11 @@ utility).
 ---
 
 #### 3.2.2 Coifman–Lafon α normalization (HIGH PRIORITY)
+
+> **Implemented.** The production behavior, parameters, defaults, and the
+> Ferguson-bandwidth correction history now live in the
+> [`flex_analysis` policy, §3.1](../policies/flex_analysis_policy.md).
+> The review rationale below is retained for historical context.
 
 **ManifoldEM location**: `DMembeddingII.py`, function `slaplacian` (~line 97):
 

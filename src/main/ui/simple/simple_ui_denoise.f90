@@ -130,9 +130,13 @@ contains
                 'Kernel bandwidth policy for diffusion maps(median|ferguson){median}', &
                 '(median|ferguson){median}', .false., 'median')
             call ppca_denoise%add_input(UI_FILT, 'bandwidth_tune', 'num', &
-                'Ferguson tune multiplier (default 3)', &
-                'Multiplier used only when bandwidth_mode=ferguson (larger => broader kernel)', &
-                'tune >= 0', .false., 3.0)
+                'Ferguson bandwidth multiplier (default 1)', &
+                'Linear multiplier of the Ferguson-optimal kernel bandwidth (1=optimum); only used when bandwidth_mode=ferguson', &
+                'tune >= 0', .false., 1.0)
+            call ppca_denoise%add_input(UI_FILT, 'dm_alpha', 'num', &
+                'Diffusion-map density normalization (default 0)', &
+                'Coifman-Lafon alpha: 0=graph Laplacian, 0.5=Fokker-Planck, 1=Laplace-Beltrami (divides out sampling density)', &
+                '0 <= alpha <= 1', .false., 0.0)
         call ppca_denoise%add_input(UI_FILT, 'kpca_ker', 'multi', 'Kernel PCA kernel', 'Kernel PCA kernel(rbf|cosine){rbf}', '(rbf|cosine){rbf}', .false., 'rbf')
         call ppca_denoise%add_input(UI_FILT, 'kpca_backend', 'multi', 'Kernel PCA backend', 'Kernel PCA backend(exact|nystrom){nystrom}', '(exact|nystrom){nystrom}', .false., 'nystrom')
         call ppca_denoise%add_input(UI_FILT, 'kpca_rbf_gamma', 'num', 'RBF gamma (0 => auto)', 'RBF gamma (0 => auto)', 'gamma', .false., 0.0)
@@ -259,9 +263,13 @@ contains
             'Kernel bandwidth policy for diffusion maps(median|ferguson){median}', &
             '(median|ferguson){median}', .false., 'median')
         call cls_split%add_input(UI_FILT, 'bandwidth_tune', 'num', &
-            'Ferguson tune multiplier (default 3)', &
-            'Multiplier used only when bandwidth_mode=ferguson (larger => broader kernel)', &
-            'tune >= 0', .false., 3.0)
+            'Ferguson bandwidth multiplier (default 1)', &
+            'Linear multiplier of the Ferguson-optimal kernel bandwidth (1=optimum); only used when bandwidth_mode=ferguson', &
+            'tune >= 0', .false., 1.0)
+        call cls_split%add_input(UI_FILT, 'dm_alpha', 'num', &
+            'Diffusion-map density normalization (default 0)', &
+            'Coifman-Lafon alpha: 0=graph Laplacian, 0.5=Fokker-Planck, 1=Laplace-Beltrami (divides out sampling density)', &
+            '0 <= alpha <= 1', .false., 0.0)
         call cls_split%add_input(UI_MASK, mskdiam, required_override=.false., gui_submenu="mask", gui_advanced=.false.)
         call cls_split%add_input(UI_COMP, nparts, required_override=.false., gui_submenu="compute", gui_advanced=.false.)
         call cls_split%add_input(UI_COMP, nthr,   gui_submenu="compute", gui_advanced=.false.)
@@ -291,9 +299,13 @@ contains
             'Kernel bandwidth policy for diffusion maps(median|ferguson){median}', &
             '(median|ferguson){median}', .false., 'median')
         call denoise_project%add_input(UI_FILT, 'bandwidth_tune', 'num', &
-            'Ferguson tune multiplier (default 3)', &
-            'Multiplier used only when bandwidth_mode=ferguson (larger => broader kernel)', &
-            'tune >= 0', .false., 3.0)
+            'Ferguson bandwidth multiplier (default 1)', &
+            'Linear multiplier of the Ferguson-optimal kernel bandwidth (1=optimum); only used when bandwidth_mode=ferguson', &
+            'tune >= 0', .false., 1.0)
+        call denoise_project%add_input(UI_FILT, 'dm_alpha', 'num', &
+            'Diffusion-map density normalization (default 0)', &
+            'Coifman-Lafon alpha: 0=graph Laplacian, 0.5=Fokker-Planck, 1=Laplace-Beltrami (divides out sampling density)', &
+            '0 <= alpha <= 1', .false., 0.0)
         call denoise_project%add_input(UI_SRCH, nspace, required_override=.false.)
         call denoise_project%add_input(UI_SRCH, 'nspace_sub', 'num', &
             'SO3 mixture subspace size', 'SO3 mixture subspace size', &
@@ -352,13 +364,25 @@ contains
             'Kernel bandwidth policy for diffusion maps(median|ferguson){ferguson}', &
             '(median|ferguson){ferguson}', .false., 'ferguson')
         call flex_analysis%add_input(UI_FILT, 'bandwidth_tune', 'num', &
-            'Ferguson tune multiplier (default 3)', &
-            'Multiplier used only when bandwidth_mode=ferguson (larger => broader kernel)', &
-            'tune >= 0', .false., 3.0)
+            'Ferguson bandwidth multiplier (default 1)', &
+            'Linear multiplier of the Ferguson-optimal kernel bandwidth (1=optimum); only used when bandwidth_mode=ferguson', &
+            'tune >= 0', .false., 1.0)
+        call flex_analysis%add_input(UI_FILT, 'dm_alpha', 'num', &
+            'Diffusion-map density normalization (default 0)', &
+            'Coifman-Lafon alpha: 0=graph Laplacian, 0.5=Fokker-Planck, 1=Laplace-Beltrami (divides out sampling density)', &
+            '0 <= alpha <= 1', .false., 0.0)
         call flex_analysis%add_input(UI_FILT, 'npreimages', 'num', &
             'Representative state volumes (default 8)', &
             'Number of k-medoids used as representative Nyström pre-image targets', &
             '# state volumes', .false., 8.0)
+        call flex_analysis%add_input(UI_FILT, 'preimage_mode', 'multi', &
+            'Diffusion-map pre-image estimator', &
+            'constant=local-constant (Nadaraya-Watson) kernel-weighted average; linear=local-linear WLS intercept that removes O(h^2) curvature bias', &
+            '(constant|linear){constant}', .false., 'constant')
+        call flex_analysis%add_input(UI_FILT, 'preimage_ndim', 'num', &
+            'Local-linear pre-image design dimension (default 2)', &
+            'Cap on the number of leading diffusion coordinates used in the local-linear design; only used when preimage_mode=linear; d=min(preimage_ndim,neigs)', &
+            '# local dimensions >=1', .false., 2.0)
         call flex_analysis%add_input(UI_FILT, lp, required_override=.false., &
             descr_placeholder_override='Graph-feature low-pass limit in Angstroms{6}; generative volumes are unfiltered', &
             gui_submenu="regularization", gui_advanced=.false.)
