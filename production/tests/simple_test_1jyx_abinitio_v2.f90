@@ -12,16 +12,24 @@
 ! make -j"$(nproc)" install
 ! export SIMPLE_PATH="$bld"
 ! export PATH="$SIMPLE_PATH/bin:$SIMPLE_PATH/scripts:$PATH"
+! 
+! ======== Test path =============================================
+! The three tests serve different layers:
+!     - simple_test_joint2D_direct_shift: optimizer mechanics.
+!     - simple_test_1jyx_abinitio_v2: production Fourier/polar loss and gradient.
+!     - simple_test_1jyx_abinitio_v3: end-to-end project/abinitio2D path.
 !
 ! rm -rf ~/Projects/simple_test_1jyx_abinitio_v2 && mkdir -p ~/Projects/simple_test_1jyx_abinitio_v2 && cd ~/Projects/simple_test_1jyx_abinitio_v2
 ! simple_test_joint2D_direct_shift 2>&1 | tee simple_test_joint2D_direct_shift.log
 ! simple_test_1jyx_abinitio_v2 2>&1 | tee simple_test_1jyx_abinitio_v2.log
+! simple_test_1jyx_abinitio_v3 2>&1 | tee simple_test_1jyx_abinitio_v3.log
 ! 
 ! ======== Rebuild path =============================================
-! cmake --build "$bld/build-debug" --target simple_test_1jyx_abinitio_v2 simple_test_joint2D_direct_shift --parallel 48 2>&1 | tee "$bld/build-debug/build.log"
+! cmake --build "$bld/build-debug" --target simple_test_1jyx_abinitio_v3 simple_test_1jyx_abinitio_v2 simple_test_joint2D_direct_shift --parallel 48 2>&1 | tee "$bld/build-debug/build.log"
 ! cd ~/Projects/simple_test_1jyx_abinitio_v2
 ! "$bld/build-debug/production/simple_test_joint2D_direct_shift" 2>&1 | tee direct_shift.log
 ! "$bld/build-debug/production/simple_test_1jyx_abinitio_v2" 2>&1 | tee abinitio_v2.log
+! "$bld/build-debug/production/simple_test_1jyx_abinitio_v3" 2>&1 | tee abinitio_v3.log
 ! 
 program simple_test_1jyx_abinitio_v2
 use simple_core_module_api
@@ -31,11 +39,7 @@ use simple_cmdline,                  only: cmdline
 use simple_commanders_sim,           only: commander_simulate_particles
 use simple_commanders_project_core,  only: commander_new_project
 use simple_commanders_project_ptcl,  only: commander_import_particles
-use simple_commanders_abinitio2D,    only: commander_abinitio2D
-use simple_commanders_abinitio,      only: commander_abinitio3D
-use simple_procimgstk,               only: add_noise_imgfile
 use simple_imghead,                  only: find_ldim_nptcls
-use simple_sp_project,               only: sp_project
 use simple_pftc_srch_api
 use simple_builder,                  only: builder
 use simple_pftc_shsrch_grad,         only: pftc_shsrch_grad
@@ -55,22 +59,18 @@ character(len=*), parameter :: NOISY_FILE = '1JYX_particles_noisy.mrcs'
 character(len=*), parameter :: ORI_FILE   = '1JYX_particles_oris.txt'
 
 real    :: smpd, mskdiam, noise_snr
-integer :: nptcls, ncls, nthr
+integer :: nptcls, nthr
 type(cmdline) :: user_args, cline_sim, cline_new_project, cline_import
-type(cmdline) :: cline_abinitio2D, cline_abinitio3D
 type(commander_simulate_particles) :: xsimulate_particles
 type(commander_new_project)        :: xnew_project
 type(commander_import_particles)   :: ximport_particles
-type(commander_abinitio2D)         :: xabinitio2D
-type(commander_abinitio3D)         :: xabinitio3D
 type(molecule_data)                :: mol
 type(atoms)                        :: molecule
-type(sp_project)                   :: spproj
 type(parameters)                   :: pft_params
 type(builder)                      :: pft_builder
 type(pftc_shsrch_grad)             :: direct_shift_search
-type(string) :: original_cwd, workflow_root, project_root, project_path
-type(string) :: volume_path, clean_path, noisy_path, orientations_path
+type(string) :: workflow_root, project_path
+type(string) :: volume_path, clean_path, noisy_path
 type(cmdline) :: cline_pft
 integer      :: ldim(3), nimgs, status
 integer      :: vol_dim(3)
@@ -98,7 +98,6 @@ smpd      = 1.3
 mskdiam   = 180.0
 noise_snr = 10.0
 nptcls    = 200
-ncls      = 4
 nthr      = 4
 vol_dim   = [144, 144, 144]
 truth%class_id       = 1
@@ -112,19 +111,16 @@ if( command_argument_count() > 0 )then
     if( user_args%defined('mskdiam')  ) mskdiam   = user_args%get_rarg('mskdiam')
     if( user_args%defined('snr')      ) noise_snr = user_args%get_rarg('snr')
     if( user_args%defined('nptcls')   ) nptcls    = user_args%get_iarg('nptcls')
-    if( user_args%defined('ncls')     ) ncls      = user_args%get_iarg('ncls')
     if( user_args%defined('nthr')     ) nthr      = user_args%get_iarg('nthr')
 endif
 if( smpd <= 0.0 )      THROW_HARD('smpd must be positive')
 if( mskdiam <= 0.0 )   THROW_HARD('mskdiam must be positive')
 if( noise_snr <= 0.0 ) THROW_HARD('snr must be positive')
 if( nptcls < 8 )       THROW_HARD('nptcls must be at least 8')
-if( ncls < 1 .or. ncls >= nptcls ) THROW_HARD('ncls must be in [1,nptcls)')
 if( nthr < 1 )         THROW_HARD('nthr must be positive')
 
 ! Direct commander calls need the normal SIMPLE UI metadata for mkdir=yes.
 call make_ui
-call simple_getcwd(original_cwd)
 if( file_exists(WORKDIR) )then
     call simple_rmdir(WORKDIR, status)
     if( status /= 0 ) THROW_HARD('could not reset '//WORKDIR)
@@ -161,7 +157,6 @@ call cline_sim%set('sherr',                        0.0)
 call xsimulate_particles%execute(cline_sim)
 call cline_sim%kill()
 clean_path        = simple_abspath(string(CLEAN_FILE))
-orientations_path = simple_abspath(string(ORI_FILE))
 call find_ldim_nptcls(clean_path, ldim, nimgs)
 if( nimgs /= nptcls ) THROW_HARD('clean simulated stack has the wrong particle count')
 
@@ -206,7 +201,6 @@ call cline_new_project%set('qsys_name', 'local')
 call cline_new_project%set('mkdir',     'no')
 call xnew_project%execute(cline_new_project)
 call cline_new_project%kill()
-call simple_getcwd(project_root)
 project_path = simple_abspath(string(PROJFILE))
 
 call cline_import%set('prg',     'import_particles')
@@ -317,63 +311,8 @@ write(logfhandle,'(A,2F10.4)') &
 write(logfhandle,'(A,2F10.4)') &
     '>>> EXPECTED CORRECTIVE SHIFT: ', -truth%shift
 
-! noisy_path = simple_abspath(string(NOISY_FILE))
-! call image_out%rtsq(clean_path, angle, shift_x, shift_y, noisy_path)
-! call find_ldim_nptcls(noisy_path, ldim, nimgs)
-! if( nimgs /= nptcls ) THROW_HARD('rotated simulated stack has the wrong particle count')
-
-! write(logfhandle,'(a,f7.3)') '>>> Step 4/6: add Gaussian noise to the stack; SNR = ', noise_snr
-! call add_noise_imgfile(noisy_path, noisy_path, noise_snr, smpd)
-! call find_ldim_nptcls(noisy_path, ldim, nimgs)
-! if( nimgs /= nptcls ) THROW_HARD('noisy simulated stack has the wrong particle count')
-
-! write(logfhandle,'(a)') '>>> Step 5/6: create a SIMPLE project and import the noisy particles'
-! call cline_new_project%set('prg',          'new_project')
-! call cline_new_project%set('projname',          PROJNAME)
-! call cline_new_project%set('qsys_name',          'local')
-! call xnew_project%execute(cline_new_project)
-! call cline_new_project%kill()
-! call simple_getcwd(project_root)
-! project_path = simple_abspath(string(PROJFILE))
-! call cline_import%set('prg',               'import_particles')
-! call cline_import%set('mkdir',                           'no')
-! call cline_import%set('projfile',                project_path)
-! call cline_import%set('stk',                       noisy_path)
-! call cline_import%set('oritab',             orientations_path)
-! call cline_import%set('smpd',                            smpd)
-! call cline_import%set('ctf',                             'no')
-! call ximport_particles%execute(cline_import)
-! call cline_import%kill()
-
-! write(logfhandle,'(a)') '>>> Step 6/6: run ab initio 2D classification'
-! call cline_abinitio2D%set('prg',          'abinitio2D')
-! call cline_abinitio2D%set('projfile',     project_path)
-! call cline_abinitio2D%set('mkdir',               'yes')
-! call cline_abinitio2D%set('mskdiam',           mskdiam)
-! call cline_abinitio2D%set('ncls',                 ncls)
-! call cline_abinitio2D%set('nstages',                 1)
-! call cline_abinitio2D%set('nits_per_stage',          1)
-! call cline_abinitio2D%set('nthr',                 nthr)
-! call xabinitio2D%execute(cline_abinitio2D)
-! call cline_abinitio2D%kill()
-! call capture_stage_project('abinitio2D')
-! call spproj%read(project_path)
-! if( spproj%os_cls2D%get_noris() < 1 ) THROW_HARD('abinitio2D produced no class averages')
-! call spproj%kill()
-
-! call simple_chdir(original_cwd, status)
-! if( status /= 0 ) THROW_HARD('could not restore the original working directory')
-write(logfhandle,'(a)') '>>> Step 6/6: report synthetic alignment setup (full abinitio2D deferred to v3)'
+write(logfhandle,'(a)') '>>> Synthetic alignment setup complete (full abinitio2D is covered by v3)'
 write(logfhandle,'(a)') '>>> Results: '//workflow_root%to_char()
 call simple_end('**** SIMPLE_TEST_1JYX_ABINITIO_V2 NORMAL STOP ****')
-
-contains
-
-    subroutine capture_stage_project( stage )
-        character(len=*), intent(in) :: stage
-        if( file_exists(PROJFILE) ) project_path = simple_abspath(string(PROJFILE))
-        call simple_chdir(project_root, status)
-        if( status /= 0 ) THROW_HARD('could not leave the '//trim(stage)//' directory')
-    end subroutine capture_stage_project
 
 end program simple_test_1jyx_abinitio_v2
