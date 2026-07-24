@@ -24,7 +24,6 @@ character(len=*), parameter :: PROJFILE = PROJNAME//'.simple'
 character(len=*), parameter :: VOLFILE  = '1JYX_v3.mrc'
 character(len=*), parameter :: CLEANSTK = '1JYX_v3_clean.mrcs'
 character(len=*), parameter :: NOISYSTK = '1JYX_v3_noisy.mrcs'
-character(len=*), parameter :: ORITAB   = '1JYX_v3_oris.txt'
 
 real    :: smpd, mskdiam, snr
 integer :: nptcls, ncls, nthr, status, nimgs
@@ -69,7 +68,6 @@ call cline_sim%set('prg',     'simulate_particles')
 call cline_sim%set('mkdir',   'no')
 call cline_sim%set('vol1',    volume_path)
 call cline_sim%set('outstk',  CLEANSTK)
-call cline_sim%set('outfile', ORITAB)
 call cline_sim%set('smpd',    smpd)
 call cline_sim%set('mskdiam', mskdiam)
 call cline_sim%set('nptcls',  nptcls)
@@ -103,7 +101,6 @@ call cline_import%set('prg',     'import_particles')
 call cline_import%set('mkdir',   'no')
 call cline_import%set('projfile',project_path)
 call cline_import%set('stk',     noisy_path)
-call cline_import%set('oritab',  simple_abspath(string(ORITAB)))
 call cline_import%set('smpd',    smpd)
 call cline_import%set('ctf',     'no')
 call ximport%execute(cline_import)
