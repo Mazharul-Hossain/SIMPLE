@@ -45,7 +45,6 @@ type(commander_new_project) :: xnew
 type(commander_import_particles) :: ximport
 type(molecule_data) :: mol
 type(atoms) :: molecule
-type(sp_project) :: spproj
 type(builder) :: b
 type(pftc_shsrch_grad) :: search
 type(parameters) :: params
@@ -53,7 +52,12 @@ type(image) :: ref1, ref2, observed
 type(string) :: cwd, root, project_path, clean_path, noisy_path, vol_path
 
 smpd=1.3; mskdiam=120.; snr=10.; nptcls=2; nthr=4; vol_dim=[144,144,144]
-truth_ref=2; truth_angle=37.; applied_shift=[2.,-1.5]; expected_shift=-applied_shift
+truth_ref=2; truth_angle=37.; applied_shift=[2.,-1.5]
+! rtsq applies the translation in the rotated image frame.  The production
+! matcher returns the inverse (corrective) shift in that same frame, hence
+! expected_shift = -R(truth_angle) applied_shift, not simply -applied_shift.
+expected_shift(1)=-(cos(deg2rad(truth_angle))*applied_shift(1)-sin(deg2rad(truth_angle))*applied_shift(2))
+expected_shift(2)=-(sin(deg2rad(truth_angle))*applied_shift(1)+cos(deg2rad(truth_angle))*applied_shift(2))
 call make_ui
 call simple_getcwd(cwd)
 if(file_exists(WORKDIR)) call simple_rmdir(WORKDIR,status)
