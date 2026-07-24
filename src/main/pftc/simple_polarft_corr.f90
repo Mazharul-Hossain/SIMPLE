@@ -1407,13 +1407,14 @@ contains
         grad  = grad / denom
     end subroutine gen_corr_cc_grad_for_rot_8
 
-    module subroutine gen_euclid_grad_for_rot_8( self, pft_ref, iptcl, shvec, irot, f, grad, shmat_8_ready )
+    module subroutine gen_euclid_grad_for_rot_8( self, pft_ref, iptcl, shvec, irot, f, grad, shmat_8_ready, raw_loss )
         class(polarft_calc),  target, intent(inout) :: self
         complex(dp),         pointer, intent(inout) :: pft_ref(:,:)
         integer,                      intent(in)    :: iptcl, irot
         real(dp),                     intent(in)    :: shvec(2)
         real(dp),                     intent(out)   :: f, grad(2)
         logical, optional,            intent(in)    :: shmat_8_ready
+        logical, optional,            intent(in)    :: raw_loss
         real(dp),    pointer :: argtransf(:,:)
         complex(dp), pointer :: shmat_8(:,:)
         complex(dp) :: crefctf, cdiff, cg
