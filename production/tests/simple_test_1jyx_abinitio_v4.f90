@@ -31,11 +31,13 @@ character(len=*), parameter :: NOISYSTK='1JYX_v4_noisy.mrcs'
 real :: smpd, mskdiam, snr, shift_limits(2,2)
 integer :: nptcls, nthr, status, nimgs, ldim(3), vol_dim(3)
 integer :: iref, irot, best_ref, best_rot, truth_ref, truth_rot
+integer :: pdim_srch(3)
 real :: truth_angle, applied_shift(2), expected_shift(2), recovered(3)
 real :: angle_err
 real(dp) :: loss, grad(2), best_loss, objective_initial, objective_final
 integer :: accepted_steps
 real, allocatable, target :: sigma2_noise(:,:)
+complex(sp), allocatable :: ref_pft_diag(:,:), ptcl_pft_diag(:,:)
 type(cmdline) :: csim, cnew, cimport, cpft
 type(commander_simulate_particles) :: xsim
 type(commander_new_project) :: xnew
@@ -89,10 +91,28 @@ call ref1%memoize4polarize(b%pftc%get_pdim_srch()); call ref2%memoize4polarize(b
 call b%pftc%polarize_ref_pft(ref1,1,.true.,b%pftc%get_pdim_srch(),.false.); call b%pftc%polarize_ref_pft(ref2,2,.true.,b%pftc%get_pdim_srch(),.false.)
 call b%pftc%polarize_ptcl_pft(observed,1,b%pftc%get_pdim_srch(),.false.); call b%pftc%set_eo(1,.true.)
 allocate(sigma2_noise(params%kfromto(1):params%kfromto(2),1),source=0.05); call b%pftc%assign_sigma2_noise(sigma2_noise)
+pdim_srch=b%pftc%get_pdim_srch()
+allocate(ref_pft_diag(pdim_srch(1),pdim_srch(2):pdim_srch(3)))
+allocate(ptcl_pft_diag(pdim_srch(1),pdim_srch(2):pdim_srch(3)))
+call b%pftc%get_ref_pft(1,.true.,ref_pft_diag)
+write(logfhandle,'(a,es16.8)') '>>> V4 POLAR ENERGY REF1: ', sum(real(ref_pft_diag*conjg(ref_pft_diag),dp))
+call b%pftc%get_ref_pft(2,.true.,ref_pft_diag)
+write(logfhandle,'(a,es16.8)') '>>> V4 POLAR ENERGY REF2: ', sum(real(ref_pft_diag*conjg(ref_pft_diag),dp))
+call b%pftc%get_ptcl_pft(1,ptcl_pft_diag)
+write(logfhandle,'(a,es16.8)') '>>> V4 POLAR ENERGY PTCL: ', sum(real(ptcl_pft_diag*conjg(ptcl_pft_diag),dp))
+deallocate(ref_pft_diag,ptcl_pft_diag)
 ! Match the production calibration boundary: the raw Euclidean objective
 ! requires a finite per-shell variance, not merely an allocated array.
 call b%pftc%gen_sigma_contrib(2,1,[0.0,0.0],1,sigma2_noise(:,1))
 sigma2_noise(:,1)=max(sigma2_noise(:,1),1.0e-6)
+write(logfhandle,'(a,2es16.8)') '>>> V4 SIGMA2 MIN/MAX: ', minval(sigma2_noise(:,1)), maxval(sigma2_noise(:,1))
+! Probe each reference before searching the full rotation grid.  These values
+! are the raw finite loss L and its shift gradient at s=(0,0); NaN here means
+! the production Fourier/polar context is invalid before SGD is entered.
+call b%pftc%gen_raw_euclid_grad_for_rot_8(1,1,[0._dp,0._dp],1,loss,grad)
+write(logfhandle,'(a,2es16.8,1x,l1)') '>>> V4 RAW PROBE REF1 (LOSS,GX): ', loss, grad(1), ieee_is_finite(loss)
+call b%pftc%gen_raw_euclid_grad_for_rot_8(2,1,[0._dp,0._dp],1,loss,grad)
+write(logfhandle,'(a,2es16.8,1x,l1)') '>>> V4 RAW PROBE REF2 (LOSS,GX): ', loss, grad(1), ieee_is_finite(loss)
 
 write(logfhandle,'(a)') '>>> V4 STEP 3: discrete class/rotation search followed by shift SGD'
 best_loss=huge(1._dp); best_ref=0; best_rot=0
