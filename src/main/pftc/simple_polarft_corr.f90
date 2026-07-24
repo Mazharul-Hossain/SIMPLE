@@ -1289,27 +1289,6 @@ contains
 
     end subroutine gen_corr_grad_for_rot_8
 
-    ! P2: expose the finite Gaussian objective to direct-gradient callers.
-    ! The ordinary Euclidean score is exp(-L), which is monotonic in L but
-    ! can underflow and erase its gradient.  This wrapper returns L and
-    ! grad(L) directly while preserving the production sigma weighting.
-    module subroutine gen_raw_euclid_grad_for_rot_8(self, iref, iptcl, shvec, irot, f, grad)
-        class(polarft_calc), target, intent(inout) :: self
-        integer,                     intent(in)    :: iref, iptcl, irot
-        real(dp),                    intent(in)    :: shvec(2)
-        real(dp),                    intent(out)   :: f, grad(2)
-        complex(dp), pointer :: pft_ref_8(:,:)
-        integer :: ithr
-        ithr = omp_get_thread_num() + 1
-        pft_ref_8 => self%heap_vars(ithr)%pft_ref_8
-        if (self%iseven(self%pinds(iptcl))) then
-            pft_ref_8 = self%pfts_refs_even(:,self%kfromto(1):self%kfromto(2),iref)
-        else
-            pft_ref_8 = self%pfts_refs_odd(:,self%kfromto(1):self%kfromto(2),iref)
-        endif
-        call self%gen_euclid_grad_for_rot_8(pft_ref_8, iptcl, shvec, irot, f, grad, raw_loss=.true.)
-    end subroutine gen_raw_euclid_grad_for_rot_8
-
     module subroutine gen_corr_cc_grad_for_rot_8( self, pft_ref, i, shvec, irot, f, grad )
         class(polarft_calc), target, intent(inout) :: self
         complex(dp), pointer,        intent(inout) :: pft_ref(:,:)
@@ -1499,15 +1478,8 @@ contains
                 grad(2) = grad(2) + wk * gky
             enddo
         endif
-        if( present(raw_loss) .and. raw_loss )then
-            ! P2: finite Gaussian loss and its derivative.  The factor two
-            ! is from d|r|^2/dr; sigma2_noise supplies the inverse variance.
-            f    = f / denom
-            grad = 2.d0 * grad / denom
-        else
-            f     = exp(-f / denom)
-            grad  = -f * 2.d0 * grad / denom
-        endif
+        f     = exp(-f / denom)
+        grad  = -f * 2.d0 * grad / denom
     end subroutine gen_euclid_grad_for_rot_8
 
     module subroutine gen_denoised_corr_grad_for_rot_8( self, pft_ref, iptcl, shvec, irot, f, grad, shmat_8_ready )
