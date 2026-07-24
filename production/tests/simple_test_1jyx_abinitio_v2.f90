@@ -16,8 +16,9 @@
 ! ======== Test path =============================================
 ! The three tests serve different layers:
 !     - simple_test_joint2D_direct_shift: optimizer mechanics.
-!     - simple_test_1jyx_abinitio_v2: production Fourier/polar loss and gradient.
-!     - simple_test_1jyx_abinitio_v3: end-to-end project/abinitio2D path.
+!     - simple_test_1jyx_abinitio_v2    : production Fourier/polar loss and gradient.
+!     - simple_test_1jyx_abinitio_v3    : end-to-end project/abinitio2D path.
+!     - simple_test_1jyx_abinitio_v4    : truth-controlled assignment test
 !
 ! rm -rf ~/Projects/simple_test_1jyx_abinitio_v2 && mkdir -p ~/Projects/simple_test_1jyx_abinitio_v2 && cd ~/Projects/simple_test_1jyx_abinitio_v2
 ! simple_test_joint2D_direct_shift 2>&1 | tee simple_test_joint2D_direct_shift.log
@@ -26,10 +27,15 @@
 ! 
 ! ======== Rebuild path =============================================
 ! cmake --build "$bld/build-debug" --target simple_test_1jyx_abinitio_v3 simple_test_1jyx_abinitio_v2 simple_test_joint2D_direct_shift --parallel 48 2>&1 | tee "$bld/build-debug/build.log"
-! cd ~/Projects/simple_test_1jyx_abinitio_v2
+! 
+! results="$HOME/Projects/simple_sgd_regression_$(date +%Y%m%d_%H%M%S)"
+! mkdir -p "$results"
+! cd "$results"
+!
 ! "$bld/build-debug/production/simple_test_joint2D_direct_shift" 2>&1 | tee direct_shift.log
 ! "$bld/build-debug/production/simple_test_1jyx_abinitio_v2" 2>&1 | tee abinitio_v2.log
 ! "$bld/build-debug/production/simple_test_1jyx_abinitio_v3" 2>&1 | tee abinitio_v3.log
+! "$bld/build-debug/production/simple_test_1jyx_abinitio_v4" 2>&1 | tee abinitio_v4.log
 ! 
 program simple_test_1jyx_abinitio_v2
 use simple_core_module_api
