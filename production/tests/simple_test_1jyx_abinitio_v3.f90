@@ -148,6 +148,7 @@ contains
         type(string), intent(inout)  :: result
         logical,      intent(inout) :: found
         type(string), allocatable :: files(:), dirs(:)
+        type(string) :: child
         integer :: i
         if( found ) return
         call simple_list_files_regexp(root, '^cavgs_iter[0-9]+\.jpg$', files)
@@ -158,7 +159,10 @@ contains
         endif
         dirs = simple_list_dirs(root)
         do i = 1, size(dirs)
-            call find_cavgs(dirs(i), result, found)
+            ! simple_list_dirs returns names relative to ROOT, so preserve
+            ! the parent path during recursive descent.
+            child = string(root%to_char()//'/'//dirs(i)%to_char())
+            call find_cavgs(child, result, found)
             if( found ) return
         enddo
     end subroutine find_cavgs
