@@ -17,6 +17,7 @@ use simple_pftc_shsrch_grad,         only: pftc_shsrch_grad
 use simple_type_defs,               only: OBJFUN_EUCLID
 use simple_ui,                      only: make_ui
 use simple_image,                   only: image
+use, intrinsic :: ieee_arithmetic,  only: ieee_is_finite
 implicit none
 #include "simple_local_flags.inc"
 
@@ -88,13 +89,21 @@ call ref1%memoize4polarize(b%pftc%get_pdim_srch()); call ref2%memoize4polarize(b
 call b%pftc%polarize_ref_pft(ref1,1,.true.,b%pftc%get_pdim_srch(),.false.); call b%pftc%polarize_ref_pft(ref2,2,.true.,b%pftc%get_pdim_srch(),.false.)
 call b%pftc%polarize_ptcl_pft(observed,1,b%pftc%get_pdim_srch(),.false.); call b%pftc%set_eo(1,.true.)
 allocate(sigma2_noise(params%kfromto(1):params%kfromto(2),1),source=0.05); call b%pftc%assign_sigma2_noise(sigma2_noise)
+! Match the production calibration boundary: the raw Euclidean objective
+! requires a finite per-shell variance, not merely an allocated array.
+call b%pftc%gen_sigma_contrib(2,1,[0.0,0.0],1,sigma2_noise(:,1))
+sigma2_noise(:,1)=max(sigma2_noise(:,1),1.0e-6)
 
 write(logfhandle,'(a)') '>>> V4 STEP 3: discrete class/rotation search followed by shift SGD'
 best_loss=huge(1._dp); best_ref=0; best_rot=0
+write(logfhandle,'(a,i0)') '>>> V4 ROTATION COUNT: ', b%pftc%get_nrots()
 do iref=1,2; do irot=1,b%pftc%get_nrots()
     call b%pftc%gen_raw_euclid_grad_for_rot_8(iref,1,[0._dp,0._dp],irot,loss,grad)
-    if(loss<best_loss)then; best_loss=loss; best_ref=iref; best_rot=irot; endif
+    if(ieee_is_finite(loss))then
+        if(loss<best_loss)then; best_loss=loss; best_ref=iref; best_rot=irot; endif
+    endif
 enddo; enddo
+if(best_rot<1) THROW_HARD('V4 discrete class/rotation search produced no finite candidate')
 truth_rot=b%pftc%get_roind(real(truth_angle,sp))
 shift_limits(:,1)=-5.; shift_limits(:,2)=5.; call search%new(b,shift_limits,opt_angle=.false.,direct_only=.true.); call search%set_indices(best_ref,1)
 irot=best_rot; recovered=search%minimize_direct(irot,[0.0,0.0],.5,8,sh_rot=.false.,accepted_steps=accepted_steps,&
