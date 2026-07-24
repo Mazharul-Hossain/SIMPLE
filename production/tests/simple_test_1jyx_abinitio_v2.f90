@@ -212,9 +212,11 @@ shift_limits(:,2) =  5.0
 call direct_shift_search%new(pft_builder, shift_limits, opt_angle=.false., direct_only=.true.)
 call direct_shift_search%set_indices(1, 1)
 direct_irot = 1
+! P2: request the finite raw Euclidean loss/gradient API so SGD does not
+! differentiate the underflow-prone exp(-L) score.
 direct_cxy = direct_shift_search%minimize_direct( &
     direct_irot, [0.0, 0.0], 0.5, 5, sh_rot=.false., accepted_steps=direct_accepted, &
-    objective_initial=objective_initial, objective_final=objective_final)
+    objective_initial=objective_initial, objective_final=objective_final, raw_euclid=.true.)
 write(logfhandle,'(a,es14.6)') '>>> DIRECT SHIFT OBJECTIVE INITIAL: ', objective_initial
 write(logfhandle,'(a,es14.6)') '>>> DIRECT SHIFT OBJECTIVE FINAL:   ', objective_final
 write(logfhandle,'(a,i0)')     '>>> DIRECT SHIFT ACCEPTED STEPS: ', direct_accepted
