@@ -199,6 +199,10 @@ call pft_builder%pftc%new(pft_params, 1, [1,1], pft_params%kfromto)
 allocate(sigma2_noise(pft_params%kfromto(1):pft_params%kfromto(2),1), source=1.0)
 call pft_builder%pftc%assign_sigma2_noise(sigma2_noise)
 pdim_srch = pft_builder%pftc%get_pdim_srch()
+! Match SIMPLE's production image-to-polar workflow: polarize reads the
+! image Fourier buffer, so explicitly FFT both synthetic spatial images first.
+call reference%fft()
+call observed%fft()
 call pft_builder%pftc%polarize_ref_pft(reference, 1, iseven=.true., pdim=pdim_srch, oversamp=.false.)
 call pft_builder%pftc%polarize_ptcl_pft(observed, 1, pdim=pdim_srch, oversamp=.false.)
 call pft_builder%pftc%set_eo(1, .true.)
